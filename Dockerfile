@@ -40,6 +40,8 @@ COPY --from=builder /build/file-share /app
 
 EXPOSE 8080
 
+VOLUME [ "/data" ]
+
 WORKDIR /app
 USER 1000:1000
 CMD ["./file-share"]
