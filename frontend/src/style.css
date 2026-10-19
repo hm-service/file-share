@@ -177,10 +177,16 @@ ul {
   border-top: 1px dashed var(--line);
 }
 
+/* 一个分组是一张卡片，行与行之间只用细分隔线 —— 比每行一张卡片更紧凑、更好扫读。 */
 .file-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
   container-type: inline-size;
 }
 
@@ -213,25 +219,24 @@ ul {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-md);
-  background: var(--paper);
-  box-shadow: var(--shadow-sm);
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+  padding: 7px 10px;
+  background: transparent;
+  transition: background-color 0.15s;
 }
 
 .file-item:hover {
-  box-shadow: var(--shadow-md);
+  background: #f8fafc;
+}
+
+.file-item + .file-item {
+  border-top: 1px solid var(--line-soft);
 }
 
 .file-main {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   overflow: hidden;
 }
@@ -240,6 +245,13 @@ ul {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--accent);
+}
+
+/* 图标按紧凑行缩小，文件类型图标不再占掉半行。 */
+.file-glyph svg {
+  display: block;
+  width: 22px;
+  height: 22px;
 }
 
 .file-glyph svg {
@@ -253,36 +265,32 @@ ul {
 .file-name {
   overflow: hidden;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .file-meta {
-  margin-top: 2px;
+  margin-top: 1px;
+  overflow: hidden;
   color: var(--ink-faint);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* 五个操作按钮常驻显示，不再依赖 hover；hover 只做颜色/背景反馈。 */
 .file-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
-  margin-left: 8px;
-  opacity: 0;
-  transition: opacity 0.15s;
+  gap: 4px;
+  margin-left: 4px;
 }
 
-.file-item:hover .file-actions,
-.file-item:focus-within .file-actions {
-  opacity: 1;
-}
-
-/* 侧栏被拖窄 / 手机竖屏时，把操作按钮换到第二行并常显：
-   文件名拿回整行宽度，右侧也不会再留一块只有隐藏按钮的空白。 */
-@container (max-width: 380px) {
+/* 侧栏被拖窄 / 极窄手机屏时，按钮换到第二行，文件名拿回整行宽度。 */
+@container (max-width: 340px) {
   .file-item {
     flex-wrap: wrap;
     align-items: flex-start;
@@ -295,8 +303,7 @@ ul {
   .file-actions {
     flex-basis: 100%;
     justify-content: flex-end;
-    margin: 6px 0 0;
-    opacity: 1;
+    margin: 4px 0 0;
   }
 }
 
@@ -304,8 +311,8 @@ ul {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
   color: var(--ink-faint);
   transition:
@@ -315,6 +322,8 @@ ul {
 
 .icon-btn svg {
   display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .icon-btn:hover {
@@ -812,12 +821,8 @@ ul {
 
 /* ---------- 响应式 ---------- */
 
-/* 触屏没有 hover：操作按钮常显。 */
+/* 触屏没有 hover：分隔条 grip 常显（操作按钮本来就已经常驻）。 */
 @media (hover: none) {
-  .file-actions {
-    opacity: 1;
-  }
-
   .splitter-grip {
     opacity: 1;
   }
@@ -938,11 +943,6 @@ ul {
   .sidebar-foot {
     display: none;
   }
-
-  /* 触屏/窄屏没有 hover：操作按钮常显（配合文件行的换行规则）。 */
-  .file-actions {
-    opacity: 1;
-  }
 }
 
 @media (max-width: 520px) {
@@ -968,12 +968,18 @@ ul {
   }
 
   .file-actions {
-    gap: 10px;
+    gap: 4px;
   }
 
+  /* 手机上把点击区域略放大，但仍保持紧凑。 */
   .icon-btn {
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .icon-btn svg {
+    width: 20px;
+    height: 20px;
   }
 
   .section-title {
