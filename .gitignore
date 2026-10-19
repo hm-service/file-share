@@ -4,6 +4,7 @@
 !.vscode/
 !.gitignore
 !.dockerignore
+!.gitattributes
 
 # 前端依赖与构建产物（产物由 just frontend 生成，最后被 go:embed 嵌进二进制）
 /frontend/node_modules/
