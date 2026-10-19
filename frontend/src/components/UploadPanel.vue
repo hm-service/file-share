@@ -277,7 +277,10 @@ onBeforeUnmount(() => {
         @drop="onDrop"
       >
         <span class="drop-icon" v-html="ICONS.upload"></span>
-        <h3 class="drop-title">{{ t("upload.drop-title") }}</h3>
+        <h3 class="drop-title">
+          <span class="desktop-only">{{ t("upload.drop-title") }}</span>
+          <span class="mobile-only">{{ t("upload.pick-title") }}</span>
+        </h3>
         <p class="drop-hint">{{ t("upload.drop-hint") }}</p>
         <input
           ref="fileInput"

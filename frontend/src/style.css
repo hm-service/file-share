@@ -181,6 +181,7 @@ ul {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  container-type: inline-size;
 }
 
 .empty-note {
@@ -277,6 +278,26 @@ ul {
 .file-item:hover .file-actions,
 .file-item:focus-within .file-actions {
   opacity: 1;
+}
+
+/* 侧栏被拖窄 / 手机竖屏时，把操作按钮换到第二行并常显：
+   文件名拿回整行宽度，右侧也不会再留一块只有隐藏按钮的空白。 */
+@container (max-width: 380px) {
+  .file-item {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .file-main {
+    flex-basis: 100%;
+  }
+
+  .file-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin: 6px 0 0;
+    opacity: 1;
+  }
 }
 
 .icon-btn {
@@ -420,6 +441,11 @@ ul {
 
 .logout-icon {
   display: inline-flex;
+}
+
+/* 窄屏顶部工具栏：宽屏隐藏，语言与退出入口仍由侧栏底部提供。 */
+.mobile-topbar {
+  display: none;
 }
 
 /* ---------- 侧栏 / 主区分隔条 ---------- */
@@ -680,6 +706,11 @@ ul {
   font-size: 14px;
 }
 
+/* 触屏/桌面同一位置的两套文案，由响应式断点切换。 */
+.mobile-only {
+  display: none;
+}
+
 .hidden-input {
   display: none;
 }
@@ -795,6 +826,31 @@ ul {
 @media (max-width: 900px) {
   .app {
     flex-direction: column;
+    height: 100dvh;
+  }
+
+  /* 竖屏改为单列：顶部工具栏 → 紧凑上传条 → 文件列表占满剩余高度。 */
+  .mobile-topbar {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--paper);
+  }
+
+  .mobile-title {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .mobile-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   /* 上下堆叠时没有左右分栏，分隔条收起。 */
@@ -802,46 +858,122 @@ ul {
     display: none;
   }
 
-  .sidebar {
-    width: 100%;
-    min-width: 0;
-    max-height: 45vh;
+  .workspace {
+    order: 1;
+    flex: 0 0 auto;
+    padding: 12px 16px 8px;
+  }
+
+  .upload-panel {
+    gap: 10px;
+    max-width: none;
+  }
+
+  /* 触屏没有拖拽，热区收成一条紧凑的「选择文件」动作条；队列排在它下面。 */
+  .drop-wrap {
+    order: -1;
+    flex: 0 0 auto;
+  }
+
+  .dropzone {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
     height: auto;
+    padding: 12px 16px;
+    border-width: 1.5px;
+    border-radius: 14px;
+    text-align: left;
+  }
+
+  .drop-icon {
+    margin-bottom: 0;
+  }
+
+  .drop-icon svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  .drop-title {
+    margin-bottom: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .desktop-only {
+    display: none;
+  }
+
+  .mobile-only {
+    display: inline;
+  }
+
+  .drop-hint {
+    display: none;
+  }
+
+  .queue-panel {
+    max-height: 28vh;
+  }
+
+  .sidebar {
+    order: 2;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    max-height: none;
+    height: auto;
+    border-top: 1px solid var(--line-soft);
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 0;
   }
 
   .sidebar-scroll {
     gap: 16px;
-    padding: 12px 16px;
+    padding: 12px 16px calc(24px + env(safe-area-inset-bottom, 0px));
   }
 
-  .workspace {
-    flex: 1 1 auto;
-    padding: 16px;
+  /* 语言与退出入口已经挪到顶部工具栏，窄屏不再重复显示侧栏底部。 */
+  .sidebar-foot {
+    display: none;
   }
 
-  .upload-panel {
-    gap: 16px;
-  }
-
-  .queue-panel {
-    max-height: 30vh;
-  }
-
-  .dropzone {
-    height: 220px;
+  /* 触屏/窄屏没有 hover：操作按钮常显（配合文件行的换行规则）。 */
+  .file-actions {
+    opacity: 1;
   }
 }
 
 @media (max-width: 520px) {
+  .mobile-topbar {
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
+  }
+
+  .mobile-title {
+    font-size: 14px;
+  }
+
+  /* 极窄时只留图标，避免顶部工具栏挤成两行。 */
+  .mobile-topbar .logout-label {
+    display: none;
+  }
+
+  .dropzone {
+    padding: 10px 12px;
+  }
+
+  .sidebar-scroll {
+    padding: 10px 12px calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+
   .file-actions {
-    gap: 8px;
+    gap: 10px;
   }
 
   .icon-btn {
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
   }
 
   .section-title {

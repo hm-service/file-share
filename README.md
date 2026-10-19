@@ -14,6 +14,10 @@
 | --- | --- |
 | ![Login](docs/screenshot-login-en.png) | ![Main](docs/screenshot-main-en.png) |
 
+| 移动端（中文） | 移动端（English） |
+| --- | --- |
+| ![移动端中文](docs/screenshot-mobile-zh.png) | ![移动端英文](docs/screenshot-mobile-en.png) |
+
 ## 功能
 
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
@@ -22,6 +26,7 @@
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **可调节布局**：侧栏与主区之间的分隔条可拖拽（或聚焦后用左右方向键）调整宽度，双击恢复默认；占比存在 `localStorage`。
+- **移动端布局**：≤900px（手机/平板竖屏）自动切为单列 —— 顶部工具栏 + 紧凑上传条 + 文件列表占满剩余高度，触屏操作按钮常显并适配安全区。
 - **单文件交付**：静态链接的 Go 二进制（amd64/arm64），容器以只读根文件系统、丢弃全部 capabilities 运行。
 
 ## 快速开始

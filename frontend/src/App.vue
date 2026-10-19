@@ -241,6 +241,18 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="appEl" class="app" :class="{ 'is-splitting': splitting }">
+    <!-- 窄屏（竖屏手机/平板）用顶部工具栏替代侧栏底部的语言与退出入口。 -->
+    <header class="mobile-topbar">
+      <span class="mobile-title">{{ t("app.title") }}</span>
+      <div class="mobile-actions">
+        <LocaleSwitch />
+        <button type="button" class="logout-btn" @click="logout">
+          <span class="logout-icon" v-html="ICONS.logout"></span>
+          <span class="logout-label">{{ t("action.logout") }}</span>
+        </button>
+      </div>
+    </header>
+
     <aside class="sidebar" :style="sidebarStyle">
       <div class="sidebar-scroll">
         <div v-if="loadError || actionError" class="banners">
@@ -290,7 +302,7 @@ onBeforeUnmount(() => {
         <LocaleSwitch />
         <button type="button" class="logout-btn" @click="logout">
           <span class="logout-icon" v-html="ICONS.logout"></span>
-          {{ t("action.logout") }}
+          <span class="logout-label">{{ t("action.logout") }}</span>
         </button>
       </footer>
     </aside>

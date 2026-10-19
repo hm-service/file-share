@@ -92,7 +92,10 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 未登录访问主应用会被重定向到 `/auth`；接口返回 401 时前端清除会话并跳转。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
 - 侧栏与主区之间有可拖拽分隔条：可拖拽或用左右方向键调整宽度，双击恢复默认；
-  宽度占比存在 `localStorage`（`file-share.sidebar-ratio`），窄屏（≤900px）上下堆叠时不显示。
+  宽度占比存在 `localStorage`（`file-share.sidebar-ratio`）。
+- 窄屏（≤900px，含手机/平板竖屏）改为单列布局：顶部工具栏（标题、语言、退出）→ 紧凑上传动作条
+  → 文件列表占满剩余高度；触屏没有 hover，文件操作按钮常显并换到第二行，同时适配安全区。
+  桌面宽屏保持左右分栏 + 可拖拽分隔条。
 
 ## 6. 接口
 

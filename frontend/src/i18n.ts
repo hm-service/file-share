@@ -35,6 +35,7 @@ export type MessageKey =
   | "nav.empty-favorites"
   | "nav.empty-files"
   | "upload.drop-title"
+  | "upload.pick-title"
   | "upload.drop-hint"
   | "upload.queue-title"
   | "upload.status.pending"
@@ -80,6 +81,7 @@ const messages: Record<MessageKey, Message> = {
   "nav.empty-favorites": { zh: "暂无收藏", en: "No favorites yet" },
   "nav.empty-files": { zh: "库中暂无文件", en: "No files yet" },
   "upload.drop-title": { zh: "点击或将文件拖拽至此处", en: "Click or drag files here" },
+  "upload.pick-title": { zh: "点击选择文件上传", en: "Tap to choose files" },
   "upload.drop-hint": {
     zh: "支持超大文件，自动秒传校验",
     en: "Large files supported, instant upload checked",
