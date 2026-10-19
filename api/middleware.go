@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ const (
 const ReadyzConcurrency = 4
 
 // 请求体上限：JSON 接口 64 KiB、登录 4 KiB、秒传预检 1 MiB；上传另外在
-// MAX_UPLOAD_BYTES 之上留 1 MiB 给 multipart 的头与字段。
+// MAX_FILE_SIZE 之上留 1 MiB 给 multipart 的头与字段。
 const (
 	MaxJSONBodyBytes      = 64 << 10
 	MaxAuthBodyBytes      = 4 << 10
@@ -104,7 +105,7 @@ func skipAccessLog(r *http.Request) bool {
 // 而不是散在各个 handler 里。不认识的路径不包 —— 静态资源不读请求体。
 func LimitBody(instance *app.App, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limit, key, ok := bodyLimit(r.URL.Path, instance.Config.MaxUploadBytes)
+		limit, key, ok := bodyLimit(r.URL.Path, instance.Config.MaxFileSize)
 		if ok && !limitBody(w, r, limit, key) {
 			return
 		}
@@ -113,10 +114,14 @@ func LimitBody(instance *app.App, next http.Handler) http.Handler {
 }
 
 // bodyLimit 给出一个路径的请求体上限与超限时的文案键；第二个返回值为 false 表示不限制。
-func bodyLimit(path string, maxUploadBytes int64) (int64, string, bool) {
+func bodyLimit(path string, maxFileSize int64) (int64, string, bool) {
 	switch path {
 	case "/api/upload":
-		return maxUploadBytes + uploadBodyOverhead, "upload.too-big", true
+		// MAX_FILE_SIZE 允许到 int64 上限，加上 multipart 开销前先防一手越界。
+		if maxFileSize > math.MaxInt64-uploadBodyOverhead {
+			return math.MaxInt64, "upload.too-big", true
+		}
+		return maxFileSize + uploadBodyOverhead, "upload.too-big", true
 	case "/api/check_file":
 		return MaxCheckFileBodyBytes, "request.too-big", true
 	case "/api/auth":

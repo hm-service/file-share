@@ -337,36 +337,95 @@ func TestReadConcurrencyLimits(t *testing.T) {
 	}
 }
 
-func TestReadMaxUploadBytes(t *testing.T) {
+func TestReadMaxFileSize(t *testing.T) {
 	cases := []struct {
 		name    string
 		raw     string
 		want    int64
 		wantErr bool
 	}{
-		{name: "没设用默认值", want: 8589934592},
-		{name: "正常值", raw: "1024", want: 1024},
-		{name: "下界", raw: "1", want: 1},
+		{name: "没设用默认值", want: 2147483648},
+		{name: "纯字节", raw: "4096", want: 4096},
+		{name: "1MiB", raw: "1MiB", want: 1 << 20},
+		{name: "2GiB", raw: "2GiB", want: 2 << 30},
+		{name: "2gib 小写", raw: "2gib", want: 2 << 30},
 		{name: "0", raw: "0", wantErr: true},
 		{name: "负数", raw: "-1", wantErr: true},
-		{name: "不是数字", raw: "8GiB", wantErr: true},
+		{name: "不是数字", raw: "abc", wantErr: true},
+		{name: "小数", raw: "1.5GiB", wantErr: true},
+		{name: "其它单位", raw: "1GB", wantErr: true},
 		{name: "带空格", raw: " 1024", wantErr: true},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			t.Setenv("MAX_UPLOAD_BYTES", item.raw)
-			got, err := readMaxUploadBytes()
+			t.Setenv("MAX_FILE_SIZE", item.raw)
+			got, err := readMaxFileSize()
 			if item.wantErr {
 				if err == nil {
-					t.Fatalf("readMaxUploadBytes() = %d，想要报错", got)
+					t.Fatalf("readMaxFileSize() = %d，想要报错", got)
+				}
+				if !strings.Contains(err.Error(), "MAX_FILE_SIZE") {
+					t.Errorf("错误信息 %q 应当提到 MAX_FILE_SIZE", err.Error())
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("readMaxUploadBytes() 报错: %v", err)
+				t.Fatalf("readMaxFileSize() 报错: %v", err)
 			}
 			if got != item.want {
-				t.Errorf("readMaxUploadBytes() = %d，想要 %d", got, item.want)
+				t.Errorf("readMaxFileSize() = %d，想要 %d", got, item.want)
+			}
+		})
+	}
+}
+
+// parseFileSize 是 MAX_FILE_SIZE 的解析器：纯整数按字节，GiB / MiB 后缀大小写不敏感；
+// 小数、其它单位、非正数一律拒绝。
+func TestParseFileSize(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    int64
+		wantErr bool
+	}{
+		{name: "纯字节", raw: "1048576", want: 1048576},
+		{name: "1 字节", raw: "1", want: 1},
+		{name: "2GiB", raw: "2GiB", want: 2147483648},
+		{name: "512MiB", raw: "512MiB", want: 512 << 20},
+		{name: "1GiB", raw: "1GiB", want: 1 << 30},
+		{name: "小写 gib", raw: "2gib", want: 2 << 30},
+		{name: "小写 mib", raw: "512mib", want: 512 << 20},
+		{name: "大小写混合", raw: "2gIb", want: 2 << 30},
+		{name: "空串", raw: "", wantErr: true},
+		{name: "0", raw: "0", wantErr: true},
+		{name: "负数字节", raw: "-1", wantErr: true},
+		{name: "负数带单位", raw: "-2GiB", wantErr: true},
+		{name: "小数 GiB", raw: "1.5GiB", wantErr: true},
+		{name: "纯小数", raw: "1.5", wantErr: true},
+		{name: "GB 不是 GiB", raw: "1GB", wantErr: true},
+		{name: "2G 不是单位", raw: "2G", wantErr: true},
+		{name: "只有单位", raw: "GiB", wantErr: true},
+		{name: "带空格", raw: " 2GiB", wantErr: true},
+		{name: "数字越界", raw: "99999999999999999999GiB", wantErr: true},
+		{name: "乘积越界", raw: "9007199254740992GiB", wantErr: true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			got, err := parseFileSize(item.raw)
+			if item.wantErr {
+				if err == nil {
+					t.Fatalf("parseFileSize(%q) = %d，想要报错", item.raw, got)
+				}
+				if !strings.Contains(err.Error(), "MAX_FILE_SIZE") {
+					t.Errorf("错误信息 %q 应当提到 MAX_FILE_SIZE", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseFileSize(%q) 报错: %v", item.raw, err)
+			}
+			if got != item.want {
+				t.Errorf("parseFileSize(%q) = %d，想要 %d", item.raw, got, item.want)
 			}
 		})
 	}
@@ -456,7 +515,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("HOST", "0.0.0.0")
 		t.Setenv("PORT", "18080")
 		t.Setenv("TZ", "")
-		t.Setenv("MAX_UPLOAD_BYTES", "4096")
+		t.Setenv("MAX_FILE_SIZE", "4096")
 
 		cfg, limits, err := loadConfig()
 		if err != nil {
@@ -468,7 +527,7 @@ func TestLoadConfig(t *testing.T) {
 		if limits.api != api.DefaultAPIConcurrency {
 			t.Errorf("limits = %+v", limits)
 		}
-		if cfg.app.MaxUploadBytes != 4096 || cfg.app.ReadyzToken != testenv.ReadyzToken {
+		if cfg.app.MaxFileSize != 4096 || cfg.app.ReadyzToken != testenv.ReadyzToken {
 			t.Errorf("app 配置 = %+v", cfg.app)
 		}
 		ok, err := core.VerifyToken(testenv.AuthToken, cfg.app.AuthTokenHash)
@@ -480,6 +539,34 @@ func TestLoadConfig(t *testing.T) {
 		}
 		if left := os.Getenv("SESSION_SIGNING_KEY"); left != "" {
 			t.Errorf("SESSION_SIGNING_KEY 应当已从环境表删除: %q", left)
+		}
+	})
+
+	t.Run("MAX_FILE_SIZE 支持 GiB 后缀", func(t *testing.T) {
+		t.Setenv("DATA_DIR", t.TempDir())
+		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("READYZ_TOKEN", "")
+		t.Setenv("TZ", "")
+		t.Setenv("MAX_FILE_SIZE", "2GiB")
+		cfg, _, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() 报错: %v", err)
+		}
+		if cfg.app.MaxFileSize != 2147483648 {
+			t.Errorf("MaxFileSize = %d，想要 2147483648（2GiB）", cfg.app.MaxFileSize)
+		}
+	})
+
+	t.Run("MAX_FILE_SIZE 非法时启动失败", func(t *testing.T) {
+		t.Setenv("DATA_DIR", t.TempDir())
+		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("READYZ_TOKEN", "")
+		t.Setenv("TZ", "")
+		t.Setenv("MAX_FILE_SIZE", "1.5GiB")
+		if _, _, err := loadConfig(); err == nil {
+			t.Fatal("非法 MAX_FILE_SIZE 应当让 loadConfig() 报错")
 		}
 	})
 

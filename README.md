@@ -21,7 +21,7 @@
 ## 功能
 
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
-- **上传队列**：拖拽或选择多文件，串行上传，显示指纹计算 / 预检 / 上传进度，失败可移除。
+- **上传队列**：拖拽（桌面端右侧整片区域都是拖放目标）或选择多文件，串行上传，显示指纹计算 / 预检 / 上传进度；支持取消与重试，单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
 - **收藏与公开**：左侧收藏区与全部文件列表；每个文件可切换收藏、公开/私有；公开后可用匿名直链下载。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
@@ -38,6 +38,7 @@ export DATA_DIR=./.data
 export AUTH_TOKEN=change_me_please          # 16-128 位 [A-Za-z0-9_]
 export SESSION_SIGNING_KEY=change_me_please_1234567890  # 32-128 位 [A-Za-z0-9_]
 export READYZ_TOKEN=optional_readyz_token   # 可选
+export MAX_FILE_SIZE=2GiB                   # 可选：单文件上限，默认 2GiB（也支持 MiB / 纯字节）
 just run
 ```
 
@@ -55,7 +56,7 @@ just run
 | `DATA_DIR` | `/data` | 数据目录（SQLite + 物理文件）；目录必须已存在且可读可写 |
 | `TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 可信反向代理来源，只有这些来源的转发头才被采信 |
 | `MAX_AUTH_CONCURRENCY` / `MAX_API_CONCURRENCY` / `MAX_STATIC_CONCURRENCY` | `32` / `128` / `64` | 三组独立并发闸门 |
-| `MAX_UPLOAD_BYTES` | `8589934592` | 单次上传体上限（8 GiB） |
+| `MAX_FILE_SIZE` | `2GiB` | 单个上传文件上限；纯整数按字节，支持 `GiB`/`MiB` 后缀（大小写不敏感） |
 | `AUTH_TOKEN` | 无，必填 | 登录令牌（Secret） |
 | `SESSION_SIGNING_KEY` | 无，必填 | 会话签名密钥（Secret），轮换即所有会话下线 |
 | `READYZ_TOKEN` | 空 | 非空时 `/readyz` 需要 `?token=` |
@@ -105,6 +106,44 @@ podman kube play k8s.file-share.yaml
 | `GET` | `/livez` / `/readyz` | 存活 / 就绪探针 |
 
 `/api/*` 的错误体统一为 `{"detail": "…"}`，详情与鉴权规则见 [DESIGN.md](DESIGN.md)。
+
+### 上传接口
+
+登录后所有请求带 `Authorization: Bearer <session>`。上传分两步：先按客户端 SHA-256 预检（命中秒传），
+未命中再流式上传，服务端边收边算哈希并比对。
+
+**1. 秒传预检** `POST /api/check_file`（`multipart/form-data`，体上限 1 MiB）
+
+| 字段 | 说明 |
+| --- | --- |
+| `client_sha256` | 客户端算出的 SHA-256，64 位小写十六进制 |
+| `filename` | 文件名（仅 basename，<= 255 字节） |
+
+```bash
+curl -s -H "Authorization: Bearer $SESSION" \
+  -F "client_sha256=$SHA256" -F "filename=报告.pdf" \
+  http://127.0.0.1:8080/api/check_file
+# 命中（已建好记录）：{"exists":true,"id":"3f2c…","filename":"报告.pdf","size":123}
+# 未命中：{"exists":false}
+```
+
+**2. 上传** `POST /api/upload`（`multipart/form-data`）
+
+| 字段 | 说明 |
+| --- | --- |
+| `file` | 文件内容；文件名取该 part 的 `filename` |
+| `client_sha256` | 同预检；与客户端指纹不一致返回 400 |
+
+字段顺序不限。请求体上限为 `MAX_FILE_SIZE + 1 MiB`，单文件超过 `MAX_FILE_SIZE`（默认 2GiB）返回 413。
+成功返回 `{"id":"3f2c…","sha256":"…"}`；失败统一为 `{"detail":"…"}`：
+400（缺字段 / 指纹格式 / 文件名 / 校验不符）、401（未登录）、413（超过 `MAX_FILE_SIZE`）。
+
+```bash
+curl -s -H "Authorization: Bearer $SESSION" \
+  -F "file=@报告.pdf" -F "client_sha256=$SHA256" \
+  http://127.0.0.1:8080/api/upload
+# {"id":"3f2c…","sha256":"e3b0c442…"}
+```
 
 ## 数据与升级
 

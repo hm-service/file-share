@@ -525,6 +525,7 @@ ul {
 /* ---------- 右侧上传区 ---------- */
 
 .workspace {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -532,6 +533,42 @@ ul {
   min-height: 0;
   padding: 40px;
   background: var(--bg);
+}
+
+.workspace.is-drop-target {
+  background: var(--accent-soft);
+}
+
+/* 整页拖放覆盖层：只做提示、不拦截事件，下面仍然是 workspace 的拖放目标。 */
+.drop-overlay {
+  position: absolute;
+  inset: 14px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: rgb(239 246 255 / 0.92);
+  color: var(--accent-strong);
+  pointer-events: none;
+}
+
+.drop-overlay-icon {
+  display: inline-flex;
+}
+
+.drop-overlay-icon svg {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+
+.drop-overlay-text {
+  font-size: 18px;
+  font-weight: 600;
 }
 
 .upload-panel {
@@ -606,8 +643,8 @@ ul {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
-  max-width: 55%;
+  gap: 10px;
+  max-width: 65%;
 }
 
 .queue-status {
@@ -626,13 +663,33 @@ ul {
   color: #dc2626;
 }
 
-.queue-remove {
-  color: #f87171;
+.queue-status.cancelled {
+  color: var(--ink-faint);
+}
+
+.queue-action {
+  color: var(--ink-soft);
   font-size: 12px;
   white-space: nowrap;
 }
 
-.queue-remove:hover {
+.queue-action:hover {
+  color: var(--ink);
+}
+
+.queue-action.retry {
+  color: var(--accent);
+}
+
+.queue-action.retry:hover {
+  color: var(--accent-strong);
+}
+
+.queue-action.remove {
+  color: #f87171;
+}
+
+.queue-action.remove:hover {
   color: #dc2626;
 }
 
@@ -658,66 +715,51 @@ ul {
   background: var(--danger);
 }
 
-/* ---------- 拖拽上传热区 ---------- */
+.progress-bar.cancelled {
+  background: #d1d5db;
+}
 
-.drop-wrap {
+/* ---------- 紧凑上传动作条 ---------- */
+
+.upload-actions {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
-  min-height: 0;
+  gap: 14px;
 }
 
-.dropzone {
-  display: flex;
-  flex-direction: column;
+.upload-btn {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 384px;
-  max-height: 100%;
-  padding: 24px;
-  border: 2px dashed #d1d5db;
-  border-radius: var(--radius-lg);
-  background: var(--paper);
-  text-align: center;
-  cursor: pointer;
-  transition:
-    border-color 0.3s,
-    background-color 0.3s,
-    box-shadow 0.3s;
-}
-
-.dropzone:hover,
-.dropzone.is-over {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 10px 25px rgb(59 130 246 / 0.12);
-}
-
-.drop-icon {
-  margin-bottom: 16px;
-  color: var(--ink-faint);
-}
-
-.drop-icon svg {
-  display: block;
-}
-
-.drop-title {
-  margin-bottom: 8px;
-  color: #374151;
-  font-size: 20px;
-  font-weight: 500;
-}
-
-.drop-hint {
-  color: var(--ink-faint);
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: var(--accent);
+  box-shadow: var(--shadow-sm);
+  color: #fff;
   font-size: 14px;
+  font-weight: 600;
+  transition: background-color 0.15s;
 }
 
-/* 触屏/桌面同一位置的两套文案，由响应式断点切换。 */
-.mobile-only {
-  display: none;
+.upload-btn:hover {
+  background: var(--accent-strong);
+}
+
+.upload-btn-icon {
+  display: inline-flex;
+}
+
+.upload-btn-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.upload-hint {
+  color: var(--ink-faint);
+  font-size: 13px;
 }
 
 .hidden-input {
@@ -874,47 +916,17 @@ ul {
     max-width: none;
   }
 
-  /* 触屏没有拖拽，热区收成一条紧凑的「选择文件」动作条；队列排在它下面。 */
-  .drop-wrap {
-    order: -1;
-    flex: 0 0 auto;
-  }
-
-  .dropzone {
-    flex-direction: row;
-    justify-content: flex-start;
+  /* 触屏没有 hover/拖拽：动作条保持紧凑，拖放提示收起。 */
+  .upload-actions {
     gap: 10px;
-    height: auto;
-    padding: 12px 16px;
-    border-width: 1.5px;
-    border-radius: 14px;
-    text-align: left;
   }
 
-  .drop-icon {
-    margin-bottom: 0;
+  .upload-btn {
+    padding: 8px 12px;
+    font-size: 13px;
   }
 
-  .drop-icon svg {
-    width: 28px;
-    height: 28px;
-  }
-
-  .drop-title {
-    margin-bottom: 0;
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  .desktop-only {
-    display: none;
-  }
-
-  .mobile-only {
-    display: inline;
-  }
-
-  .drop-hint {
+  .upload-hint {
     display: none;
   }
 
@@ -957,10 +969,6 @@ ul {
   /* 极窄时只留图标，避免顶部工具栏挤成两行。 */
   .mobile-topbar .logout-label {
     display: none;
-  }
-
-  .dropzone {
-    padding: 10px 12px;
   }
 
   .sidebar-scroll {

@@ -41,10 +41,10 @@ func (a *App) NewUpload() (*Upload, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Upload{file: file, tempPath: tempPath, hash: sha256.New(), max: a.Config.MaxUploadBytes}, nil
+	return &Upload{file: file, tempPath: tempPath, hash: sha256.New(), max: a.Config.MaxFileSize}, nil
 }
 
-// Write 把上传内容写进临时文件并同步更新摘要；超过 MAX_UPLOAD_BYTES 立即拒绝。
+// Write 把上传内容写进临时文件并同步更新摘要；超过 MAX_FILE_SIZE 立即拒绝。
 func (u *Upload) Write(p []byte) (int, error) {
 	if u.done {
 		return 0, os.ErrClosed

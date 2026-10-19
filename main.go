@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -24,8 +25,8 @@ import (
 // 进程以 254 退出。
 const shutdownTimeout = 5 * time.Second
 
-// defaultMaxUploadBytes 是单次上传体上限的默认值（8 GiB）。
-const defaultMaxUploadBytes = 8 << 30 // 8589934592
+// defaultMaxFileSize 是单个上传文件的默认大小上限（2 GiB）。
+const defaultMaxFileSize = 2 << 30 // 2147483648
 
 // defaultDataDir 是未设置 DATA_DIR 时的默认数据目录：容器部署时 /data 由卷挂载进来。
 const defaultDataDir = "/data"
@@ -189,7 +190,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 		return zero, limits, err
 	}
 	dataDir := readDataDir()
-	maxUploadBytes, err := readMaxUploadBytes()
+	maxFileSize, err := readMaxFileSize()
 	if err != nil {
 		return zero, limits, err
 	}
@@ -223,7 +224,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 			SessionSigningKey: sessionKey,
 			AuthTokenHash:     authTokenHash,
 			ReadyzToken:       readyzToken,
-			MaxUploadBytes:    maxUploadBytes,
+			MaxFileSize:       maxFileSize,
 		},
 		host: host,
 		port: port,
@@ -320,17 +321,38 @@ func readLimit(name string, fallback int) (int, error) {
 	return value, nil
 }
 
-// readMaxUploadBytes 读单次上传体上限：默认 8 GiB，设了就必须是 >= 1 的整数。
-func readMaxUploadBytes() (int64, error) {
-	raw := os.Getenv("MAX_UPLOAD_BYTES")
+// readMaxFileSize 读单个上传文件的大小上限：默认 2 GiB；设了就必须是纯字节整数
+// 或带 GiB / MiB 后缀的值。
+func readMaxFileSize() (int64, error) {
+	raw := os.Getenv("MAX_FILE_SIZE")
 	if raw == "" {
-		return defaultMaxUploadBytes, nil
+		return defaultMaxFileSize, nil
 	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 1 {
-		return 0, fmt.Errorf("MAX_UPLOAD_BYTES must be an integer >= 1, got %q", raw)
+	return parseFileSize(raw)
+}
+
+// parseFileSize 解析 MAX_FILE_SIZE：纯整数按字节算，GiB / MiB 后缀分别按 2^30 / 2^20
+// 字节算，单位大小写不敏感。不收小数与其它单位 —— 含糊的值宁可启动失败，也别悄悄生效。
+func parseFileSize(raw string) (int64, error) {
+	value, multiplier := raw, int64(1)
+	switch lower := strings.ToLower(raw); {
+	case strings.HasSuffix(lower, "gib"):
+		multiplier = 1 << 30
+		value = raw[:len(raw)-len("gib")]
+	case strings.HasSuffix(lower, "mib"):
+		multiplier = 1 << 20
+		value = raw[:len(raw)-len("mib")]
 	}
-	return value, nil
+	size, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || size < 1 {
+		return 0, fmt.Errorf(
+			"MAX_FILE_SIZE must be a positive integer number of bytes or use a GiB/MiB suffix (e.g. 2147483648, 2GiB, 512MiB), got %q", raw)
+	}
+	// 后缀会让乘积越界：先按上限比一次，别让一个写错的值绕成负数。
+	if size > math.MaxInt64/multiplier {
+		return 0, fmt.Errorf("MAX_FILE_SIZE value %q is too large", raw)
+	}
+	return size * multiplier, nil
 }
 
 // readDataDir 读 DATA_DIR：未设置或只写空白时用默认 /data。

@@ -6,6 +6,7 @@
  * - 错误体是 `{"detail": "..."}`，直接作为 ApiError.message（后端已本地化）。
  * - 下载必须带 Bearer：fetch 拿 blob → objectURL → 触发 <a download>，不能直接 location.href。
  */
+import { abortError, isAbortError } from "./abort";
 import { getLocale, t } from "./i18n";
 import { getSession, toLogin } from "./session";
 import type {
@@ -61,7 +62,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       ...init,
       headers: authHeaders((extraHeaders as Record<string, string> | undefined) ?? {}),
     });
-  } catch {
+  } catch (error) {
+    // 取消不是「网络异常」：把 AbortError 原样抛给调用方，由上传队列识别成 cancelled
+    if (isAbortError(error)) throw error;
     throw new ApiError(t("error.network"), 0);
   }
 
@@ -95,44 +98,80 @@ export async function listFiles(): Promise<FileItem[]> {
 }
 
 /** POST /api/check_file：服务端已有该 blob 时直接建记录（秒传）。 */
-export function checkFile(sha256: string, filename: string): Promise<CheckFileResponse> {
+export function checkFile(
+  sha256: string,
+  filename: string,
+  signal?: AbortSignal,
+): Promise<CheckFileResponse> {
   const body = new FormData();
   body.append("client_sha256", sha256);
   body.append("filename", filename);
-  return request<CheckFileResponse>("/api/check_file", { method: "POST", body });
+  return request<CheckFileResponse>("/api/check_file", { method: "POST", body, signal });
 }
 
 /**
  * POST /api/upload：用 XHR 而不是 fetch —— 只有 XHR 能拿到上传进度事件。
  * 必须手动带上 Bearer 头，不能依赖浏览器自动带。
+ *
+ * 可选 AbortSignal：队列点「取消」时 abort() 掉 XHR（服务端会丢弃临时文件），
+ * 这里统一 reject 一个 AbortError，让调用方识别成 cancelled 而不是 failed。
  */
 export function uploadFile(
   file: File,
   sha256: string,
   onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
 ): Promise<UploadResponse> {
   return new Promise<UploadResponse>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+
     const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      action();
+    };
+    const onAbort = (): void => {
+      xhr.abort();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
     xhr.open("POST", "/api/upload");
     const headers = authHeaders();
     for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
 
     xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
+      if (event.lengthComputable && !settled) {
         onProgress?.(Math.round((event.loaded / event.total) * 100));
       }
     });
 
     xhr.addEventListener("load", () => {
-      const payload = parseJson(xhr.responseText);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(payload as unknown as UploadResponse);
-        return;
-      }
-      if (xhr.status === 401) toLogin();
-      reject(new ApiError(detailOf(payload) || t("error.network"), xhr.status));
+      finish(() => {
+        const payload = parseJson(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(payload as unknown as UploadResponse);
+          return;
+        }
+        if (xhr.status === 401) toLogin();
+        reject(new ApiError(detailOf(payload) || t("error.network"), xhr.status));
+      });
     });
-    xhr.addEventListener("error", () => reject(new ApiError(t("error.network"), 0)));
+    xhr.addEventListener("error", () => {
+      finish(() => reject(new ApiError(t("error.network"), 0)));
+    });
+    xhr.addEventListener("abort", () => {
+      finish(() => reject(abortError()));
+    });
 
     const body = new FormData();
     body.append("file", file, file.name);

@@ -31,8 +31,8 @@ const (
 	ReadyzToken       = "test_readyz_token_0123456789"
 )
 
-// DefaultMaxUploadBytes 是测试实例的上传上限：比生产小得多，方便造 413。
-const DefaultMaxUploadBytes = 1 << 20
+// DefaultMaxFileSize 是测试实例的单文件大小上限：比生产小得多，方便造 413。
+const DefaultMaxFileSize = 1 << 20
 
 var (
 	tokenHashOnce sync.Once
@@ -56,7 +56,7 @@ func New(t *testing.T) *app.App {
 	return NewWith(t, nil)
 }
 
-// NewWith 同上，但允许先改一下 Config（例如关掉 READYZ_TOKEN 门槛、调小上传上限）。
+// NewWith 同上，但允许先改一下 Config（例如关掉 READYZ_TOKEN 门槛、调小文件大小上限）。
 func NewWith(t *testing.T, mutate func(*app.Config)) *app.App {
 	t.Helper()
 	cfg := app.Config{
@@ -65,7 +65,7 @@ func NewWith(t *testing.T, mutate func(*app.Config)) *app.App {
 		SessionSigningKey: SessionSigningKey,
 		AuthTokenHash:     authTokenHash(t),
 		ReadyzToken:       "",
-		MaxUploadBytes:    DefaultMaxUploadBytes,
+		MaxFileSize:       DefaultMaxFileSize,
 	}
 	if mutate != nil {
 		mutate(&cfg)

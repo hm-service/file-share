@@ -138,6 +138,57 @@ function resetSidebarWidth(): void {
 }
 
 
+/* ---------- 右侧整页拖拽上传 ---------- */
+
+/** UploadPanel 通过 defineExpose 暴露的入口：队列逻辑只有一份。 */
+interface UploadPanelApi {
+  addFiles(files: FileList | File[] | null | undefined): void;
+}
+
+const uploadPanel = ref<UploadPanelApi | null>(null);
+const dropActive = ref(false);
+
+/** 只接管「拖文件」：拖文本/链接时不弹覆盖层，也不改 dropEffect。 */
+function draggingFiles(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  for (const type of Array.from(types)) {
+    if (type === "Files") return true;
+  }
+  return false;
+}
+
+function onWorkspaceDragEnter(event: DragEvent): void {
+  if (!draggingFiles(event)) return;
+  event.preventDefault();
+  dropActive.value = true;
+}
+
+function onWorkspaceDragOver(event: DragEvent): void {
+  if (!draggingFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  // dragenter 在子元素之间移动时不一定可靠，dragover 持续兜底
+  dropActive.value = true;
+}
+
+function onWorkspaceDragLeave(event: DragEvent): void {
+  // 离开时不一定还能拿到 dataTransfer.types，所以这里不判断类型：覆盖层本来就是
+  // 文件拖拽才显示的，任何一次真正离开右半屏都应该收起来。
+  const current = event.currentTarget as Node;
+  const next = event.relatedTarget as Node | null;
+  if (next && current.contains(next)) return; // 还在右半屏里，不算离开
+  dropActive.value = false;
+}
+
+function onWorkspaceDrop(event: DragEvent): void {
+  dropActive.value = false;
+  if (!draggingFiles(event)) return;
+  event.preventDefault();
+  const files = event.dataTransfer?.files;
+  if (files && files.length > 0) uploadPanel.value?.addFiles(files);
+}
+
 function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
@@ -327,8 +378,19 @@ onBeforeUnmount(() => {
       <span class="splitter-grip" aria-hidden="true"><i></i><i></i><i></i></span>
     </div>
 
-    <main class="workspace">
-      <UploadPanel @uploaded="refresh" />
+    <main
+      class="workspace"
+      :class="{ 'is-drop-target': dropActive }"
+      @dragenter="onWorkspaceDragEnter"
+      @dragover="onWorkspaceDragOver"
+      @dragleave="onWorkspaceDragLeave"
+      @drop="onWorkspaceDrop"
+    >
+      <UploadPanel ref="uploadPanel" @uploaded="refresh" />
+      <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
+        <span class="drop-overlay-icon" v-html="ICONS.upload"></span>
+        <p class="drop-overlay-text">{{ t("upload.drop-overlay") }}</p>
+      </div>
     </main>
   </div>
 </template>

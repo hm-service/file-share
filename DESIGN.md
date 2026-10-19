@@ -38,7 +38,7 @@ Vue 3 + Vite + TypeScript；前端全量位于 `frontend/`，构建产物固定�
 | `MAX_AUTH_CONCURRENCY` | `32` | `/api/auth` 信号量槽位，>= 1 |
 | `MAX_API_CONCURRENCY` | `128` | 其余 `/api/*` 信号量槽位，>= 1 |
 | `MAX_STATIC_CONCURRENCY` | `64` | 页面/静态资源与 `/s/*` 信号量槽位，>= 1 |
-| `MAX_UPLOAD_BYTES` | `8589934592`（8 GiB） | 单次上传体上限，>= 1 |
+| `MAX_FILE_SIZE` | `2GiB`（2147483648 字节） | 单个上传文件上限；纯整数按字节，也支持 `GiB`/`MiB` 后缀（大小写不敏感） |
 | `GOMEMLIMIT` | — | 交给 Go 运行时自己处理，应用不读取 |
 | `AUTH_TOKEN` | 无，**必填** Secret | 16–128 字符 `[A-Za-z0-9_]`；登录令牌，启动时 Argon2id 哈希后原始值即从内存与环境表清除 |
 | `SESSION_SIGNING_KEY` | 无，**必填** Secret | 32–128 字符同上；会话 HMAC 签名密钥，读完从环境表删除；轮换即让全部会话下线 |
@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 主应用 | 左侧收藏 + 全部文件列表；右侧上传队列与拖拽区；文件行可收藏、下载、公开/私有、复制直链、删除 |
+| `/` | 主应用 | 左侧收藏 + 全部文件列表；右侧为上传按钮与上传队列，主区整块可拖放上传；文件行可收藏、下载、公开/私有、复制直链、删除 |
 | `/auth` | 登录页 | 输入 `AUTH_TOKEN` 换取会话；成功后进入主应用 |
 
 前端为两个独立 HTML 入口（`index.html` / `auth.html`），不引入路由库；
@@ -90,6 +90,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 `Accept-Language` 传给后端。页面不含内联脚本、不引用外部资源。
 
 - 未登录访问主应用会被重定向到 `/auth`；接口返回 401 时前端清除会话并跳转。
+- 上传队列支持取消（中断请求，状态记为已取消）与重试（重新排队）；桌面端右侧整片区域都是拖放目标，
+  拖入文件时显示覆盖层提示，松开即入队。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
 - 侧栏与主区之间有可拖拽分隔条：可拖拽或用左右方向键调整宽度，双击恢复默认；
   宽度占比存在 `localStorage`（`file-share.sidebar-ratio`）。
@@ -126,7 +128,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | DELETE | `/api/files/{id}` | 删除记录；无引用后删除物理文件；返回 204 |
 
 上传约束：字段顺序不限；服务端边收边算哈希，与客户端指纹不符即失败并清理临时文件；
-超过 `MAX_UPLOAD_BYTES` 返回 413；同内容并发上传只保留一份物理文件、每条上传各一条记录。
+单文件超过 `MAX_FILE_SIZE` 返回 413；同内容并发上传只保留一份物理文件、每条上传各一条记录。
+取消上传由前端 `AbortController`/`XHR.abort()` 中断请求，服务端按失败路径清理临时文件，不留下半截数据。
 
 ### 6.3 公开下载（无需登录）
 
@@ -152,7 +155,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
   `X-Frame-Options: DENY`、严格 CSP
   （`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';`）。
-- 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、秒传表单 1 MiB、上传 `MAX_UPLOAD_BYTES`；
+- 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、秒传表单 1 MiB、上传 `MAX_FILE_SIZE`；
   文件名只取 basename 并做长度/字符校验。
 - 并发闸门：认证、业务 API、静态资源/公开下载各自独立信号量；Argon2id 计算并发受认证闸门约束。
 - 反代职责：TLS、限流、访问控制在反向代理完成；应用只信任 `TRUSTED_PROXIES` 内的转发头。

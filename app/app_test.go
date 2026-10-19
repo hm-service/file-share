@@ -34,7 +34,7 @@ func TestOpenTightensDataLayout(t *testing.T) {
 		DataDir:           dataDir,
 		SessionSigningKey: testenv.SessionSigningKey,
 		AuthTokenHash:     "not-used-in-this-test",
-		MaxUploadBytes:    testenv.DefaultMaxUploadBytes,
+		MaxFileSize:       testenv.DefaultMaxFileSize,
 	})
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
@@ -73,7 +73,7 @@ func TestOpenRejectsLegacyData(t *testing.T) {
 				DataDir:           dataDir,
 				SessionSigningKey: testenv.SessionSigningKey,
 				AuthTokenHash:     "hash",
-				MaxUploadBytes:    1024,
+				MaxFileSize:       1024,
 			})
 			if err == nil {
 				t.Fatalf("发现旧数据 %s 时 Open() 应当报错", legacy)
@@ -110,7 +110,7 @@ func TestOpenCleansAndTightensFiles(t *testing.T) {
 		DataDir:           dataDir,
 		SessionSigningKey: testenv.SessionSigningKey,
 		AuthTokenHash:     "hash",
-		MaxUploadBytes:    1024,
+		MaxFileSize:       1024,
 	})
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
@@ -134,9 +134,9 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 		name string
 		cfg  app.Config
 	}{
-		{name: "缺 DATA_DIR", cfg: app.Config{SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 1}},
-		{name: "DATA_DIR 不存在", cfg: app.Config{DataDir: filepath.Join(t.TempDir(), "missing"), SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 1}},
-		{name: "上传上限为 0", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 0}},
+		{name: "缺 DATA_DIR", cfg: app.Config{SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 1}},
+		{name: "DATA_DIR 不存在", cfg: app.Config{DataDir: filepath.Join(t.TempDir(), "missing"), SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 1}},
+		{name: "文件大小上限为 0", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 0}},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
@@ -154,7 +154,7 @@ func TestOpenRequiresExistingDataDir(t *testing.T) {
 		DataDir:           missing,
 		SessionSigningKey: testenv.SessionSigningKey,
 		AuthTokenHash:     "hash",
-		MaxUploadBytes:    1024,
+		MaxFileSize:       1024,
 	})
 	if err == nil {
 		t.Fatal("DATA_DIR 不存在时 Open() 应当报错")
@@ -338,7 +338,7 @@ func TestFinishUploadErrorPathsCleanTempFiles(t *testing.T) {
 }
 
 func TestFinishUploadTooBig(t *testing.T) {
-	instance := testenv.NewWith(t, func(cfg *app.Config) { cfg.MaxUploadBytes = 4 })
+	instance := testenv.NewWith(t, func(cfg *app.Config) { cfg.MaxFileSize = 4 })
 	upload, err := instance.NewUpload()
 	if err != nil {
 		t.Fatalf("NewUpload() 报错: %v", err)

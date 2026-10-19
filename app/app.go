@@ -28,7 +28,7 @@ type Config struct {
 	SessionSigningKey string
 	AuthTokenHash     string
 	ReadyzToken       string
-	MaxUploadBytes    int64
+	MaxFileSize       int64
 }
 
 // App 持有全部跨请求状态。
@@ -52,8 +52,8 @@ func Open(cfg Config) (*App, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("DATA_DIR is required")
 	}
-	if cfg.MaxUploadBytes < 1 {
-		return nil, errors.New("MAX_UPLOAD_BYTES must be >= 1")
+	if cfg.MaxFileSize < 1 {
+		return nil, errors.New("MAX_FILE_SIZE must be >= 1")
 	}
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return nil, err

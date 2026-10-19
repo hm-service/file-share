@@ -34,9 +34,9 @@ export type MessageKey =
   | "nav.all-files"
   | "nav.empty-favorites"
   | "nav.empty-files"
-  | "upload.drop-title"
-  | "upload.pick-title"
-  | "upload.drop-hint"
+  | "upload.button"
+  | "upload.hint"
+  | "upload.drop-overlay"
   | "upload.queue-title"
   | "upload.status.pending"
   | "upload.status.hashing"
@@ -45,6 +45,9 @@ export type MessageKey =
   | "upload.status.instant"
   | "upload.status.done"
   | "upload.status.failed"
+  | "upload.status.cancelled"
+  | "upload.action.cancel"
+  | "upload.action.retry"
   | "upload.action.remove"
   | "action.favorite"
   | "action.unfavorite"
@@ -80,12 +83,12 @@ const messages: Record<MessageKey, Message> = {
   "nav.all-files": { zh: "全部文件", en: "All Files" },
   "nav.empty-favorites": { zh: "暂无收藏", en: "No favorites yet" },
   "nav.empty-files": { zh: "库中暂无文件", en: "No files yet" },
-  "upload.drop-title": { zh: "点击或将文件拖拽至此处", en: "Click or drag files here" },
-  "upload.pick-title": { zh: "点击选择文件上传", en: "Tap to choose files" },
-  "upload.drop-hint": {
-    zh: "支持超大文件，自动秒传校验",
-    en: "Large files supported, instant upload checked",
+  "upload.button": { zh: "上传文件", en: "Upload files" },
+  "upload.hint": {
+    zh: "或将文件拖到右侧任意区域",
+    en: "or drop files anywhere on this side",
   },
+  "upload.drop-overlay": { zh: "松开鼠标即可上传", en: "Drop to upload" },
   "upload.queue-title": { zh: "上传队列", en: "Upload Queue" },
   "upload.status.pending": { zh: "等待中…", en: "Waiting…" },
   "upload.status.hashing": { zh: "本地计算指纹 {percent}%", en: "Computing checksum {percent}%" },
@@ -97,6 +100,9 @@ const messages: Record<MessageKey, Message> = {
   "upload.status.instant": { zh: "秒传成功", en: "Instant upload succeeded" },
   "upload.status.done": { zh: "上传完成", en: "Upload complete" },
   "upload.status.failed": { zh: "上传失败", en: "Upload failed" },
+  "upload.status.cancelled": { zh: "已取消", en: "Cancelled" },
+  "upload.action.cancel": { zh: "取消", en: "Cancel" },
+  "upload.action.retry": { zh: "重试", en: "Retry" },
   "upload.action.remove": { zh: "移除", en: "Remove" },
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },

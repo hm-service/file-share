@@ -471,11 +471,11 @@ func TestUpload(t *testing.T) {
 }
 
 func TestUploadSizeLimit(t *testing.T) {
-	instance := testenv.NewWith(t, func(cfg *app.Config) { cfg.MaxUploadBytes = 64 })
+	instance := testenv.NewWith(t, func(cfg *app.Config) { cfg.MaxFileSize = 64 })
 	handler := api.NewHandler(instance)
 	token := testenv.Token(t, instance)
 
-	t.Run("文件超过 MAX_UPLOAD_BYTES", func(t *testing.T) {
+	t.Run("文件超过 MAX_FILE_SIZE", func(t *testing.T) {
 		content := bytes.Repeat([]byte("x"), 100)
 		recorder := uploadRequest(t, handler, token, "big.bin", content, testenv.SHA256(content), true)
 		assertJSONError(t, recorder, http.StatusRequestEntityTooLarge, "文件超过上传上限")
