@@ -374,16 +374,16 @@ func TestReadMaxUploadBytes(t *testing.T) {
 
 func TestReadDataDir(t *testing.T) {
 	t.Setenv("DATA_DIR", "")
-	if _, err := readDataDir(); err == nil {
-		t.Error("没设 DATA_DIR 应当报错")
+	if got := readDataDir(); got != defaultDataDir {
+		t.Errorf("没设 DATA_DIR 时 = %q，想要默认 %q", got, defaultDataDir)
 	}
 	t.Setenv("DATA_DIR", "   ")
-	if _, err := readDataDir(); err == nil {
-		t.Error("只写空白也算没设")
+	if got := readDataDir(); got != defaultDataDir {
+		t.Errorf("只写空白时 = %q，想要默认 %q", got, defaultDataDir)
 	}
-	t.Setenv("DATA_DIR", "/tmp/data")
-	if got, err := readDataDir(); err != nil || got != "/tmp/data" {
-		t.Errorf("readDataDir() = %q, %v", got, err)
+	t.Setenv("DATA_DIR", " /tmp/data ")
+	if got := readDataDir(); got != "/tmp/data" {
+		t.Errorf("readDataDir() = %q", got)
 	}
 }
 
@@ -483,11 +483,24 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("DATA_DIR 未设置时用默认 /data", func(t *testing.T) {
+		t.Setenv("DATA_DIR", "")
+		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("READYZ_TOKEN", "")
+		cfg, _, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() 报错: %v", err)
+		}
+		if cfg.app.DataDir != defaultDataDir {
+			t.Errorf("DataDir = %q，想要默认 %q", cfg.app.DataDir, defaultDataDir)
+		}
+	})
+
 	missingCases := []struct {
 		name   string
 		mutate func()
 	}{
-		{name: "缺 DATA_DIR", mutate: func() { t.Setenv("DATA_DIR", "") }},
 		{name: "缺 AUTH_TOKEN", mutate: func() { t.Setenv("AUTH_TOKEN", "") }},
 		{name: "缺 SESSION_SIGNING_KEY", mutate: func() { t.Setenv("SESSION_SIGNING_KEY", "") }},
 		{name: "AUTH_TOKEN 太短", mutate: func() { t.Setenv("AUTH_TOKEN", "short") }},

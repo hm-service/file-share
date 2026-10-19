@@ -27,6 +27,9 @@ const shutdownTimeout = 5 * time.Second
 // defaultMaxUploadBytes 是单次上传体上限的默认值（8 GiB）。
 const defaultMaxUploadBytes = 8 << 30 // 8589934592
 
+// defaultDataDir 是未设置 DATA_DIR 时的默认数据目录：容器部署时 /data 由卷挂载进来。
+const defaultDataDir = "/data"
+
 // initLogger 把默认 logger 换成输出到 stdout 的 JSON handler，
 // 时间字段按约定叫 timestamp。
 func initLogger() {
@@ -185,10 +188,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if limits, err = readConcurrencyLimits(); err != nil {
 		return zero, limits, err
 	}
-	dataDir, err := readDataDir()
-	if err != nil {
-		return zero, limits, err
-	}
+	dataDir := readDataDir()
 	maxUploadBytes, err := readMaxUploadBytes()
 	if err != nil {
 		return zero, limits, err
@@ -333,13 +333,14 @@ func readMaxUploadBytes() (int64, error) {
 	return value, nil
 }
 
-// readDataDir 读 DATA_DIR：必填；目录的创建与权限收紧由 app.Open 负责。
-func readDataDir() (string, error) {
-	value := os.Getenv("DATA_DIR")
-	if strings.TrimSpace(value) == "" {
-		return "", errors.New("DATA_DIR must be set")
+// readDataDir 读 DATA_DIR：未设置或只写空白时用默认 /data。
+// 目录必须已经存在（卷挂载或部署方手工建），由 app.Open 校验并收紧权限 —— 缺了就当场失败，
+// 不顺手建一个目录把写错的部署掩盖过去。
+func readDataDir() string {
+	if value := strings.TrimSpace(os.Getenv("DATA_DIR")); value != "" {
+		return value
 	}
-	return value, nil
+	return defaultDataDir
 }
 
 // readSecret 读一个凭据类环境变量：长度与字符集都对得上才收，读完立刻从进程环境表里删掉 ——

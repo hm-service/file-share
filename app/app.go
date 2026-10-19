@@ -94,15 +94,15 @@ func Open(cfg Config) (*App, error) {
 	}, nil
 }
 
-// prepareDataDir 建出 / 检查数据目录，并在动手之前拦下旧版数据。
-// 旧版把状态放在 files.db 与 favorite.json 里；不迁移，发现就要求清空重来。
+// prepareDataDir 只认已经存在的数据目录：目录由部署方交进来（卷挂载、手工建），
+// 缺了就当场失败，不顺手建一个把路径写错的部署掩盖过去。确认存在后收紧到 0700，
+// 再写一个探针文件确认真的可写 —— 别等第一次落盘才发现。
+// 动手之前先拦下旧版数据：旧版把状态放在 files.db 与 favorite.json 里，不迁移。
 func prepareDataDir(dataDir string) error {
 	info, err := os.Stat(dataDir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if err := os.MkdirAll(dataDir, core.DataDirPerm); err != nil {
-			return fmt.Errorf("create DATA_DIR: %w", err)
-		}
+		return fmt.Errorf("DATA_DIR %s does not exist; create it or mount a volume there", dataDir)
 	case err != nil:
 		return fmt.Errorf("stat DATA_DIR: %w", err)
 	case !info.IsDir():
@@ -117,7 +117,17 @@ func prepareDataDir(dataDir string) error {
 			return fmt.Errorf("stat legacy data file %s: %w", legacy, statErr)
 		}
 	}
-	return core.TightenPerm(dataDir, core.DataDirPerm)
+	if err := core.TightenPerm(dataDir, core.DataDirPerm); err != nil {
+		return fmt.Errorf("tighten DATA_DIR: %w", err)
+	}
+	probe := filepath.Join(dataDir, ".startup")
+	if err := os.WriteFile(probe, []byte("ok"), core.SecretPerm); err != nil {
+		return fmt.Errorf("DATA_DIR %s is not writable: %w", dataDir, err)
+	}
+	if err := os.Remove(probe); err != nil {
+		return fmt.Errorf("remove DATA_DIR probe: %w", err)
+	}
+	return nil
 }
 
 func removeLeftoverUploads(filesDir string) error {

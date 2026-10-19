@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,8 +24,12 @@ func assertBusinessError(t *testing.T, err error, status int, key string) {
 	}
 }
 
-func TestOpenCreatesDataLayout(t *testing.T) {
+func TestOpenTightensDataLayout(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
+	// DATA_DIR 由部署方交进来，必须先存在；这里用 0755 建出来，验证启动时被收紧。
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("准备 DATA_DIR 失败: %v", err)
+	}
 	instance, err := app.Open(app.Config{
 		DataDir:           dataDir,
 		SessionSigningKey: testenv.SessionSigningKey,
@@ -130,6 +135,7 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 		cfg  app.Config
 	}{
 		{name: "缺 DATA_DIR", cfg: app.Config{SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 1}},
+		{name: "DATA_DIR 不存在", cfg: app.Config{DataDir: filepath.Join(t.TempDir(), "missing"), SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 1}},
 		{name: "上传上限为 0", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", AuthTokenHash: "hash", MaxUploadBytes: 0}},
 	}
 	for _, item := range cases {
@@ -138,6 +144,26 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 				t.Fatal("坏配置应当打不开")
 			}
 		})
+	}
+}
+
+// DATA_DIR 缺了要当场报错，不顺手建一个把写错的部署掩盖过去。
+func TestOpenRequiresExistingDataDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	_, err := app.Open(app.Config{
+		DataDir:           missing,
+		SessionSigningKey: testenv.SessionSigningKey,
+		AuthTokenHash:     "hash",
+		MaxUploadBytes:    1024,
+	})
+	if err == nil {
+		t.Fatal("DATA_DIR 不存在时 Open() 应当报错")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("错误信息没点明目录不存在: %v", err)
+	}
+	if _, statErr := os.Stat(missing); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("不该顺手创建 DATA_DIR: %v", statErr)
 	}
 }
 

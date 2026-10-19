@@ -38,13 +38,15 @@ just run
 打开 <http://127.0.0.1:8080>，在 `/auth` 输入 `AUTH_TOKEN` 登录。
 停止服务：`just stop`（按端口定位本项目进程并发送 SIGINT）。
 
+`DATA_DIR` 未设置时默认 `/data`（容器内由卷挂载）；本机 `just run` 会建好 `./.data` 并传入。
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `8080` | 监听地址与端口 |
 | `TZ` | 空（Go 默认） | 日志时区，设置时必须是合法时区名 |
-| `DATA_DIR` | 无，必填 | 数据目录（SQLite + 物理文件） |
+| `DATA_DIR` | `/data` | 数据目录（SQLite + 物理文件）；目录必须已存在且可读可写 |
 | `TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 可信反向代理来源，只有这些来源的转发头才被采信 |
 | `MAX_AUTH_CONCURRENCY` / `MAX_API_CONCURRENCY` / `MAX_STATIC_CONCURRENCY` | `32` / `128` / `64` | 三组独立并发闸门 |
 | `MAX_UPLOAD_BYTES` | `8589934592` | 单次上传体上限（8 GiB） |

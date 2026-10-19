@@ -33,7 +33,7 @@ Vue 3 + Vite + TypeScript；前端全量位于 `frontend/`，构建产物固定�
 | `HOST` | `127.0.0.1` | IP 或合法主机名；监听地址 |
 | `PORT` | `8080` | 1–65535 整数 |
 | `TZ` | 空（Go 默认） | 设置时必须是合法时区名；影响日志时间戳 |
-| `DATA_DIR` | 无，**必填** | 全部状态所在目录；不存在时以 0700 创建 |
+| `DATA_DIR` | `/data` | 全部状态所在目录；必须已存在且可读可写（卷挂载或部署方手工建），启动时收紧到 0700 |
 | `TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 逗号分隔 CIDR/IP；只有来自这些地址的 `X-Forwarded-For` 才可信 |
 | `MAX_AUTH_CONCURRENCY` | `32` | `/api/auth` 信号量槽位，>= 1 |
 | `MAX_API_CONCURRENCY` | `128` | 其余 `/api/*` 信号量槽位，>= 1 |
