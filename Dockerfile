@@ -1,47 +1,61 @@
 # ==========================================
-# 第一阶段：构建
+# 第一阶段：构建前端
 # ==========================================
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:26.7.0-alpine AS frontend
 
-# TARGETOS / TARGETARCH 由 BuildKit 根据 --platform 自动注入，
-# 用 buildx 构建 amd64/arm64 时会分别得到 linux/amd64 与 linux/arm64
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# 版本在模板生成时注入
+RUN npm install -g pnpm@11.28.5
 
-# 设置 Go 环境变量
-# CGO_ENABLED=0: 禁用 CGO，确保编译出纯静态链接的二进制文件，这对于在 alpine 或 scratch 中运行至关重要
-# GOOS/GOARCH 跟随目标平台，而不是写死 amd64
-ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
+WORKDIR /build/frontend
 
-# 设置工作目录
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend/ ./
+RUN pnpm build
+
+# ==========================================
+# 第二阶段：构建 Go 二进制
+# ==========================================
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+# CGO_ENABLED=0：纯静态链接，运行时不需要 libc
+ENV CGO_ENABLED=0
+
+# Go 模块代理：默认走国内镜像（海外构建可用 --build-arg GOPROXY=https://proxy.golang.org,direct 覆盖）
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
 WORKDIR /build
 
-COPY go.mod go.sum ./
+COPY go.* ./
 RUN go mod download
 
 COPY . .
+COPY --from=frontend /build/frontend/dist ./frontend/dist
 
-# -ldflags="-w -s": 移除调试信息和符号表，能显著减小编译后的二进制文件体积
-RUN go build -ldflags="-w -s" -o file-share main.go
+# -ldflags="-w -s"：移除调试信息与符号表，明显减小二进制
+# -trimpath 从编译后的可执行文件中移除所有本地文件系统路径，以生成可复现的构建结果
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -trimpath -o app.bin .
 
 # ==========================================
-# 第二阶段：运行
+# 第三阶段：运行
 # ==========================================
 FROM alpine:3
 
-ENV TZ=Asia/Shanghai
-ENV PORT=8080
-
-RUN addgroup -g 1000 service && \
-    adduser -u 1000 -D -G service -s /bin/sh service
-RUN mkdir -p /app && chown 1000:1000 /app
-
-COPY --from=builder /build/file-share /app
-
-EXPOSE 8080
-
-VOLUME [ "/data" ]
+# Podman 会把 kube 的 httpGet 存活探针翻译成 `curl -f <url> || exit 1` 在容器里执行，
+# 镜像里没有 curl 探针就恒失败，容器会被反复判 unhealthy 后重启。
+RUN apk --no-cache add ca-certificates curl tzdata
 
 WORKDIR /app
-USER 1000:1000
-CMD ["./file-share"]
+
+# 运行时只有这一个二进制：前端产物已经 go:embed 进去，frontend/ 整个不进最终镜像
+COPY --from=builder /build/app.bin .
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+CMD ["./app.bin"]

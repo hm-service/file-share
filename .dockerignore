@@ -1,34 +1,20 @@
-# 版本控制
-.git
-.github
-.gitignore
-
-# 构建产物与预编译二进制
-dist
-*.exe
-*.test
-
-# 构建与本地工具文件
-Dockerfile
-Makefile
+# 约定：本地 / 临时目录一律以 . 开头，一律不进构建上下文；frontend/ 的源码要进 ——
+#       前端阶段得靠它构建，构建产物（frontend/dist）则由该阶段自己生成。
+#
+# 这里排掉的路径若被 go:embed 引用（例如 docs/），镜像里就会缺文件、编译失败，
+#       到时候把对应行删掉。
+.*
+/frontend/node_modules/
+/frontend/dist/
 
 # 环境变量与日志
-.env
 *.log
 
-# 编辑器 / IDE
-.idea
-.vscode
-*.swp
-
-# Codex 工具目录
-.agents
-.codex
-
-# Python 运行时（Go 版不需要）
-.venv
-__pycache__
-*.py[cod]
-
-# 运行数据（挂载卷，不入镜像）
-data
+# 构建镜像用不到的文档与部署描述
+/docs/
+/README.md
+/DESIGN.md
+/AGENTS.md
+/k8s.*.yaml
+/*.kube
+/justfile

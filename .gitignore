@@ -1,21 +1,10 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# 约定：本地 / 临时目录一律以 . 开头，除 .github/ 与 .vscode/（它们是真正的源码）外都不入库
+.*
+!.github/
+!.vscode/
+!.gitignore
+!.dockerignore
 
-# Virtual environments
-.venv
-
-# AI
-.codex
-.agents
-.claude
-
-# Data
-/data
-
-# dist
-/dist
+# 前端依赖与构建产物（产物由 just frontend 生成，最后被 go:embed 嵌进二进制）
+/frontend/node_modules/
+/frontend/dist/

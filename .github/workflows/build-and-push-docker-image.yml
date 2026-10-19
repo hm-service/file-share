@@ -4,10 +4,75 @@ on:
     push:
         branches:
             - main
+        paths-ignore:
+            - "AGENTS.md"
+            - "DESIGN.md"
+            - "justfile"
+            - "k8s.file-share.yaml"
+            - "file-share.kube"
+            - "LICENSE"
+            - "README.md"
+            - "docs/**"
+            - ".gitignore"
     workflow_dispatch:
 
 jobs:
+    test-go:
+        runs-on: ubuntu-latest
+
+        permissions:
+            contents: read
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Set up Go
+              uses: actions/setup-go@v7
+              with:
+                  go-version-file: go.mod
+                  cache: true
+
+            # go:embed 要求编译期 frontend/dist 里有可嵌入文件
+            - name: Stub frontend/dist
+              run: mkdir -p frontend/dist && touch frontend/dist/STUB
+
+            - name: go vet
+              run: go vet ./...
+
+            - name: go test
+              run: go test ./... -count=1
+
+    test-frontend:
+        runs-on: ubuntu-latest
+
+        permissions:
+            contents: read
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Set up pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 11.28.5
+
+            - name: Set up Node
+              uses: actions/setup-node@v7
+              with:
+                  node-version: 26.7.0
+                  cache: pnpm
+                  cache-dependency-path: frontend/pnpm-lock.yaml
+
+            - name: Install
+              run: cd frontend && pnpm install --frozen-lockfile
+
+            - name: Type check
+              run: cd frontend && pnpm typecheck
+
     build-and-push:
+        needs: [test-go, test-frontend]
         runs-on: ubuntu-latest
 
         permissions:
@@ -21,7 +86,8 @@ jobs:
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v4
 
-            # 在 x86_64 runner 上交叉构建 arm64 需要 QEMU 模拟
+            # 多架构构建时，amd64 runner 上要用 QEMU 跑 arm64 的运行时阶段（apk add）。
+            # 但构建阶段本身在 $BUILDPLATFORM 上跑，不经过模拟。
             - name: Set up QEMU
               uses: docker/setup-qemu-action@v4
 
@@ -53,11 +119,9 @@ jobs:
             - name: Build and push
               uses: docker/build-push-action@v7
               with:
-                  # 调整上下文目录
                   context: .
                   push: true
                   provenance: false
-                  # 同时构建并推送 amd64 与 arm64 两种架构
                   platforms: linux/amd64,linux/arm64
                   # 同时打上 latest 和 日期 tag
                   tags: |

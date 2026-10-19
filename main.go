@@ -1,435 +1,362 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"database/sql"
-	"embed"
-	"encoding/hex"
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"strconv"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"file-share/api"
+	"file-share/app"
+	"file-share/core"
 )
 
-//go:embed static
-var staticFS embed.FS
+// shutdownTimeout 是优雅关闭的时限：等在手请求最多等这么久，超时就强制关掉，
+// 进程以 254 退出。
+const shutdownTimeout = 5 * time.Second
 
-var staticSub = mustSub(staticFS, "static")
+// defaultMaxUploadBytes 是单次上传体上限的默认值（8 GiB）。
+const defaultMaxUploadBytes = 8 << 30 // 8589934592
 
-func mustSub(fsys fs.FS, dir string) fs.FS {
-	sub, err := fs.Sub(fsys, dir)
-	if err != nil {
-		panic(err)
-	}
-	return sub
-}
-
-type app struct {
-	db       *sql.DB
-	dataDir  string
-	filesDir string
-	favPath  string
-	fileLock sync.Mutex
-	favMu    sync.Mutex
-}
-
-func newApp(dataDir string) (*app, error) {
-	a := &app{
-		dataDir:  dataDir,
-		filesDir: filepath.Join(dataDir, "files"),
-		favPath:  filepath.Join(dataDir, "favorite.json"),
-	}
-	for _, dir := range []string{a.dataDir, a.filesDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
-
-	var err error
-	a.db, err = sql.Open("sqlite", filepath.Join(dataDir, "files.db"))
-	if err != nil {
-		return nil, err
-	}
-	// 单连接串行访问，避免 SQLite 并发写入冲突
-	a.db.SetMaxOpenConns(1)
-
-	if _, err := a.db.Exec(`CREATE TABLE IF NOT EXISTS files (
-		id TEXT PRIMARY KEY,
-		filename TEXT NOT NULL,
-		sha256 TEXT NOT NULL,
-		update_time INTEGER NOT NULL
-	)`); err != nil {
-		return nil, err
-	}
-
-	if _, err := os.Stat(a.favPath); os.IsNotExist(err) {
-		if err := os.WriteFile(a.favPath, []byte("[]"), 0o644); err != nil {
-			return nil, err
-		}
-	}
-	return a, nil
-}
-
-func (a *app) routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", a.indexHandler)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
-	mux.HandleFunc("POST /api/check_file", a.checkFileHandler)
-	mux.HandleFunc("POST /api/upload", a.uploadHandler)
-	mux.HandleFunc("GET /api/files", a.listFilesHandler)
-	mux.HandleFunc("POST /api/favorite/{file_id}", a.toggleFavoriteHandler)
-	mux.HandleFunc("GET /api/download/{file_id}", a.downloadHandler)
-	mux.HandleFunc("DELETE /api/files/{file_id}", a.deleteHandler)
-	return mux
-}
-
-func (a *app) indexHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := staticFS.ReadFile("static/index.html")
-	if err != nil {
-		http.Error(w, "index.html 不存在", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
-}
-
-// 文件秒传预检
-func (a *app) checkFileHandler(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, "无效的 multipart 请求", http.StatusBadRequest)
-		return
-	}
-	clientSHA := strings.TrimSpace(r.FormValue("client_sha256"))
-	filename := r.FormValue("filename")
-	if !isValidSHA256(clientSHA) || filename == "" {
-		http.Error(w, "缺少或无效的 client_sha256 / filename", http.StatusBadRequest)
-		return
-	}
-
-	if _, err := os.Stat(filepath.Join(a.filesDir, clientSHA)); err == nil {
-		fileID := newID()
-		if _, err := a.db.Exec(
-			"INSERT INTO files (id, filename, sha256, update_time) VALUES (?, ?, ?, ?)",
-			fileID, filename, clientSHA, time.Now().Unix(),
-		); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"exists": true, "id": fileID, "message": "秒传成功"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"exists": false})
-}
-
-// 上传：流式写入临时文件 -> SHA256 校验 -> 重命名为正式文件 -> 写库
-func (a *app) uploadHandler(w http.ResponseWriter, r *http.Request) {
-	mr, err := r.MultipartReader()
-	if err != nil {
-		http.Error(w, "无效的 multipart 请求", http.StatusBadRequest)
-		return
-	}
-
-	var clientSHA, filename string
-	var serverSHA string
-	hasFile := false
-	// 字段顺序不固定，file 可能先于 client_sha256 到达，
-	// 因此遇到 file 时必须立即流式落盘，否则 NextPart() 会丢弃其内容
-	tempPath := filepath.Join(a.filesDir, ".upload-"+newID()+".tmp")
-
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			http.Error(w, "解析 multipart 失败", http.StatusBadRequest)
-			return
-		}
-		switch part.FormName() {
-		case "client_sha256":
-			b, _ := io.ReadAll(part)
-			clientSHA = strings.TrimSpace(string(b))
-		case "file":
-			filename = part.FileName()
-			f, err := os.Create(tempPath)
-			if err != nil {
-				http.Error(w, "创建临时文件失败", http.StatusInternalServerError)
-				return
+// initLogger 把默认 logger 换成输出到 stdout 的 JSON handler，
+// 时间字段按约定叫 timestamp。
+func initLogger() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				attr.Key = "timestamp"
 			}
-			hasFile = true
-			hasher := sha256.New()
-			if _, err := io.Copy(io.MultiWriter(f, hasher), part); err != nil {
-				f.Close()
-				os.Remove(tempPath)
-				http.Error(w, "读取上传数据失败", http.StatusBadRequest)
-				return
-			}
-			if err := f.Close(); err != nil {
-				os.Remove(tempPath)
-				http.Error(w, "关闭临时文件失败", http.StatusInternalServerError)
-				return
-			}
-			serverSHA = hex.EncodeToString(hasher.Sum(nil))
-		}
-	}
-	if !isValidSHA256(clientSHA) || !hasFile || filename == "" {
-		os.Remove(tempPath)
-		http.Error(w, "缺少 file 或 client_sha256", http.StatusBadRequest)
-		return
-	}
-
-	a.fileLock.Lock()
-	defer a.fileLock.Unlock()
-
-	fileID := newID()
-	finalPath := filepath.Join(a.filesDir, clientSHA)
-
-	if serverSHA != clientSHA {
-		os.Remove(tempPath)
-		http.Error(w, "文件哈希校验失败，上传数据可能已损坏或被篡改", http.StatusBadRequest)
-		return
-	}
-	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
-		if err := os.Rename(tempPath, finalPath); err != nil {
-			os.Remove(tempPath)
-			http.Error(w, "文件落盘失败", http.StatusInternalServerError)
-			return
-		}
-	} else {
-		// 物理文件已存在（秒传并发场景），丢弃本次上传内容，仅补一条记录
-		os.Remove(tempPath)
-	}
-
-	if _, err := a.db.Exec(
-		"INSERT INTO files (id, filename, sha256, update_time) VALUES (?, ?, ?, ?)",
-		fileID, filename, clientSHA, time.Now().Unix(),
-	); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"message": "上传成功", "id": fileID, "sha256": clientSHA})
+			return attr
+		},
+	})))
 }
 
-func (a *app) listFilesHandler(w http.ResponseWriter, r *http.Request) {
-	favSet := map[string]bool{}
-	if ids, err := a.loadFavorites(); err == nil {
-		for _, id := range ids {
-			favSet[id] = true
-		}
-	}
+// concurrencyLimits 是三个独立闸门的槽位数：认证、其余接口、静态文件。
+type concurrencyLimits struct {
+	auth, api, static int
+}
 
-	rows, err := a.db.Query("SELECT id, filename, sha256, update_time FROM files ORDER BY update_time DESC")
+type config struct {
+	app  app.Config
+	host string
+	port int
+}
+
+func main() { os.Exit(run()) }
+
+func run() int {
+	initLogger()
+
+	cfg, limits, err := loadConfig()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
+		slog.Error("init failed", slog.Any("error", err))
+		return 1
 	}
-	defer rows.Close()
-
-	type fileItem struct {
-		ID         string `json:"id"`
-		Filename   string `json:"filename"`
-		SHA256     string `json:"sha256"`
-		UpdateTime int64  `json:"update_time"`
-		Size       int64  `json:"size"`
-		IsFavorite bool   `json:"is_favorite"`
-	}
-	files := make([]fileItem, 0)
-	for rows.Next() {
-		var f fileItem
-		if err := rows.Scan(&f.ID, &f.Filename, &f.SHA256, &f.UpdateTime); err != nil {
-			continue
-		}
-		if st, err := os.Stat(filepath.Join(a.filesDir, f.SHA256)); err == nil {
-			f.Size = st.Size()
-		}
-		f.IsFavorite = favSet[f.ID]
-		files = append(files, f)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"files": files})
-}
-
-func (a *app) toggleFavoriteHandler(w http.ResponseWriter, r *http.Request) {
-	fileID := r.PathValue("file_id")
-
-	var one int
-	if err := a.db.QueryRow("SELECT 1 FROM files WHERE id = ?", fileID).Scan(&one); err != nil {
-		http.Error(w, "文件不存在", http.StatusNotFound)
-		return
-	}
-
-	a.favMu.Lock()
-	defer a.favMu.Unlock()
-
-	ids, err := a.loadFavorites()
+	instance, err := app.Open(cfg.app)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
+		slog.Error("init failed", slog.Any("error", err))
+		return 1
 	}
-	status := "favorited"
-	found := false
-	for i, id := range ids {
-		if id == fileID {
-			ids = append(ids[:i], ids[i+1:]...)
-			status = "unfavorited"
-			found = true
-			break
-		}
-	}
-	if !found {
-		ids = append(ids, fileID)
-	}
-	if err := a.saveFavorites(ids); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status})
-}
-
-func (a *app) downloadHandler(w http.ResponseWriter, r *http.Request) {
-	fileID := r.PathValue("file_id")
-
-	var filename, sha string
-	if err := a.db.QueryRow("SELECT filename, sha256 FROM files WHERE id = ?", fileID).Scan(&filename, &sha); err != nil {
-		http.Error(w, "文件记录不存在", http.StatusNotFound)
-		return
-	}
-	path := filepath.Join(a.filesDir, sha)
-	if _, err := os.Stat(path); err != nil {
-		http.Error(w, "物理文件已丢失", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=utf-8''%s", url.QueryEscape(filename)))
-	http.ServeFile(w, r, path)
-}
-
-func (a *app) deleteHandler(w http.ResponseWriter, r *http.Request) {
-	fileID := r.PathValue("file_id")
-
-	a.fileLock.Lock()
-	defer a.fileLock.Unlock()
-
-	var sha string
-	if err := a.db.QueryRow("SELECT sha256 FROM files WHERE id = ?", fileID).Scan(&sha); err != nil {
-		http.Error(w, "文件不存在", http.StatusNotFound)
-		return
-	}
-	if _, err := a.db.Exec("DELETE FROM files WHERE id = ?", fileID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
-		return
-	}
-
-	var refCount int
-	if err := a.db.QueryRow("SELECT COUNT(*) FROM files WHERE sha256 = ?", sha).Scan(&refCount); err == nil && refCount == 0 {
-		os.Remove(filepath.Join(a.filesDir, sha))
-	}
-
-	a.favMu.Lock()
-	if ids, err := a.loadFavorites(); err == nil {
-		for i, id := range ids {
-			if id == fileID {
-				ids = append(ids[:i], ids[i+1:]...)
-				break
-			}
-		}
-		_ = a.saveFavorites(ids)
-	}
-	a.favMu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]any{"message": "删除成功"})
-}
-
-func (a *app) loadFavorites() ([]string, error) {
-	data, err := os.ReadFile(a.favPath)
+	// 自己 Listen 而不是 ListenAndServe：先占住端口再打启动日志，端口写 0 时也只有这里看得到实际端口。
+	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port)))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
+		slog.Error("init failed", slog.Any("error", err))
+		instance.Close()
+		return 1
+	}
+	server := &http.Server{
+		Handler:           newRootHandler(instance, Dist, limits),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	slog.Info("server started",
+		slog.String("addr", listener.Addr().String()),
+		slog.String("data_dir", instance.Config.DataDir),
+		slog.String("start_at", time.Now().Format(time.RFC3339)),
+	)
+	return serve(server, listener, instance)
+}
+
+// newRootHandler 把两半接起来：站点外壳（web.go）管页面与静态资源，api 包管接口、探针与
+// 公开下载；接口按路由组各套一层独立闸门，外面再套共用的中间件（访问日志、安全头、语言协商）。
+func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) http.Handler {
+	routes := api.NewMux(instance)
+
+	// 公开下载与页面 / 静态资源同属「静态」一类，共用一个信号量。
+	static := http.NewServeMux()
+	static.Handle("/s/", routes)
+	static.Handle("/", siteHandler(files))
+	staticHandler := api.Concurrency(limits.static, static)
+
+	root := http.NewServeMux()
+	// 认证单独一组：它被打满不该把业务请求挤在后面；/readyz 自己一组、只给几个槽位；
+	// /livez 不设闸门 —— 只要进程活着就必须能回 200。落在 /api/ 下的新接口自动被认领。
+	root.Handle("/api/auth", api.Concurrency(limits.auth, routes))
+	root.Handle("/api/", api.Concurrency(limits.api, routes))
+	root.Handle("/readyz", api.Concurrency(api.ReadyzConcurrency, routes))
+	root.Handle("/livez", routes)
+	root.Handle("/s/", staticHandler)
+	root.Handle("/", staticHandler)
+	return api.Middleware(instance, root)
+}
+
+// serve 跑起服务并处理停止信号：第一次 SIGINT / SIGTERM 走优雅关闭，
+// 之后的信号交回默认处置 —— 卡在等待里时，再按一次 Ctrl-C 就该立刻结束。
+//
+// 返回值即进程退出码：正常关闭 0；Shutdown 超时被强制关闭 254；关库失败 255。
+func serve(server *http.Server, listener net.Listener, instance *app.App) int {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+
+	var received os.Signal
+	select {
+	case received = <-signals:
+		signal.Stop(signals)
+		slog.Info("shutdown signal received", slog.String("signal", signalName(received)))
+	case err := <-served:
+		if !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server exited with error", slog.Any("error", err))
+			instance.Close()
+			return 1
 		}
-		return nil, err
+		instance.Close()
+		return 0
 	}
-	var ids []string
-	if err := json.Unmarshal(data, &ids); err != nil {
-		return nil, err
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		slog.Error("graceful shutdown timed out", slog.Any("error", err))
+		server.Close()
+		instance.Close()
+		return 254
 	}
-	if ids == nil {
-		ids = []string{}
+	if err := instance.Close(); err != nil {
+		slog.Error("closing data store failed", slog.Any("error", err))
+		return 255
 	}
-	return ids, nil
+	slog.Info("server shutdown",
+		slog.String("signal", signalName(received)),
+		slog.String("stop_at", time.Now().Format(time.RFC3339)),
+	)
+	return 0
 }
 
-func (a *app) saveFavorites(ids []string) error {
-	data, err := json.MarshalIndent(ids, "", "  ")
+// signalName 把信号写成 SIGINT / SIGTERM 这样的规范名：Go 默认的 "interrupt" / "terminated"
+// 在运维侧不直观。
+func signalName(sig os.Signal) string {
+	switch sig {
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return sig.String()
+}
+
+// loadConfig 读并校验全部环境变量与 Secret；任何一项写错都让进程起不来。
+func loadConfig() (config, concurrencyLimits, error) {
+	var (
+		zero   config
+		limits concurrencyLimits
+	)
+	if err := checkTimezone(); err != nil {
+		return zero, limits, err
+	}
+	host, err := readHost()
 	if err != nil {
-		return err
+		return zero, limits, err
 	}
-	return os.WriteFile(a.favPath, data, 0o644)
+	port, err := readPort()
+	if err != nil {
+		return zero, limits, err
+	}
+	if limits, err = readConcurrencyLimits(); err != nil {
+		return zero, limits, err
+	}
+	dataDir, err := readDataDir()
+	if err != nil {
+		return zero, limits, err
+	}
+	maxUploadBytes, err := readMaxUploadBytes()
+	if err != nil {
+		return zero, limits, err
+	}
+	readyzToken, err := readSecret("READYZ_TOKEN", 16, 128)
+	if err != nil {
+		return zero, limits, err
+	}
+	authToken, err := readSecret("AUTH_TOKEN", 16, 128)
+	if err != nil {
+		return zero, limits, err
+	}
+	if authToken == "" {
+		return zero, limits, errors.New("AUTH_TOKEN must be set")
+	}
+	sessionKey, err := readSecret("SESSION_SIGNING_KEY", 32, 128)
+	if err != nil {
+		return zero, limits, err
+	}
+	if sessionKey == "" {
+		return zero, limits, errors.New("SESSION_SIGNING_KEY must be set")
+	}
+	// 认证令牌只留 Argon2id 摘要：读完立刻散列，明文不参与后续任何逻辑。
+	authTokenHash, err := core.HashToken(authToken)
+	if err != nil {
+		return zero, limits, fmt.Errorf("hash AUTH_TOKEN: %w", err)
+	}
+	return config{
+		app: app.Config{
+			DataDir:           dataDir,
+			TrustedProxies:    os.Getenv("TRUSTED_PROXIES"),
+			SessionSigningKey: sessionKey,
+			AuthTokenHash:     authTokenHash,
+			ReadyzToken:       readyzToken,
+			MaxUploadBytes:    maxUploadBytes,
+		},
+		host: host,
+		port: port,
+	}, limits, nil
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+// checkTimezone 读 TZ：设了就必须是 Go 认得的地名。名字写错时 Go 会静默退回 UTC，
+// 日志时间戳跟着错 —— 宁可在启动时报出来。
+func checkTimezone() error {
+	name := os.Getenv("TZ")
+	if name == "" {
+		return nil
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return fmt.Errorf("TZ is not a valid time zone name %q: %w", name, err)
+	}
+	return nil
 }
 
-func isValidSHA256(s string) bool {
-	if len(s) != 64 {
+// readHost 读 HOST：没设就用 127.0.0.1，设了就必须是 IP 或合法的 RFC 1123 主机名 ——
+// 带空格、斜杠的值会让 net.JoinHostPort 拼成另一个地址，宁可在启动时拦下。
+func readHost() (string, error) {
+	host := os.Getenv("HOST")
+	if host == "" {
+		return "127.0.0.1", nil
+	}
+	if net.ParseIP(host) == nil && !validHostname(host) {
+		return "", fmt.Errorf("HOST must be an IP address or a valid hostname, got %q", host)
+	}
+	return host, nil
+}
+
+// validHostname 按 RFC 1123 校验：点分标签各 1-63 字符 [A-Za-z0-9-]、不以连字符起止，总长 <= 253。
+func validHostname(host string) bool {
+	if len(host) > 253 {
 		return false
 	}
-	_, err := hex.DecodeString(s)
-	return err == nil
-}
-
-func newID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err) // crypto/rand 失败属于系统级错误
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
 		}
-		next.ServeHTTP(w, r)
-	})
+		for i, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-' && i > 0 && i < len(label)-1:
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// readPort 读 PORT：没设就用 8080，设了就必须是 1-65535 的整数。
+func readPort() (int, error) {
+	raw := os.Getenv("PORT")
+	if raw == "" {
+		return 8080, nil
 	}
-	return fallback
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 65535 {
+		return 0, fmt.Errorf("PORT must be an integer between 1 and 65535, got %q", raw)
+	}
+	return value, nil
 }
 
-func main() {
-	dataDir := envOr("DATA_DIR", "/data")
-	a, err := newApp(dataDir)
-	if err != nil {
-		log.Fatalf("初始化失败: %v", err)
+// readConcurrencyLimits 读三个槽位数，没设就用默认值。
+func readConcurrencyLimits() (concurrencyLimits, error) {
+	var limits concurrencyLimits
+	var err error
+	if limits.auth, err = readLimit("MAX_AUTH_CONCURRENCY", api.DefaultAuthConcurrency); err != nil {
+		return concurrencyLimits{}, err
 	}
+	if limits.api, err = readLimit("MAX_API_CONCURRENCY", api.DefaultAPIConcurrency); err != nil {
+		return concurrencyLimits{}, err
+	}
+	if limits.static, err = readLimit("MAX_STATIC_CONCURRENCY", api.DefaultStaticConcurrency); err != nil {
+		return concurrencyLimits{}, err
+	}
+	return limits, nil
+}
 
-	port := envOr("PORT", "8080")
-	addr := ":" + port
-	log.Printf("文件服务启动: http://0.0.0.0%s (DATA_DIR=%s)", addr, dataDir)
-	if err := http.ListenAndServe(addr, corsMiddleware(a.routes())); err != nil {
-		log.Fatalf("服务退出: %v", err)
+// readLimit 读一个正整数上限：没设就用默认值，设了就必须 >= 1 —— 信号量容量为 0
+// 会让服务永久排队，宁可在启动时就报错。
+func readLimit(name string, fallback int) (int, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback, nil
 	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return 0, fmt.Errorf("%s must be an integer >= 1, got %q", name, raw)
+	}
+	return value, nil
+}
+
+// readMaxUploadBytes 读单次上传体上限：默认 8 GiB，设了就必须是 >= 1 的整数。
+func readMaxUploadBytes() (int64, error) {
+	raw := os.Getenv("MAX_UPLOAD_BYTES")
+	if raw == "" {
+		return defaultMaxUploadBytes, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 1 {
+		return 0, fmt.Errorf("MAX_UPLOAD_BYTES must be an integer >= 1, got %q", raw)
+	}
+	return value, nil
+}
+
+// readDataDir 读 DATA_DIR：必填；目录的创建与权限收紧由 app.Open 负责。
+func readDataDir() (string, error) {
+	value := os.Getenv("DATA_DIR")
+	if strings.TrimSpace(value) == "" {
+		return "", errors.New("DATA_DIR must be set")
+	}
+	return value, nil
+}
+
+// readSecret 读一个凭据类环境变量：长度与字符集都对得上才收，读完立刻从进程环境表里删掉 ——
+// 免得子进程把它继承过去。留空返回空串，是否必填由调用方决定。
+func readSecret(name string, minLength, maxLength int) (string, error) {
+	value := os.Getenv(name)
+	_ = os.Unsetenv(name)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) < minLength || len(value) > maxLength {
+		return "", fmt.Errorf("%s must be %d-%d characters long, got %d", name, minLength, maxLength, len(value))
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return "", fmt.Errorf("%s may only contain letters, digits and underscores, got %q", name, r)
+		}
+	}
+	return value, nil
 }
