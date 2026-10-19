@@ -91,6 +91,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 - 未登录访问主应用会被重定向到 `/auth`；接口返回 401 时前端清除会话并跳转。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
+- 侧栏与主区之间有可拖拽分隔条：可拖拽或用左右方向键调整宽度，双击恢复默认；
+  宽度占比存在 `localStorage`（`file-share.sidebar-ratio`），窄屏（≤900px）上下堆叠时不显示。
 
 ## 6. 接口
 

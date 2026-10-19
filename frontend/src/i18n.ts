@@ -55,6 +55,8 @@ export type MessageKey =
   | "action.make-public"
   | "action.make-private"
   | "action.logout"
+  | "splitter.label"
+  | "splitter.hint"
   | "confirm.delete"
   | "meta.unknown-time"
   | "auth.title"
@@ -107,6 +109,11 @@ const messages: Record<MessageKey, Message> = {
   "action.make-public": { zh: "设为公开", en: "Make public" },
   "action.make-private": { zh: "设为私有", en: "Make private" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
+  "splitter.label": { zh: "调整侧栏宽度", en: "Resize sidebar" },
+  "splitter.hint": {
+    zh: "拖拽或按左右方向键调整宽度，双击恢复默认",
+    en: "Drag or use the arrow keys to resize; double-click to reset",
+  },
   "confirm.delete": {
     zh: "确定要删除记录“{name}”吗？",
     en: "Delete the record “{name}”?",

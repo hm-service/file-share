@@ -125,8 +125,9 @@ ul {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
+  /* 挂载前 / 窄屏回退；宽屏宽度由 App.vue 按 localStorage 里的占比写成内联 px。 */
   width: 33.333%;
-  min-width: 380px;
+  min-width: 0;
   height: 100%;
   border-right: 1px solid var(--line);
   background: var(--paper);
@@ -419,6 +420,71 @@ ul {
 
 .logout-icon {
   display: inline-flex;
+}
+
+/* ---------- 侧栏 / 主区分隔条 ---------- */
+
+/* 拖动条本身没有常驻装饰：悬停、聚焦或拖动时才浮现中间的 grip，界面保持干净。 */
+.panel-splitter {
+  position: relative;
+  flex: 0 0 10px;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.panel-splitter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.panel-splitter:hover::before,
+.panel-splitter:focus-visible::before,
+.app.is-splitting .panel-splitter::before {
+  background: var(--accent);
+}
+
+.splitter-grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity 120ms ease;
+}
+
+.splitter-grip i {
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.panel-splitter:hover .splitter-grip,
+.panel-splitter:focus-visible .splitter-grip,
+.app.is-splitting .splitter-grip {
+  opacity: 1;
+}
+
+.app.is-splitting {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* ---------- 右侧上传区 ---------- */
@@ -720,11 +786,20 @@ ul {
   .file-actions {
     opacity: 1;
   }
+
+  .splitter-grip {
+    opacity: 1;
+  }
 }
 
 @media (max-width: 900px) {
   .app {
     flex-direction: column;
+  }
+
+  /* 上下堆叠时没有左右分栏，分隔条收起。 */
+  .panel-splitter {
+    display: none;
   }
 
   .sidebar {
