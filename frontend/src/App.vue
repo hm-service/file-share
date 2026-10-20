@@ -1,15 +1,16 @@
 <script setup lang="ts">
 /**
- * 主页面（/）：左侧收藏 + 全部文件，右侧上传队列与拖拽区。
+ * 主页面（/）的界面壳：左侧导航 + 文件列表 + 浮动上传坞。
  *
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
  * （收藏 / 公开状态是全局的，上传完成后也可能出现新记录）。
+ * 拖放监听挂在主区域上：桌面端整个内容区都可以接文件，窄屏同样可用。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import FileRow from "@/components/FileRow.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
-import UploadPanel from "@/components/UploadPanel.vue";
+import UploadDock from "@/components/UploadDock.vue";
 import {
   ApiError,
   deleteFile,
@@ -29,165 +30,28 @@ const loadError = ref("");
 const actionError = ref("");
 let actionErrorTimer = 0;
 
+/** 当前视图与文件名过滤（纯前端，后端列表接口是全集）。 */
+const view = ref<"all" | "favorites">("all");
+const query = ref("");
+
+const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
+
 const favorites = computed(() => files.value.filter((file) => file.is_favorite));
-const others = computed(() => files.value.filter((file) => !file.is_favorite));
-
-/* ---------- 侧栏宽度分隔条 ---------- */
-
-/** 宽度占比存 localStorage；拖拽 / 左右方向键调整，双击恢复默认。 */
-const SIDEBAR_RATIO_KEY = "file-share.sidebar-ratio";
-const DEFAULT_SIDEBAR_RATIO = 1 / 3;
-const MIN_SIDEBAR_PX = 280;
-const MIN_WORKSPACE_PX = 360;
-const SPLITTER_PX = 10;
-const KEYBOARD_STEP_PX = 16;
-/** 与 CSS 的窄屏断点（max-width: 900px）保持一致：窄屏上下堆叠，不做左右分栏。 */
-const WIDE_LAYOUT_MIN_PX = 901;
-
-function readSidebarRatio(): number {
-  try {
-    const raw = Number(localStorage.getItem(SIDEBAR_RATIO_KEY));
-    if (Number.isFinite(raw) && raw > 0) {
-      return Math.min(Math.max(raw, 0.12), 0.85);
-    }
-  } catch {
-    /* 隐私模式读不到 localStorage：用默认占比 */
-  }
-  return DEFAULT_SIDEBAR_RATIO;
-}
-
-function persistSidebarRatio(): void {
-  try {
-    localStorage.setItem(SIDEBAR_RATIO_KEY, ratio.value.toFixed(4));
-  } catch {
-    /* 存不下只影响下次打开，不影响本次调整 */
-  }
-}
-
-const appEl = ref<HTMLElement | null>(null);
-const appWidth = ref(0);
-const ratio = ref(readSidebarRatio());
-const splitting = ref(false);
-let dragPointerId: number | null = null;
-let dragStartX = 0;
-let dragStartWidth = 0;
-let resizeObserver: ResizeObserver | undefined;
-
-const maxSidebarWidth = computed(() =>
-  Math.max(MIN_SIDEBAR_PX, appWidth.value - MIN_WORKSPACE_PX - SPLITTER_PX),
+const visibleFiles = computed(() => {
+  const base = view.value === "favorites" ? favorites.value : files.value;
+  const keyword = query.value.trim().toLowerCase();
+  if (!keyword) return base;
+  return base.filter((file) => file.filename.toLowerCase().includes(keyword));
+});
+const pageTitle = computed(() =>
+  view.value === "favorites" ? t("nav.favorites") : t("nav.all-files"),
 );
+const emptyKey = computed(() => {
+  if (query.value.trim()) return "nav.no-results" as const;
+  return view.value === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-all" as const);
+});
 
-function clampSidebarWidth(width: number): number {
-  return Math.min(Math.max(width, MIN_SIDEBAR_PX), maxSidebarWidth.value);
-}
-
-const sidebarWidth = computed(() => clampSidebarWidth(ratio.value * appWidth.value));
-// 窄屏宽度交给 CSS；宽屏用内联 px，拖拽时才能跟手。
-const sidebarStyle = computed(() =>
-  appWidth.value >= WIDE_LAYOUT_MIN_PX ? { width: `${sidebarWidth.value}px` } : undefined,
-);
-const sidebarPercent = computed(() =>
-  appWidth.value > 0 ? Math.round((sidebarWidth.value / appWidth.value) * 100) : 33,
-);
-const minSidebarPercent = computed(() =>
-  appWidth.value > 0 ? Math.ceil((MIN_SIDEBAR_PX / appWidth.value) * 100) : 0,
-);
-const maxSidebarPercent = computed(() =>
-  appWidth.value > 0 ? Math.floor((maxSidebarWidth.value / appWidth.value) * 100) : 100,
-);
-
-function setSidebarWidth(width: number): void {
-  ratio.value = clampSidebarWidth(width) / appWidth.value;
-}
-
-function onSplitterPointerDown(event: PointerEvent): void {
-  if (event.button !== 0 || appWidth.value < WIDE_LAYOUT_MIN_PX) return;
-  event.preventDefault();
-  splitting.value = true;
-  dragPointerId = event.pointerId;
-  dragStartX = event.clientX;
-  dragStartWidth = sidebarWidth.value;
-  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-}
-
-function onSplitterPointerMove(event: PointerEvent): void {
-  if (!splitting.value || event.pointerId !== dragPointerId) return;
-  setSidebarWidth(dragStartWidth + (event.clientX - dragStartX));
-}
-
-function onSplitterPointerUp(event: PointerEvent): void {
-  if (!splitting.value) return;
-  splitting.value = false;
-  dragPointerId = null;
-  const target = event.currentTarget as HTMLElement;
-  if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-  persistSidebarRatio();
-}
-
-function onSplitterKeydown(event: KeyboardEvent): void {
-  const step = event.shiftKey ? KEYBOARD_STEP_PX * 3 : KEYBOARD_STEP_PX;
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-  event.preventDefault();
-  setSidebarWidth(sidebarWidth.value + (event.key === "ArrowLeft" ? -step : step));
-  persistSidebarRatio();
-}
-
-function resetSidebarWidth(): void {
-  ratio.value = DEFAULT_SIDEBAR_RATIO;
-  persistSidebarRatio();
-}
-
-
-/* ---------- 右侧整页拖拽上传 ---------- */
-
-/** UploadPanel 通过 defineExpose 暴露的入口：队列逻辑只有一份。 */
-interface UploadPanelApi {
-  addFiles(files: FileList | File[] | null | undefined): void;
-}
-
-const uploadPanel = ref<UploadPanelApi | null>(null);
-const dropActive = ref(false);
-
-/** 只接管「拖文件」：拖文本/链接时不弹覆盖层，也不改 dropEffect。 */
-function draggingFiles(event: DragEvent): boolean {
-  const types = event.dataTransfer?.types;
-  if (!types) return false;
-  for (const type of Array.from(types)) {
-    if (type === "Files") return true;
-  }
-  return false;
-}
-
-function onWorkspaceDragEnter(event: DragEvent): void {
-  if (!draggingFiles(event)) return;
-  event.preventDefault();
-  dropActive.value = true;
-}
-
-function onWorkspaceDragOver(event: DragEvent): void {
-  if (!draggingFiles(event)) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-  // dragenter 在子元素之间移动时不一定可靠，dragover 持续兜底
-  dropActive.value = true;
-}
-
-function onWorkspaceDragLeave(event: DragEvent): void {
-  // 离开时不一定还能拿到 dataTransfer.types，所以这里不判断类型：覆盖层本来就是
-  // 文件拖拽才显示的，任何一次真正离开右半屏都应该收起来。
-  const current = event.currentTarget as Node;
-  const next = event.relatedTarget as Node | null;
-  if (next && current.contains(next)) return; // 还在右半屏里，不算离开
-  dropActive.value = false;
-}
-
-function onWorkspaceDrop(event: DragEvent): void {
-  dropActive.value = false;
-  if (!draggingFiles(event)) return;
-  event.preventDefault();
-  const files = event.dataTransfer?.files;
-  if (files && files.length > 0) uploadPanel.value?.addFiles(files);
-}
+/* ---------- 列表数据与操作 ---------- */
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
@@ -208,7 +72,7 @@ function showActionError(error: unknown): void {
   }, 5000);
 }
 
-/** 拉列表；401 由 api 客户端处理，其余错误在侧栏显示 error.load。 */
+/** 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。 */
 async function refresh(): Promise<void> {
   try {
     files.value = await listFiles();
@@ -261,136 +125,232 @@ function logout(): void {
   toLogin();
 }
 
-/** 拖到页面空白处时吞掉默认行为，免得浏览器直接打开文件、把页面顶掉。 */
-function swallowDrop(event: DragEvent): void {
-  event.preventDefault();
+function pickFiles(): void {
+  uploadDock.value?.pick();
 }
 
-/** 量出可用宽度：分隔条按「侧栏 px / 应用 px」的占比工作，窗口变化时跟着重算。 */
-function measureAppWidth(): void {
-  appWidth.value = appEl.value?.clientWidth ?? window.innerWidth;
+/* ---------- 整页拖放 ---------- */
+
+const dropDepth = ref(0);
+const dropActive = computed(() => dropDepth.value > 0);
+
+function hasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function onDragEnter(event: DragEvent): void {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  dropDepth.value += 1;
+}
+
+function onDragOver(event: DragEvent): void {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onDragLeave(): void {
+  if (dropDepth.value > 0) dropDepth.value -= 1;
+}
+
+function onDrop(event: DragEvent): void {
+  event.preventDefault();
+  dropDepth.value = 0;
+  uploadDock.value?.addFiles(event.dataTransfer?.files);
+}
+
+/** 拖到页面任何地方都吞掉默认行为，免得浏览器直接打开文件、把页面顶掉。 */
+function swallowDrop(event: DragEvent): void {
+  if (hasFiles(event)) event.preventDefault();
 }
 
 onMounted(() => {
   document.addEventListener("dragover", swallowDrop);
   document.addEventListener("drop", swallowDrop);
-  measureAppWidth();
-  resizeObserver = new ResizeObserver(measureAppWidth);
-  if (appEl.value) resizeObserver.observe(appEl.value);
-  window.addEventListener("resize", measureAppWidth);
   void refresh();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("dragover", swallowDrop);
   document.removeEventListener("drop", swallowDrop);
-  window.removeEventListener("resize", measureAppWidth);
-  resizeObserver?.disconnect();
   window.clearTimeout(actionErrorTimer);
 });
 </script>
 
 <template>
-  <div ref="appEl" class="app" :class="{ 'is-splitting': splitting }">
-    <!-- 窄屏（竖屏手机/平板）用顶部工具栏替代侧栏底部的语言与退出入口。 -->
-    <header class="mobile-topbar">
-      <span class="mobile-title">{{ t("app.title") }}</span>
-      <div class="mobile-actions">
+  <div class="shell">
+    <!-- 桌面端侧栏：品牌 / 上传入口 / 视图切换 / 语言与退出 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" v-html="ICONS.upload"></span>
+        <div class="brand-text">
+          <p class="brand-name">{{ t("app.title") }}</p>
+          <p class="brand-sub">{{ t("app.tagline") }}</p>
+        </div>
+      </div>
+
+      <button type="button" class="upload-primary" @click="pickFiles">
+        <span class="upload-primary-icon" v-html="ICONS.upload"></span>
+        {{ t("upload.button") }}
+      </button>
+      <p class="upload-hint">{{ t("upload.hint") }}</p>
+
+      <nav class="nav" :aria-label="t('nav.all-files')">
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: view === 'all' }"
+          :aria-current="view === 'all' ? 'page' : undefined"
+          @click="view = 'all'"
+        >
+          <span class="nav-icon" v-html="ICONS.file"></span>
+          <span class="nav-label">{{ t("nav.all-files") }}</span>
+          <span class="nav-count">{{ files.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: view === 'favorites' }"
+          :aria-current="view === 'favorites' ? 'page' : undefined"
+          @click="view = 'favorites'"
+        >
+          <span class="nav-icon" v-html="ICONS.star"></span>
+          <span class="nav-label">{{ t("nav.favorites") }}</span>
+          <span class="nav-count">{{ favorites.length }}</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
         <LocaleSwitch />
         <button type="button" class="logout-btn" @click="logout">
           <span class="logout-icon" v-html="ICONS.logout"></span>
-          <span class="logout-label">{{ t("action.logout") }}</span>
+          {{ t("action.logout") }}
         </button>
       </div>
-    </header>
+    </aside>
 
-    <aside class="sidebar" :style="sidebarStyle">
-      <div class="sidebar-scroll">
+    <main
+      class="main"
+      :class="{ 'is-drop-target': dropActive }"
+      @dragenter="onDragEnter"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
+      <!-- 窄屏顶栏：品牌 + 语言 + 上传 + 退出 -->
+      <header class="mobile-bar">
+        <div class="brand brand-mobile">
+          <span class="brand-mark" v-html="ICONS.upload"></span>
+          <p class="brand-name">{{ t("app.title") }}</p>
+        </div>
+        <div class="mobile-actions">
+          <LocaleSwitch />
+          <button
+            type="button"
+            class="mobile-upload"
+            :title="t('upload.button')"
+            :aria-label="t('upload.button')"
+            v-html="ICONS.upload"
+            @click="pickFiles"
+          ></button>
+          <button
+            type="button"
+            class="mobile-logout"
+            :title="t('action.logout')"
+            :aria-label="t('action.logout')"
+            v-html="ICONS.logout"
+            @click="logout"
+          ></button>
+        </div>
+      </header>
+
+      <header class="page-head">
+        <div class="page-titles">
+          <h1 class="page-title">{{ pageTitle }}</h1>
+          <p class="page-sub">{{ t("nav.file-count", { count: visibleFiles.length }) }}</p>
+        </div>
+        <label class="search">
+          <span class="search-icon" v-html="ICONS.search"></span>
+          <input
+            v-model="query"
+            type="search"
+            class="search-input"
+            :placeholder="t('nav.search-placeholder')"
+            :aria-label="t('nav.search-placeholder')"
+          />
+        </label>
+      </header>
+
+      <!-- 窄屏用标签页切换视图；桌面端用侧栏导航 -->
+      <div class="tabs" role="tablist" :aria-label="t('nav.all-files')">
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          :class="{ active: view === 'all' }"
+          :aria-selected="view === 'all'"
+          @click="view = 'all'"
+        >
+          {{ t("nav.all-files") }}
+          <span class="tab-count">{{ files.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          :class="{ active: view === 'favorites' }"
+          :aria-selected="view === 'favorites'"
+          @click="view = 'favorites'"
+        >
+          {{ t("nav.favorites") }}
+          <span class="tab-count">{{ favorites.length }}</span>
+        </button>
+      </div>
+
+      <section class="content">
         <div v-if="loadError || actionError" class="banners">
-          <p v-if="loadError" class="banner" role="alert">{{ t("error.load") }}</p>
+          <p v-if="loadError" class="banner" role="alert">{{ loadError }}</p>
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <section class="list-section" :aria-label="t('nav.favorites')">
-          <h2 class="section-title">
-            <span class="section-icon" v-html="ICONS.star"></span>
-            {{ t("nav.favorites") }}
-          </h2>
-          <ul v-if="favorites.length" class="file-list">
-            <FileRow
-              v-for="file in favorites"
-              :key="file.id"
-              :file="file"
-              @favorite="onFavorite(file)"
-              @download="onDownload(file)"
-              @visibility="onVisibility(file)"
-              @delete="onDelete(file)"
-            />
-          </ul>
-          <p v-else-if="loaded && !loadError" class="empty-note">{{ t("nav.empty-favorites") }}</p>
-        </section>
+        <ul v-if="visibleFiles.length" class="list-card">
+          <FileRow
+            v-for="file in visibleFiles"
+            :key="file.id"
+            :file="file"
+            @favorite="onFavorite(file)"
+            @download="onDownload(file)"
+            @visibility="onVisibility(file)"
+            @delete="onDelete(file)"
+          />
+        </ul>
 
-        <div class="section-divider"></div>
+        <div v-else class="empty">
+          <span class="empty-icon" v-html="view === 'favorites' ? ICONS.star : ICONS.file"></span>
+          <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
+          <p v-if="loaded && !query.trim() && view === 'all'" class="empty-text">
+            <span class="desktop-only">{{ t("upload.hint") }}</span>
+            <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
+          </p>
+          <button
+            v-if="loaded && !query.trim() && view === 'all'"
+            type="button"
+            class="upload-secondary"
+            @click="pickFiles"
+          >
+            <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
+            {{ t("upload.button") }}
+          </button>
+        </div>
+      </section>
 
-        <section class="list-section" :aria-label="t('nav.all-files')">
-          <h2 class="section-title">{{ t("nav.all-files") }}</h2>
-          <ul v-if="others.length" class="file-list">
-            <FileRow
-              v-for="file in others"
-              :key="file.id"
-              :file="file"
-              @favorite="onFavorite(file)"
-              @download="onDownload(file)"
-              @visibility="onVisibility(file)"
-              @delete="onDelete(file)"
-            />
-          </ul>
-          <p v-else-if="loaded && !loadError" class="empty-note">{{ t("nav.empty-files") }}</p>
-        </section>
-      </div>
-
-      <footer class="sidebar-foot">
-        <LocaleSwitch />
-        <button type="button" class="logout-btn" @click="logout">
-          <span class="logout-icon" v-html="ICONS.logout"></span>
-          <span class="logout-label">{{ t("action.logout") }}</span>
-        </button>
-      </footer>
-    </aside>
-
-    <div
-      class="panel-splitter"
-      role="separator"
-      aria-orientation="vertical"
-      :aria-label="t('splitter.label')"
-      :aria-valuemin="minSidebarPercent"
-      :aria-valuemax="maxSidebarPercent"
-      :aria-valuenow="sidebarPercent"
-      :title="t('splitter.hint')"
-      tabindex="0"
-      @pointerdown="onSplitterPointerDown"
-      @pointermove="onSplitterPointerMove"
-      @pointerup="onSplitterPointerUp"
-      @pointercancel="onSplitterPointerUp"
-      @keydown="onSplitterKeydown"
-      @dblclick="resetSidebarWidth"
-    >
-      <span class="splitter-grip" aria-hidden="true"><i></i><i></i><i></i></span>
-    </div>
-
-    <main
-      class="workspace"
-      :class="{ 'is-drop-target': dropActive }"
-      @dragenter="onWorkspaceDragEnter"
-      @dragover="onWorkspaceDragOver"
-      @dragleave="onWorkspaceDragLeave"
-      @drop="onWorkspaceDrop"
-    >
-      <UploadPanel ref="uploadPanel" @uploaded="refresh" />
       <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
         <span class="drop-overlay-icon" v-html="ICONS.upload"></span>
         <p class="drop-overlay-text">{{ t("upload.drop-overlay") }}</p>
       </div>
     </main>
+
+    <UploadDock ref="uploadDock" @uploaded="refresh" />
   </div>
 </template>

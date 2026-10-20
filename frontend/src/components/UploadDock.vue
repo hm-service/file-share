@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 右侧上传区：紧凑的「上传文件」动作条 + 串行上传队列。
+ * 上传坞：桌面端右下角浮动卡片，窄屏是贴底的底部面板；队列逻辑只此一份。
  *
  * 状态机：
  *   pending → hashing（分块算 SHA-256，进度映射到整条 0–10%）
@@ -13,7 +13,7 @@
  * 取消靠每个队列项自己的 AbortController：hashing 中断分块循环、check_file 中断 fetch、
  * uploading 中断 XHR。取消后本轮 processItem 正常返回，pump 继续处理后面的 pending 项。
  *
- * 整页拖放由父组件（App.vue）负责：它把文件交给这里暴露的 addFiles，队列逻辑只此一份。
+ * 整页拖放由父组件（App.vue）负责：它把文件交给这里暴露的 addFiles。
  */
 import { computed, onBeforeUnmount, ref } from "vue";
 
@@ -59,6 +59,7 @@ const REMOVE_DELAY = 1200;
 
 const queue = ref<QueueItem[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
+const collapsed = ref(false);
 const hasItems = computed(() => queue.value.length > 0);
 
 let pumping = false;
@@ -68,7 +69,7 @@ function queueId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-/** 入队；热区不锁，用户可以边传边继续加文件（整页拖放也走这里）。 */
+/** 入队；用户可以边传边继续加文件（整页拖放也走这里）。 */
 function addFiles(files: FileList | File[] | null | undefined): void {
   const list = Array.from(files ?? []);
   if (!list.length) return;
@@ -87,6 +88,7 @@ function addFiles(files: FileList | File[] | null | undefined): void {
     });
   }
   if (fileInput.value) fileInput.value.value = "";
+  collapsed.value = false;
   void pump();
 }
 
@@ -296,43 +298,52 @@ onBeforeUnmount(() => {
   }
 });
 
-// 整页拖放由 App.vue 把文件转交进来，队列逻辑不在父组件复制
-defineExpose({ addFiles });
+// 整页拖放与侧栏按钮都走这里，队列逻辑不在父组件复制
+defineExpose({ addFiles, pick: openPicker });
 </script>
 
 <template>
-  <div class="upload-panel">
-    <div class="upload-actions">
-      <button type="button" class="upload-btn" @click="openPicker">
-        <span class="upload-btn-icon" v-html="ICONS.upload"></span>
-        <span>{{ t("upload.button") }}</span>
-      </button>
-      <p class="upload-hint">{{ t("upload.hint") }}</p>
-      <input
-        ref="fileInput"
-        class="hidden-input"
-        type="file"
-        multiple
-        tabindex="-1"
-        @change="onFileChange"
-      />
-    </div>
+  <input
+    ref="fileInput"
+    class="hidden-input"
+    type="file"
+    multiple
+    tabindex="-1"
+    @change="onFileChange"
+  />
 
-    <section v-if="hasItems" class="queue-panel" :aria-label="t('upload.queue-title')">
-      <h2 class="queue-title">{{ t("upload.queue-title") }}</h2>
-      <ul class="queue-list">
-        <li v-for="item in queue" :key="item.id" class="queue-item">
-          <div class="queue-head">
-            <div class="queue-name">
-              <p class="file-name" :title="item.name">{{ item.name }}</p>
-              <span class="queue-size">{{ formatSize(item.size) }}</span>
-            </div>
-            <div class="queue-state">
-              <span class="queue-status" :class="statusClass(item)">{{ statusText(item) }}</span>
+  <Transition name="dock">
+    <section v-if="hasItems" class="upload-dock" :class="{ collapsed }" :aria-label="t('upload.queue-title')">
+      <header class="dock-head" role="button" tabindex="0" @click="collapsed = !collapsed" @keydown.enter.prevent="collapsed = !collapsed">
+        <span class="dock-icon" v-html="ICONS.upload"></span>
+        <div class="dock-info">
+          <p class="dock-title">{{ t("upload.queue-title") }}</p>
+          <p class="dock-sub">{{ t("upload.dock-items", { count: queue.length }) }}</p>
+        </div>
+        <button
+          type="button"
+          class="dock-toggle"
+          :title="collapsed ? t('upload.dock-expand') : t('upload.dock-collapse')"
+          :aria-label="collapsed ? t('upload.dock-expand') : t('upload.dock-collapse')"
+          :aria-expanded="!collapsed"
+          v-html="ICONS.chevron"
+          @click.stop="collapsed = !collapsed"
+        ></button>
+      </header>
+
+      <ul v-if="!collapsed" class="dock-list">
+        <li v-for="item in queue" :key="item.id" class="dock-item">
+          <div class="dock-row">
+            <p class="dock-name" :title="item.name">{{ item.name }}</p>
+            <span class="dock-size">{{ formatSize(item.size) }}</span>
+          </div>
+          <div class="dock-status-row">
+            <span class="dock-status" :class="statusClass(item)">{{ statusText(item) }}</span>
+            <div class="dock-actions">
               <button
                 v-if="canCancel(item)"
                 type="button"
-                class="queue-action cancel"
+                class="dock-action cancel"
                 @click="cancelItem(item.id)"
               >
                 {{ t("upload.action.cancel") }}
@@ -340,7 +351,7 @@ defineExpose({ addFiles });
               <button
                 v-if="canRetry(item)"
                 type="button"
-                class="queue-action retry"
+                class="dock-action retry"
                 @click="retryItem(item.id)"
               >
                 {{ t("upload.action.retry") }}
@@ -348,22 +359,18 @@ defineExpose({ addFiles });
               <button
                 v-if="canRemove(item)"
                 type="button"
-                class="queue-action remove"
+                class="dock-action remove"
                 @click="removeItem(item.id)"
               >
                 {{ t("upload.action.remove") }}
               </button>
             </div>
           </div>
-          <div class="progress-track">
-            <div
-              class="progress-bar"
-              :class="barClass(item)"
-              :style="{ width: `${item.progress}%` }"
-            ></div>
+          <div class="dock-progress">
+            <div class="dock-bar" :class="barClass(item)" :style="{ width: `${item.progress}%` }"></div>
           </div>
         </li>
       </ul>
     </section>
-  </div>
+  </Transition>
 </template>

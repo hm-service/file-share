@@ -24,20 +24,37 @@ export type LocaleId = "zh-Hans" | "en";
 
 export const LANGUAGES: readonly Language[] = [
   { id: "zh-Hans", label: "中文", htmlLang: "zh-CN" },
-  { id: "en", label: "English", htmlLang: "en" },
+  { id: "en", label: "EN", htmlLang: "en" },
 ];
 
-/** 所有界面文案的键，与实现契约的文案表逐键一致；两栏都缺一不可。 */
+/** 所有界面文案的键；中英两栏都缺一不可。 */
 export type MessageKey =
   | "app.title"
-  | "nav.favorites"
+  | "app.tagline"
+  | "auth.hero-title"
+  | "auth.point.instant"
+  | "auth.point.share"
+  | "auth.point.private"
+  | "auth.title"
+  | "auth.hint"
+  | "auth.token-placeholder"
+  | "auth.submit"
+  | "auth.error"
   | "nav.all-files"
+  | "nav.favorites"
+  | "nav.search-placeholder"
+  | "nav.file-count"
+  | "nav.no-results"
+  | "nav.empty-all"
   | "nav.empty-favorites"
-  | "nav.empty-files"
   | "upload.button"
   | "upload.hint"
+  | "upload.hint-mobile"
   | "upload.drop-overlay"
   | "upload.queue-title"
+  | "upload.dock-collapse"
+  | "upload.dock-expand"
+  | "upload.dock-items"
   | "upload.status.pending"
   | "upload.status.hashing"
   | "upload.status.checking"
@@ -46,9 +63,9 @@ export type MessageKey =
   | "upload.status.done"
   | "upload.status.failed"
   | "upload.status.cancelled"
+  | "upload.action.remove"
   | "upload.action.cancel"
   | "upload.action.retry"
-  | "upload.action.remove"
   | "action.favorite"
   | "action.unfavorite"
   | "action.download"
@@ -59,16 +76,11 @@ export type MessageKey =
   | "action.make-public"
   | "action.make-private"
   | "action.logout"
-  | "splitter.label"
-  | "splitter.hint"
+  | "badge.public"
   | "confirm.delete"
   | "meta.unknown-time"
-  | "auth.title"
-  | "auth.hint"
-  | "auth.token-placeholder"
-  | "auth.submit"
-  | "auth.error"
   | "lang.label"
+  | "state.loading"
   | "error.load"
   | "error.network";
 
@@ -79,60 +91,60 @@ interface Message {
 
 const messages: Record<MessageKey, Message> = {
   "app.title": { zh: "文件分享", en: "File Share" },
+  "app.tagline": { zh: "上传、整理、分享，一个页面搞定", en: "Upload, organize and share in one place" },
+  "auth.hero-title": { zh: "把文件分享变简单", en: "File sharing, simplified" },
+  "auth.point.instant": { zh: "SHA-256 秒传与去重，不浪费空间", en: "SHA-256 instant uploads with dedupe" },
+  "auth.point.share": { zh: "文件公开后即可用直链分享", en: "Share public files with a direct link" },
+  "auth.point.private": { zh: "默认私有，单个访问令牌控制", en: "Private by default, guarded by one token" },
+  "auth.title": { zh: "登录", en: "Sign in" },
+  "auth.hint": { zh: "输入访问令牌进入你的文件空间", en: "Enter the access token to open your space" },
+  "auth.token-placeholder": { zh: "访问令牌", en: "Access token" },
+  "auth.submit": { zh: "进入", en: "Continue" },
+  "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
+  "nav.all-files": { zh: "全部文件", en: "All files" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
-  "nav.all-files": { zh: "全部文件", en: "All Files" },
-  "nav.empty-favorites": { zh: "暂无收藏", en: "No favorites yet" },
-  "nav.empty-files": { zh: "库中暂无文件", en: "No files yet" },
+  "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
+  "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
+  "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
+  "nav.empty-all": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
+  "nav.empty-favorites": { zh: "还没有收藏的文件", en: "No favorites yet" },
   "upload.button": { zh: "上传文件", en: "Upload files" },
-  "upload.hint": {
-    zh: "或将文件拖到右侧任意区域",
-    en: "or drop files anywhere on this side",
-  },
-  "upload.drop-overlay": { zh: "松开鼠标即可上传", en: "Drop to upload" },
-  "upload.queue-title": { zh: "上传队列", en: "Upload Queue" },
-  "upload.status.pending": { zh: "等待中…", en: "Waiting…" },
-  "upload.status.hashing": { zh: "本地计算指纹 {percent}%", en: "Computing checksum {percent}%" },
-  "upload.status.checking": { zh: "校验服务器是否已存在…", en: "Checking the server…" },
+  "upload.hint": { zh: "也可以把文件拖到右侧区域", en: "or drag files to this side" },
+  "upload.hint-mobile": { zh: "点击上方按钮选择文件", en: "Tap the upload button above" },
+  "upload.drop-overlay": { zh: "松开即可上传", en: "Drop to upload" },
+  "upload.queue-title": { zh: "上传队列", en: "Upload queue" },
+  "upload.dock-collapse": { zh: "收起", en: "Collapse" },
+  "upload.dock-expand": { zh: "展开", en: "Expand" },
+  "upload.dock-items": { zh: "{count} 项", en: "{count} items" },
+  "upload.status.pending": { zh: "等待中", en: "Waiting" },
+  "upload.status.hashing": { zh: "计算指纹 {percent}%", en: "Checksum {percent}%" },
+  "upload.status.checking": { zh: "检查服务器…", en: "Checking server…" },
   "upload.status.uploading": {
-    zh: "上传中 {percent}% ({loaded} / {total})",
-    en: "Uploading {percent}% ({loaded} / {total})",
+    zh: "{percent}% · {loaded} / {total}",
+    en: "{percent}% · {loaded} / {total}",
   },
-  "upload.status.instant": { zh: "秒传成功", en: "Instant upload succeeded" },
-  "upload.status.done": { zh: "上传完成", en: "Upload complete" },
+  "upload.status.instant": { zh: "秒传成功", en: "Instant upload" },
+  "upload.status.done": { zh: "上传完成", en: "Uploaded" },
   "upload.status.failed": { zh: "上传失败", en: "Upload failed" },
   "upload.status.cancelled": { zh: "已取消", en: "Cancelled" },
+  "upload.action.remove": { zh: "移除", en: "Remove" },
   "upload.action.cancel": { zh: "取消", en: "Cancel" },
   "upload.action.retry": { zh: "重试", en: "Retry" },
-  "upload.action.remove": { zh: "移除", en: "Remove" },
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
-  "action.copy-link-private": {
-    zh: "公开后才能复制直链",
-    en: "Make the file public to copy its link",
-  },
+  "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
   "action.copied": { zh: "已复制", en: "Copied" },
   "action.delete": { zh: "删除", en: "Delete" },
   "action.make-public": { zh: "设为公开", en: "Make public" },
   "action.make-private": { zh: "设为私有", en: "Make private" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
-  "splitter.label": { zh: "调整侧栏宽度", en: "Resize sidebar" },
-  "splitter.hint": {
-    zh: "拖拽或按左右方向键调整宽度，双击恢复默认",
-    en: "Drag or use the arrow keys to resize; double-click to reset",
-  },
-  "confirm.delete": {
-    zh: "确定要删除记录“{name}”吗？",
-    en: "Delete the record “{name}”?",
-  },
+  "badge.public": { zh: "公开", en: "Public" },
+  "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
-  "auth.title": { zh: "登录", en: "Sign in" },
-  "auth.hint": { zh: "输入访问令牌以继续", en: "Enter the access token to continue" },
-  "auth.token-placeholder": { zh: "访问令牌", en: "Access token" },
-  "auth.submit": { zh: "登录", en: "Sign in" },
-  "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
   "lang.label": { zh: "语言", en: "Language" },
+  "state.loading": { zh: "加载中…", en: "Loading…" },
   "error.load": { zh: "加载文件列表失败", en: "Failed to load the file list" },
   "error.network": { zh: "网络异常", en: "Network error" },
 };
