@@ -271,10 +271,10 @@ ul {
   color: var(--accent-strong);
 }
 
-/* 文件拖到分组标签上时的落点高亮。 */
+/* 文件拖到分组标签上时的落点高亮：虚线画在元素内侧，避免被滚动容器裁掉。 */
 .nav-item.is-drop-target {
   outline: 2px dashed var(--accent);
-  outline-offset: 1px;
+  outline-offset: -3px;
   background: var(--accent-soft);
   color: var(--accent-strong);
 }
@@ -1658,7 +1658,7 @@ ul {
 
   .chip.is-drop-target {
     outline: 2px dashed var(--accent);
-    outline-offset: 1px;
+    outline-offset: -3px;
     background: var(--accent-soft);
     color: var(--accent-strong);
   }
