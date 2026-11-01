@@ -1,0 +1,1512 @@
+<!doctype html>
+<html lang="zh-CN" data-palette="graphite">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Index — 文件库工具型概念 v2</title>
+    <style>
+      /* ============================================================
+         Index — tool-first file manager concept
+         设计目标：信息密度、批量操作、键盘路径；冷色工业风，三套配色
+         ============================================================ */
+      :root,
+      html[data-palette="graphite"] {
+        color-scheme: light;
+        --bg: #eef1f4;
+        --surface: #ffffff;
+        --surface-2: #f6f8fa;
+        --ink: #0f1318;
+        --ink-2: #3d4650;
+        --muted: #69727d;
+        --faint: #98a1ab;
+        --line: #e2e7eb;
+        --line-strong: #cbd3db;
+        --rail-bg: #15191d;
+        --rail-ink: #c3ccd5;
+        --rail-muted: #7b8590;
+        --rail-line: #272d33;
+        --rail-active: #1f2717;
+        --rail-active-ink: #d8f99b;
+        --accent: #c8f25a;
+        --accent-ink: #1a2107;
+        --accent-soft: #f0f9d8;
+        --sel: #f4fbe4;
+        --blue: #2f6fed;
+        --blue-soft: #e9efff;
+        --red: #e5484d;
+        --red-soft: #fdecec;
+        --amber: #e9a23b;
+        --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+        --shadow-panel: 0 30px 70px -40px rgb(10 15 20 / 0.55);
+        --shadow-pop: 0 18px 46px -24px rgb(10 15 20 / 0.4);
+      }
+
+      html[data-palette="frost"] {
+        --bg: #f2f5f9;
+        --surface: #ffffff;
+        --surface-2: #f6f8fb;
+        --ink: #101722;
+        --ink-2: #3d4856;
+        --muted: #6b7685;
+        --faint: #99a3b0;
+        --line: #e3e9ef;
+        --line-strong: #ccd6e0;
+        --rail-bg: #fbfcfe;
+        --rail-ink: #3d4856;
+        --rail-muted: #8691a0;
+        --rail-line: #e6ecf2;
+        --rail-active: #eaf1ff;
+        --rail-active-ink: #1f4fd1;
+        --accent: #2f6fed;
+        --accent-ink: #ffffff;
+        --accent-soft: #e9f0ff;
+        --sel: #eef4ff;
+        --blue: #2f6fed;
+        --blue-soft: #e9efff;
+        --red: #e5484d;
+        --red-soft: #fdecec;
+        --amber: #d98a14;
+      }
+
+      html[data-palette="mono"] {
+        --bg: #f4f4f1;
+        --surface: #ffffff;
+        --surface-2: #f6f6f3;
+        --ink: #0d0d0c;
+        --ink-2: #3c3c39;
+        --muted: #6d6d67;
+        --faint: #9a9a92;
+        --line: #e4e4de;
+        --line-strong: #cdcdc4;
+        --rail-bg: #0c0d0d;
+        --rail-ink: #c9c9c3;
+        --rail-muted: #7d7d76;
+        --rail-line: #252523;
+        --rail-active: #1c1c19;
+        --rail-active-ink: #ff7a7a;
+        --accent: #ff4d4d;
+        --accent-ink: #ffffff;
+        --accent-soft: #ffecec;
+        --sel: #fff1f1;
+        --blue: #2f6fed;
+        --blue-soft: #e9efff;
+        --red: #e5484d;
+        --red-soft: #fdecec;
+        --amber: #d98a14;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.45 var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      button { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+      input, select { font: inherit; color: inherit; }
+      p, h1, h2, h3, ul { margin: 0; padding: 0; }
+      ul { list-style: none; }
+      :focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; border-radius: 4px; }
+      ::selection { background: var(--accent-soft); color: var(--ink); }
+      .icon { display: block; width: 16px; height: 16px; }
+      .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+      .mono { font-family: var(--mono); }
+
+      /* ================= shell ================= */
+      .app {
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr);
+        height: 100vh;
+        height: 100dvh;
+      }
+      .app.has-detail { grid-template-columns: 232px minmax(0, 1fr) 320px; }
+
+      /* ================= rail ================= */
+      .rail {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        background: var(--rail-bg);
+        color: var(--rail-ink);
+        border-right: 1px solid var(--rail-line);
+      }
+      .rail-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 52px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--rail-line);
+        color: var(--rail-ink);
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .rail-glyph {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 7px;
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .rail-edition {
+        margin-left: auto;
+        color: var(--rail-muted);
+        font-family: var(--mono);
+        font-size: 9px;
+        letter-spacing: 0.12em;
+      }
+      .rail-workspace {
+        padding: 12px 16px 4px;
+        color: var(--rail-muted);
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .rail-nav { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px; }
+      .rail-item {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        padding: 7px 8px;
+        border-radius: 7px;
+        color: var(--rail-ink);
+        font-size: 12px;
+        text-align: left;
+      }
+      .rail-item:hover { background: color-mix(in srgb, var(--rail-ink) 7%, transparent); }
+      .rail-item.on {
+        background: var(--rail-active);
+        color: var(--rail-active-ink);
+      }
+      .rail-item .icon { width: 15px; height: 15px; opacity: 0.8; }
+      .rail-count {
+        margin-left: auto;
+        color: var(--rail-muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .rail-item.on .rail-count { color: inherit; }
+      .rail-label {
+        padding: 16px 16px 6px;
+        color: var(--rail-muted);
+        font-family: var(--mono);
+        font-size: 9px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .rail-collections {
+        display: flex;
+        flex: 0 1 auto;
+        flex-direction: column;
+        gap: 1px;
+        padding: 0 8px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      .rail-collection .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 2px;
+        background: var(--c);
+      }
+      .rail-spacer { flex: 1 1 auto; }
+      .rail-storage { padding: 12px 16px; border-top: 1px solid var(--rail-line); }
+      .rail-storage-head {
+        display: flex;
+        justify-content: space-between;
+        color: var(--rail-muted);
+        font-family: var(--mono);
+        font-size: 9.5px;
+      }
+      .rail-meter { height: 4px; margin-top: 8px; border-radius: 999px; background: color-mix(in srgb, var(--rail-ink) 14%, transparent); overflow: hidden; }
+      .rail-meter i { display: block; width: 7%; height: 100%; background: var(--accent); }
+      .rail-foot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px;
+        border-top: 1px solid var(--rail-line);
+      }
+      .rail-avatar {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: color-mix(in srgb, var(--rail-ink) 12%, transparent);
+        color: var(--rail-ink);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+      .rail-foot .rail-item { flex: 1 1 auto; }
+
+      /* ================= main ================= */
+      .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex: 0 0 auto;
+        height: 52px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+      .crumbs { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .crumbs b { font-size: 13.5px; font-weight: 650; white-space: nowrap; }
+      .crumbs span { color: var(--muted); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+      .cmd-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: min(360px, 34vw);
+        margin-left: auto;
+        padding: 6px 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .cmd-search:focus-within { border-color: var(--line-strong); background: var(--surface); }
+      .cmd-search input { flex: 1 1 auto; min-width: 0; border: 0; outline: none; background: transparent; font-size: 12px; }
+      .cmd-search kbd {
+        padding: 1px 5px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--surface);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 9px;
+      }
+      .top-actions { display: flex; align-items: center; gap: 6px; }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        color: var(--ink-2);
+        font-size: 11.5px;
+        font-weight: 550;
+        white-space: nowrap;
+      }
+      .btn:hover { border-color: var(--line-strong); color: var(--ink); }
+      .btn-primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      .btn-primary:hover { filter: brightness(0.96); color: var(--accent-ink); }
+      .icon-btn {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        color: var(--muted);
+      }
+      .icon-btn:hover { background: var(--surface-2); color: var(--ink); }
+      .icon-btn.on { color: var(--amber); }
+      .icon-btn.public { color: var(--blue); }
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
+        background: var(--ink);
+        color: var(--surface);
+        font-family: var(--mono);
+        font-size: 10px;
+      }
+
+      /* mobile views (hidden on desktop) */
+      .mobile-views { display: none; }
+
+      /* ================= toolbar ================= */
+      .toolbar {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 12px;
+        padding: 7px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+      .select-all {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      input[type="checkbox"] {
+        width: 13px;
+        height: 13px;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+      .toolbar-info { color: var(--muted); font-size: 11px; white-space: nowrap; }
+      .toolbar-right { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+      .chip-btn {
+        padding: 4px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .chip-btn.on { border-color: var(--ink); background: var(--ink); color: var(--surface); }
+      .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+      .seg button { display: grid; place-items: center; width: 28px; height: 26px; color: var(--muted); }
+      .seg button + button { border-left: 1px solid var(--line); }
+      .seg button.on { background: var(--accent-soft); color: var(--ink); }
+      .sort-select {
+        height: 26px;
+        padding: 0 6px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--ink-2);
+        font-size: 10.5px;
+        outline: none;
+      }
+
+      /* ================= bulk bar ================= */
+      .bulkbar {
+        display: none;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--accent-soft);
+        color: var(--ink);
+      }
+      .bulkbar.on { display: flex; }
+      .bulkbar b { font-size: 11.5px; font-weight: 650; }
+      .bulkbar .bulk-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+      .bulkbar .btn { padding: 4px 8px; font-size: 10.5px; }
+
+      /* ================= upload strip ================= */
+      .upload-strip {
+        display: none;
+        flex: 0 0 auto;
+        flex-direction: column;
+        gap: 6px;
+        padding: 7px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface-2);
+      }
+      .upload-strip.on { display: flex; }
+      .up-row { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+      .up-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .up-state { color: var(--muted); font-family: var(--mono); font-size: 9.5px; }
+      .up-track { width: 120px; height: 3px; border-radius: 999px; background: var(--line); overflow: hidden; }
+      .up-track i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+
+      /* ================= content / table ================= */
+      .content { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--surface); }
+      table.files { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        text-align: left;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      thead th.sortable { cursor: pointer; user-select: none; }
+      thead th.sortable:hover { color: var(--ink); }
+      thead th .arrow { margin-left: 3px; color: var(--faint); }
+      thead th.on { color: var(--ink); }
+      tbody td {
+        height: 42px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12.5px;
+        vertical-align: middle;
+      }
+      tbody tr { transition: background-color 0.1s; }
+      tbody tr:hover { background: var(--surface-2); }
+      tbody tr.selected { background: var(--sel); }
+      tbody tr.active { box-shadow: inset 2px 0 0 var(--accent); }
+      .col-check { width: 34px; }
+      .col-name { width: auto; }
+      .col-group { width: 118px; }
+      .col-size { width: 88px; text-align: right; }
+      .col-time { width: 132px; }
+      .col-vis { width: 84px; }
+      .col-act { width: 132px; }
+      .cell-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .type-sm {
+        display: grid;
+        flex: 0 0 auto;
+        place-items: center;
+        width: 25px;
+        height: 25px;
+        border-radius: 6px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .type-sm .icon { width: 14px; height: 14px; }
+      .type-sm[data-kind="image"] { background: #e6f6ef; color: #0b8a5c; }
+      .type-sm[data-kind="video"] { background: #fdecf0; color: #c0265a; }
+      .type-sm[data-kind="pdf"] { background: var(--red-soft); color: var(--red); }
+      .type-sm[data-kind="archive"] { background: #fdf3e3; color: #b87915; }
+      .type-sm[data-kind="code"] { background: var(--blue-soft); color: var(--blue); }
+      .name-wrap { display: block; min-width: 0; }
+      .fname { overflow: hidden; font-size: 12.5px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+      .fmeta { display: none; margin-top: 1px; color: var(--muted); font-family: var(--mono); font-size: 9.5px; }
+      .group-cell { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 11.5px; }
+      .group-cell .dot { width: 6px; height: 6px; border-radius: 2px; background: var(--c); }
+      .size-cell, .time-cell { color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+      .size-cell { text-align: right; }
+      .vis-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 9.5px;
+      }
+      .vis-badge.public { background: var(--blue-soft); color: var(--blue); }
+      .vis-badge.private { background: var(--surface-2); color: var(--faint); }
+      .act-btns { display: flex; justify-content: flex-end; gap: 0; opacity: 0; transition: opacity 0.1s; }
+      tbody tr:hover .act-btns, tbody tr.selected .act-btns, tbody tr.active .act-btns { opacity: 1; }
+      .act-btns .icon-btn { width: 26px; height: 26px; }
+      .act-btns .icon-btn .icon { width: 14px; height: 14px; }
+      .act-mobile { display: none !important; }
+
+      /* grid */
+      .grid-cards { display: none; padding: 16px; grid-template-columns: repeat(auto-fill, minmax(204px, 1fr)); gap: 10px; }
+      .content.is-grid table.files { display: none; }
+      .content.is-grid .grid-cards { display: grid; }
+      .card {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface);
+        cursor: pointer;
+        transition: border-color 0.12s, box-shadow 0.12s;
+      }
+      .card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-pop); }
+      .card-top { display: flex; align-items: center; justify-content: space-between; }
+      .card .type-sm { width: 32px; height: 32px; border-radius: 8px; }
+      .card-name { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+      .card-meta { color: var(--muted); font-family: var(--mono); font-size: 9.5px; }
+
+      .empty { display: none; padding: 60px 20px; text-align: center; color: var(--muted); }
+      .empty b { display: block; color: var(--ink-2); font-size: 13px; font-weight: 600; }
+      .empty span { font-size: 11px; }
+      .content.is-empty .empty { display: block; }
+      .content.is-empty table.files { display: none; }
+
+      /* ================= status bar ================= */
+      .statusbar {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        height: 27px;
+        padding: 0 16px;
+        border-top: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.04em;
+      }
+      .statusbar b { color: var(--ink-2); font-weight: 600; }
+
+      /* ================= detail ================= */
+      .detail {
+        display: none;
+        flex-direction: column;
+        min-height: 0;
+        overflow-y: auto;
+        border-left: 1px solid var(--line);
+        background: var(--surface);
+        padding: 18px;
+      }
+      .app.has-detail .detail { display: flex; }
+      .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .detail-kicker { color: var(--muted); font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; }
+      .detail-type {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        margin-top: 14px;
+        border-radius: 11px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .detail-type .icon { width: 22px; height: 22px; }
+      .detail h2 { margin-top: 12px; font-size: 17px; font-weight: 650; line-height: 1.25; word-break: break-word; }
+      .detail-sub { margin-top: 3px; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        margin-top: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--line);
+        overflow: hidden;
+      }
+      .detail-grid > div { padding: 8px 10px; background: var(--surface); }
+      .detail-grid dt { color: var(--faint); font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+      .detail-grid dd { margin: 2px 0 0; font-size: 11.5px; }
+      .detail-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
+      .detail-field label { color: var(--muted); font-size: 11px; }
+      .detail-field select {
+        max-width: 160px;
+        height: 26px;
+        padding: 0 6px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        font-size: 11px;
+      }
+      .detail-actions { display: flex; flex-direction: column; gap: 2px; margin-top: 16px; }
+      .detail-actions button {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 8px;
+        border-radius: 6px;
+        color: var(--ink-2);
+        font-size: 11.5px;
+        text-align: left;
+      }
+      .detail-actions button:hover { background: var(--surface-2); color: var(--ink); }
+      .detail-actions button.danger { color: var(--red); }
+      .detail-hash { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); color: var(--faint); font-family: var(--mono); font-size: 9px; word-break: break-all; }
+
+      .scrim { display: none; }
+
+      /* ================= command palette ================= */
+      .cmd { position: fixed; inset: 0; z-index: 100; display: none; }
+      .cmd.on { display: block; }
+      .cmd-scrim { position: absolute; inset: 0; background: rgb(10 14 18 / 0.42); backdrop-filter: blur(2px); }
+      .cmd-panel {
+        position: relative;
+        width: min(560px, calc(100% - 28px));
+        margin: 110px auto 0;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        background: var(--surface);
+        box-shadow: var(--shadow-panel);
+        overflow: hidden;
+      }
+      .cmd-input-row { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-bottom: 1px solid var(--line); color: var(--muted); }
+      .cmd-input-row input { flex: 1 1 auto; border: 0; outline: none; background: transparent; font-size: 13px; }
+      .cmd-input-row kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font-family: var(--mono); font-size: 9px; }
+      .cmd-list { max-height: min(380px, 50vh); overflow-y: auto; padding: 6px; }
+      .cmd-group-label { padding: 7px 8px 4px; color: var(--faint); font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+      .cmd-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px; border-radius: 6px; color: var(--ink-2); font-size: 12px; text-align: left; }
+      .cmd-item:hover, .cmd-item.sel { background: var(--surface-2); color: var(--ink); }
+      .cmd-item .icon { width: 14px; height: 14px; color: var(--muted); }
+      .cmd-item small { margin-left: auto; color: var(--faint); font-family: var(--mono); font-size: 9px; }
+      .cmd-empty { padding: 18px 10px; color: var(--muted); font-size: 11.5px; }
+
+      /* ================= drop veil ================= */
+      .dropveil {
+        position: fixed;
+        inset: 10px;
+        z-index: 90;
+        display: none;
+        place-items: center;
+        border: 2px dashed var(--accent);
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--surface) 78%, var(--accent) 8%);
+        backdrop-filter: blur(3px);
+        pointer-events: none;
+      }
+      .dropveil.on { display: grid; }
+      .dropveil div { text-align: center; color: var(--ink); }
+      .dropveil .icon { width: 36px; height: 36px; margin: 0 auto 10px; color: var(--ink); }
+      .dropveil b { display: block; font-size: 15px; }
+      .dropveil span { color: var(--muted); font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; }
+
+      /* ================= toast ================= */
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 42px;
+        z-index: 120;
+        padding: 8px 13px;
+        border-radius: 6px;
+        background: var(--ink);
+        color: var(--surface);
+        font-size: 11px;
+        opacity: 0;
+        transform: translate(-50%, 6px);
+        transition: opacity 0.15s, transform 0.15s;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      .toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+      /* ================= responsive ================= */
+      @media (max-width: 1200px) {
+        .app.has-detail { grid-template-columns: 232px minmax(0, 1fr); }
+        .detail {
+          display: flex !important;
+          position: fixed;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 60;
+          width: min(340px, 100%);
+          border-left: 1px solid var(--line);
+          box-shadow: var(--shadow-panel);
+          transform: translateX(105%);
+          transition: transform 0.22s ease;
+        }
+        .app.has-detail .detail { transform: translateX(0); }
+        .scrim { position: fixed; inset: 0; z-index: 55; display: none; background: rgb(10 14 18 / 0.3); }
+        .scrim.on { display: block; }
+      }
+
+      @media (max-width: 980px) {
+        .app, .app.has-detail { grid-template-columns: 1fr; }
+        .rail { display: none; }
+        .topbar { flex-wrap: wrap; height: auto; padding: 9px 12px; gap: 8px; }
+        .crumbs { flex: 1 1 auto; }
+        .cmd-search { order: 3; flex-basis: 100%; width: auto; margin-left: 0; }
+        .top-actions { gap: 4px; }
+        .top-actions .avatar { display: none; }
+        .btn-label { display: none; }
+        .mobile-views {
+          display: flex;
+          flex: 0 0 auto;
+          gap: 4px;
+          padding: 7px 12px;
+          overflow-x: auto;
+          border-bottom: 1px solid var(--line);
+          background: var(--surface);
+          scrollbar-width: none;
+        }
+        .mobile-views::-webkit-scrollbar { display: none; }
+        .mview {
+          display: inline-flex;
+          flex: 0 0 auto;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 9px;
+          border: 1px solid var(--line);
+          border-radius: 999px;
+          color: var(--muted);
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .mview .icon { width: 12px; height: 12px; }
+        .mview.on { border-color: var(--ink); background: var(--ink); color: var(--surface); }
+        .toolbar { padding: 6px 12px; gap: 8px; }
+        .toolbar-info { display: none; }
+        .chip-btn { display: none; }
+        .col-check { width: 26px; }
+        table.files, table.files tbody { display: block; width: 100%; }
+        table.files colgroup { display: none; }
+        table.files thead { display: none; }
+        tbody tr { width: 100%;
+          display: grid;
+          grid-template-columns: 26px minmax(0, 1fr) 28px;
+          align-items: center;
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--line);
+        }
+        tbody td { display: none; height: auto; padding: 0; border: 0; }
+        tbody td.col-check { display: flex; }
+        tbody td.col-name { display: block; padding: 0 6px; }
+        tbody td.col-act { display: block; }
+        .fmeta { display: block; }
+        .act-btns { opacity: 1; }
+        .act-btns .icon-btn:not(.act-mobile) { display: none; }
+        .act-btns .icon-btn.act-mobile { display: grid; }
+        .statusbar { display: none; }
+        .bulkbar { position: fixed; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); left: 10px; z-index: 45; border: 1px solid var(--line-strong); border-radius: 9px; box-shadow: var(--shadow-pop); padding: 8px 10px; }
+        .bulkbar .bulk-actions .btn { padding: 4px 7px; }
+        .content { padding-bottom: 12px; }
+        .detail {
+          top: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          width: 100%;
+          max-height: 84vh;
+          border-left: 0;
+          border-top: 1px solid var(--line);
+          border-radius: 12px 12px 0 0;
+          transform: translateY(105%);
+          padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+        }
+        .app.has-detail .detail { transform: translateY(0); }
+        .cmd-panel { margin-top: 64px; }
+        .toast { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; animation: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16a4 4 0 0 1-.88-7.903A5 5 0 1 1 15.9 6L16 6a5 5 0 0 1 1 9.9M15 13l-3-3m0 0-3 3m3-3v12"/></symbol>
+        <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/></symbol>
+        <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.5h6.5L19.5 8v10.5H8z"/><path d="M5 7.5v12h10"/></symbol>
+        <symbol id="i-star" viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 0 0 .95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 0 0-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 0 0-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 0 0-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 0 0 .951-.69l1.07-3.292z"/></symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12C3.8 7.9 7.5 5 12 5s8.3 2.9 9.5 7c-1.2 4.1-5 7-9.5 7s-8.2-2.9-9.5-7z"/><circle cx="12" cy="12" r="3"/></symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5h6l2 2.5h9V19h-17z"/></symbol>
+        <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h16V19H4z"/><path d="M4 13h5l1.5 2h3L15 13h5"/></symbol>
+        <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.8 10.2a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1.5-1.5M10.2 13.8a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1.5 1.5"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4"/></symbol>
+        <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.9 18.8A10 10 0 0 1 12 19c-4.5 0-8.2-2.9-9.5-7a10 10 0 0 1 1.6-3M9.9 9.9l4.2 4.2M3 3l18 18"/></symbol>
+        <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+        <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></symbol>
+        <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7l-.9 12.1A2 2 0 0 1 16.1 21H7.9a2 2 0 0 1-2-1.9L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></symbol>
+        <symbol id="i-command" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
+        <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M7 4 3 8M7 4l4 4M17 20V4M17 20l4-4M17 20l-4-4"/></symbol>
+        <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="8.6" cy="9.4" r="1.5"/><path d="m5 17.2 4.6-4.6a1.4 1.4 0 0 1 2 0l6.4 6.4"/></symbol>
+        <symbol id="i-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m10.4 9.1 4.8 2.9-4.8 2.9z" fill="currentColor" stroke="none"/></symbol>
+        <symbol id="i-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17.5V5.6l9.5-1.9v11.8"/><circle cx="6.6" cy="17.6" r="2.4"/><circle cx="16.1" cy="15.7" r="2.4"/></symbol>
+        <symbol id="i-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 20.5 8v8L12 20.5 3.5 16V8z"/><path d="M3.5 8 12 12.5 20.5 8"/><path d="M12 12.5v8"/></symbol>
+        <symbol id="i-pdf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/><text x="12" y="17.6" text-anchor="middle" font-family="ui-sans-serif,sans-serif" font-size="5.4" font-weight="700" fill="currentColor" stroke="none">PDF</text></symbol>
+        <symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/><path d="M9.2 12.4h5.6M9.2 15.4h5.6"/></symbol>
+        <symbol id="i-sheet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2.4"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/></symbol>
+        <symbol id="i-slides" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M12 16v3.2M8.6 21h6.8"/></symbol>
+        <symbol id="i-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m8.6 8.2-4 3.8 4 3.8M15.4 8.2l4 3.8-4 3.8M13.4 5.4 10.6 18.6"/></symbol>
+        <symbol id="i-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.2h14M5 10.2h10.5M5 14.2h14M5 18.2h8"/></symbol>
+        <symbol id="i-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/></symbol>
+      </defs>
+    </svg>
+
+    <div class="app" id="app">
+      <aside class="rail">
+        <div class="rail-brand"><span class="rail-glyph">IX</span> INDEX <span class="rail-edition">CONCEPT / 02</span></div>
+        <div class="rail-workspace">hm-service / private</div>
+        <nav class="rail-nav" id="railNav"></nav>
+        <p class="rail-label" id="railLabel">COLLECTIONS</p>
+        <div class="rail-collections" id="railCollections"></div>
+        <div class="rail-spacer"></div>
+        <div class="rail-storage">
+          <div class="rail-storage-head"><span>STORAGE</span><span class="mono">140 MB / 2 GB</span></div>
+          <div class="rail-meter"><i></i></div>
+        </div>
+        <div class="rail-foot">
+          <span class="rail-avatar">HM</span>
+          <button class="rail-item" id="paletteBtn" title="切换配色">
+            <svg class="icon"><use href="#i-swap"/></svg>
+            <span>配色</span>
+            <span class="rail-count" id="paletteName">GRAPHITE</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="crumbs"><b id="crumbTitle">全部文件</b><span id="crumbCount">12 FILES</span></div>
+          <label class="cmd-search">
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="搜索文件…" autocomplete="off" />
+            <kbd>⌘K</kbd>
+          </label>
+          <div class="top-actions">
+            <button class="btn btn-primary" id="uploadBtn" title="上传文件">
+              <svg class="icon"><use href="#i-upload"/></svg><span class="btn-label">上传</span>
+            </button>
+            <button class="icon-btn" id="cmdBtn" title="命令面板 (⌘K)" aria-label="命令面板"><svg class="icon"><use href="#i-command"/></svg></button>
+            <span class="avatar">HM</span>
+          </div>
+        </header>
+
+        <div class="mobile-views" id="mobileViews"></div>
+
+        <div class="toolbar">
+          <label class="select-all"><input type="checkbox" id="selectAll" /> 全选</label>
+          <span class="toolbar-info" id="toolbarInfo">12 个文件 · 156 MB</span>
+          <div class="toolbar-right">
+            <button class="chip-btn" id="publicFilter">仅公开</button>
+            <select class="sort-select" id="sortSelect" aria-label="排序">
+              <option value="time">修改时间</option>
+              <option value="name">名称</option>
+              <option value="size">大小</option>
+            </select>
+            <button class="icon-btn" id="dirBtn" title="切换升序/降序"><svg class="icon"><use href="#i-swap"/></svg></button>
+            <div class="seg" role="group" aria-label="视图">
+              <button id="listView" class="on" title="列表视图"><svg class="icon"><use href="#i-list"/></svg></button>
+              <button id="gridView" title="网格视图"><svg class="icon"><use href="#i-grid"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bulkbar" id="bulkbar">
+          <b id="bulkCount">已选 0 项</b>
+          <span class="toolbar-info">批量操作立即生效</span>
+          <div class="bulk-actions">
+            <button class="btn" data-bulk="favorite">收藏</button>
+            <button class="btn" data-bulk="public">设为公开</button>
+            <button class="btn" data-bulk="group">移动到分组…</button>
+            <button class="btn" data-bulk="delete">删除</button>
+            <button class="btn" data-bulk="clear">取消</button>
+          </div>
+        </div>
+
+        <div class="upload-strip" id="uploadStrip"></div>
+
+        <section class="content" id="content">
+          <table class="files" aria-label="文件列表">
+            <colgroup>
+              <col class="col-check" /><col class="col-name" /><col class="col-group" />
+              <col class="col-size" /><col class="col-time" /><col class="col-vis" /><col class="col-act" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="col-check"></th>
+                <th class="sortable" data-sort="name">名称<span class="arrow"></span></th>
+                <th>分组</th>
+                <th class="sortable" data-sort="size" style="text-align:right">大小<span class="arrow"></span></th>
+                <th class="sortable" data-sort="time">更新时间<span class="arrow"></span></th>
+                <th>可见性</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="grid-cards" id="gridCards"></div>
+          <div class="empty"><b>没有匹配的文件</b><span>换一个筛选或搜索词试试。</span></div>
+        </section>
+
+        <footer class="statusbar">
+          <span id="statusLeft">12 FILES · 156 MB</span>
+          <span id="statusRight">SHA-256 · GO / SQLITE · ⌘K 命令面板</span>
+        </footer>
+      </main>
+
+      <aside class="detail" id="detail" aria-label="文件详情"></aside>
+      <div class="scrim" id="scrim"></div>
+    </div>
+
+    <div class="cmd" id="cmd">
+      <div class="cmd-scrim" id="cmdScrim"></div>
+      <div class="cmd-panel" role="dialog" aria-modal="true" aria-label="命令面板">
+        <div class="cmd-input-row">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <input id="cmdInput" placeholder="搜索文件、分组或输入命令…" autocomplete="off" />
+          <kbd>ESC</kbd>
+        </div>
+        <div class="cmd-list" id="cmdList"></div>
+      </div>
+    </div>
+
+    <div class="dropveil" id="dropveil">
+      <div>
+        <svg class="icon"><use href="#i-upload"/></svg>
+        <b>松手上传</b>
+        <span>DROP ANYWHERE · SHA-256</span>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <input id="fileInput" type="file" multiple hidden />
+
+    <script>
+      (() => {
+        "use strict";
+
+        /* ---------------- data ---------------- */
+        const NOW = new Date("2026-11-02T09:00:00+08:00");
+        const RECENT = new Date("2026-10-26T00:00:00+08:00");
+        const collections = [
+          { id: "work", name: "工作", color: "#2f6fed" },
+          { id: "ideas", name: "灵感", color: "#8b5cf6" },
+          { id: "photos", name: "照片", color: "#0ea5a4" },
+        ];
+        const seed = [
+          ["f1", "品牌手册-2026.pdf", "work", "pdf", 12.4e6, "2026-10-30 14:22", true, true],
+          ["f2", "海边日落-胶片.jpg", "photos", "image", 18.2e6, "2026-10-29 18:05", true, false],
+          ["f3", "产品路线图.md", "work", "text", 24e3, "2026-10-28 09:40", true, false],
+          ["f4", "周会纪要-11月.md", "work", "text", 8e3, "2026-10-27 17:10", false, false],
+          ["f5", "合同-供应商-v3.docx", "work", "doc", 1.2e6, "2026-10-26 11:02", false, false],
+          ["f6", "数据看板.xlsx", "work", "sheet", 356e3, "2026-10-24 16:35", false, true],
+          ["f7", "动效参考.mp4", "ideas", "video", 64.8e6, "2026-10-23 20:12", false, false],
+          ["f8", "配色灵感.png", "ideas", "image", 2.4e6, "2026-10-22 10:20", false, false],
+          ["f9", "交互笔记.txt", "ideas", "text", 3e3, "2026-10-20 15:02", false, false],
+          ["f10", "IMG_0821.jpg", "photos", "image", 6.8e6, "2026-10-18 12:33", false, false],
+          ["f11", "IMG_0834.heic", "photos", "image", 8.1e6, "2026-10-18 12:35", false, false],
+          ["f12", "组件库.sketch", "", "archive", 32.6e6, "2026-10-15 09:10", false, false],
+        ];
+        const files = seed.map(([id, name, group, kind, bytes, date, favorite, public_]) => ({
+          id, name, group, kind, bytes, date, favorite, public: public_,
+        }));
+        const kindIcon = { image: "i-image", video: "i-video", audio: "i-audio", archive: "i-archive", pdf: "i-pdf", doc: "i-doc", sheet: "i-sheet", slides: "i-slides", code: "i-code", text: "i-text", other: "i-other" };
+        const kindLabel = { image: "IMAGE", video: "VIDEO", audio: "AUDIO", archive: "ARCHIVE", pdf: "PDF", doc: "DOC", sheet: "SHEET", slides: "SLIDES", code: "CODE", text: "TEXT", other: "FILE" };
+        const paletteName = { graphite: "GRAPHITE", frost: "FROST", mono: "MONO" };
+        const views = [
+          { id: "all", label: "全部文件", icon: "i-files", count: () => state.files.length },
+          { id: "pinned", label: "收藏", icon: "i-star", count: () => state.files.filter((f) => f.favorite).length },
+          { id: "public", label: "公开链接", icon: "i-eye", count: () => state.files.filter((f) => f.public).length },
+          { id: "recent", label: "最近更新", icon: "i-clock", count: () => state.files.filter((f) => new Date(f.date.replace(" ", "T") + "+08:00") >= RECENT).length },
+        ];
+
+        /* ---------------- state ---------------- */
+        const state = {
+          files,
+          view: "all",
+          query: "",
+          sort: { key: "time", dir: -1 },
+          selected: new Set(),
+          active: null,
+          grid: false,
+          publicOnly: false,
+          palette: localStorage.getItem("index-palette") || "graphite",
+          queue: [],
+        };
+
+        const $ = (s) => document.querySelector(s);
+        const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html !== undefined) n.innerHTML = html; return n; };
+        const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#${name}"/></svg>`;
+        const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+        const groupOf = (id) => collections.find((g) => g.id === id);
+        const human = (bytes) => {
+          const units = ["B", "KB", "MB", "GB"];
+          let value = bytes, i = 0;
+          while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+          return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+        };
+        const timeShort = (date) => date.slice(5, 16).replace(" ", " · ");
+        const countText = () => `${state.files.length} FILES`;
+        const totalSize = () => human(state.files.reduce((sum, f) => sum + f.bytes, 0));
+
+        function inView(file) {
+          if (state.publicOnly && !file.public) return false;
+          const q = state.query.trim().toLowerCase();
+          if (q && !file.name.toLowerCase().includes(q) && !(groupOf(file.group)?.name || "").toLowerCase().includes(q)) return false;
+          if (state.view === "all") return true;
+          if (state.view === "pinned") return file.favorite;
+          if (state.view === "public") return file.public;
+          if (state.view === "recent") return new Date(file.date.replace(" ", "T") + "+08:00") >= RECENT;
+          if (state.view === "ungrouped") return !file.group;
+          if (state.view.startsWith("group:")) return file.group === state.view.slice(6);
+          return true;
+        }
+        function sortedRows() {
+          const rows = state.files.filter(inView);
+          const { key, dir } = state.sort;
+          rows.sort((a, b) => {
+            let result = 0;
+            if (key === "name") result = a.name.localeCompare(b.name, "zh-Hans");
+            if (key === "size") result = a.bytes - b.bytes;
+            if (key === "time") result = a.date.localeCompare(b.date);
+            return result * dir;
+          });
+          return rows;
+        }
+        function title() {
+          if (state.view === "all") return "全部文件";
+          if (state.view === "pinned") return "收藏";
+          if (state.view === "public") return "公开链接";
+          if (state.view === "recent") return "最近更新";
+          if (state.view === "ungrouped") return "未分组";
+          return groupOf(state.view.slice(6))?.name || "全部文件";
+        }
+
+        /* ---------------- render ---------------- */
+        function render() {
+          renderRail();
+          renderMobileViews();
+          renderTable();
+          renderDetail();
+          $("#crumbTitle").textContent = title();
+          $("#crumbCount").textContent = `${state.files.filter(inView).length} FILES`;
+          $("#toolbarInfo").textContent = `${state.files.filter(inView).length} 个文件 · ${totalSize()}`;
+          $("#statusLeft").textContent = `${state.files.length} FILES · ${totalSize()}${state.selected.size ? ` · SELECTED ${state.selected.size}` : ""}`;
+          $("#selectAll").checked = (() => { const rows = sortedRows(); return rows.length > 0 && rows.every((f) => state.selected.has(f.id)); })();
+          $("#publicFilter").classList.toggle("on", state.publicOnly);
+          const bulk = $("#bulkbar");
+          bulk.classList.toggle("on", state.selected.size > 0);
+          $("#bulkCount").textContent = `已选 ${state.selected.size} 项`;
+          $("#listView").classList.toggle("on", !state.grid);
+          $("#gridView").classList.toggle("on", state.grid);
+          $("#content").classList.toggle("is-grid", state.grid);
+        }
+
+        function renderRail() {
+          const nav = $("#railNav");
+          nav.innerHTML = "";
+          views.forEach((view) => {
+            const b = el("button", `rail-item ${state.view === view.id ? "on" : ""}`);
+            b.type = "button";
+            b.innerHTML = `${icon(view.icon)}<span>${view.label}</span><span class="rail-count">${view.count()}</span>`;
+            b.addEventListener("click", () => setView(view.id));
+            nav.append(b);
+          });
+          const coll = $("#railCollections");
+          coll.innerHTML = "";
+          collections.forEach((group) => {
+            const count = state.files.filter((f) => f.group === group.id).length;
+            if (!count) return;
+            const b = el("button", `rail-item rail-collection ${state.view === `group:${group.id}` ? "on" : ""}`);
+            b.type = "button";
+            b.innerHTML = `<span class="dot" style="--c:${group.color}"></span><span>${group.name}</span><span class="rail-count">${count}</span>`;
+            b.addEventListener("click", () => setView(`group:${group.id}`));
+            coll.append(b);
+          });
+          const ungrouped = state.files.filter((f) => !f.group).length;
+          if (ungrouped) {
+            const b = el("button", `rail-item rail-collection ${state.view === "ungrouped" ? "on" : ""}`);
+            b.type = "button";
+            b.innerHTML = `${icon("i-inbox")}<span>未分组</span><span class="rail-count">${ungrouped}</span>`;
+            b.addEventListener("click", () => setView("ungrouped"));
+            coll.append(b);
+          }
+          $("#paletteName").textContent = paletteName[state.palette];
+        }
+
+        function renderMobileViews() {
+          const wrap = $("#mobileViews");
+          wrap.innerHTML = "";
+          const chips = [
+            ...views.map((v) => ({ id: v.id, label: v.label, icon: v.icon, count: v.count() })),
+            ...collections.map((g) => ({ id: `group:${g.id}`, label: g.name, icon: "i-folder", count: state.files.filter((f) => f.group === g.id).length, color: g.color })),
+          ].filter((chip) => chip.count > 0 || ["all", "pinned", "public", "recent"].includes(chip.id));
+          chips.forEach((chip) => {
+            const b = el("button", `mview ${state.view === chip.id ? "on" : ""}`);
+            b.type = "button";
+            b.innerHTML = `${chip.color ? `<span class="dot" style="--c:${chip.color};width:6px;height:6px;border-radius:2px;background:${chip.color};display:inline-block"></span>` : icon(chip.icon)}<span>${chip.label}</span><span class="mono" style="opacity:.65">${chip.count}</span>`;
+            b.addEventListener("click", () => setView(chip.id));
+            wrap.append(b);
+          });
+        }
+
+        function typeTile(kind, size = "sm") {
+          return `<span class="type-${size}" data-kind="${kind}">${icon(kindIcon[kind] || "i-other")}</span>`;
+        }
+        function actionButtons(file) {
+          return `
+            <div class="act-btns">
+              <button class="icon-btn ${file.favorite ? "on" : ""}" data-act="favorite" title="收藏">${icon("i-star")}</button>
+              <button class="icon-btn" data-act="copy" title="复制直链">${icon("i-link")}</button>
+              <button class="icon-btn" data-act="download" title="下载">${icon("i-download")}</button>
+              <button class="icon-btn ${file.public ? "public" : ""}" data-act="public" title="公开状态">${icon(file.public ? "i-eye" : "i-eye-off")}</button>
+              <button class="icon-btn act-mobile" data-act="detail" title="详情">${icon("i-more")}</button>
+              <button class="icon-btn" data-act="detail" title="详情">${icon("i-more")}</button>
+            </div>`;
+        }
+
+        function renderTable() {
+          const rows = sortedRows();
+          const tbody = $("#rows");
+          tbody.innerHTML = "";
+          $("#content").classList.toggle("is-empty", rows.length === 0);
+          rows.forEach((file) => {
+            const group = groupOf(file.group);
+            const tr = el("tr", `${state.selected.has(file.id) ? "selected" : ""} ${state.active === file.id ? "active" : ""}`);
+            tr.dataset.id = file.id;
+            tr.innerHTML = `
+              <td class="col-check"><input type="checkbox" ${state.selected.has(file.id) ? "checked" : ""} aria-label="选择 ${esc(file.name)}"></td>
+              <td class="col-name">
+                <div class="cell-name">
+                  ${typeTile(file.kind)}
+                  <span class="name-wrap">
+                    <span class="fname">${esc(file.name)}</span>
+                    <span class="fmeta">${kindLabel[file.kind]} · ${human(file.bytes)} · ${timeShort(file.date)}${group ? ` · ${group.name}` : ""}</span>
+                  </span>
+                </div>
+              </td>
+              <td class="col-group"><span class="group-cell">${group ? `<span class="dot" style="--c:${group.color}"></span>${group.name}` : `<span style="color:var(--faint)">未分组</span>`}</span></td>
+              <td class="col-size size-cell">${human(file.bytes)}</td>
+              <td class="col-time time-cell">${file.date}</td>
+              <td class="col-vis"><span class="vis-badge ${file.public ? "public" : "private"}">${file.public ? "公开" : "私有"}</span></td>
+              <td class="col-act">${actionButtons(file)}</td>`;
+            tbody.append(tr);
+          });
+          const cards = $("#gridCards");
+          cards.innerHTML = "";
+          rows.forEach((file) => {
+            const group = groupOf(file.group);
+            const card = el("div", "card");
+            card.dataset.id = file.id;
+            card.innerHTML = `
+              <div class="card-top">${typeTile(file.kind, "sm")}<span class="mono" style="color:var(--faint);font-size:9px">${kindLabel[file.kind]}</span></div>
+              <p class="card-name">${esc(file.name)}</p>
+              <p class="card-meta">${human(file.bytes)} · ${file.date.slice(5, 10)}${group ? ` · ${group.name}` : ""}</p>`;
+            card.addEventListener("click", () => openDetail(file.id));
+            cards.append(card);
+          });
+          updateSortHeaders();
+        }
+
+        function updateSortHeaders() {
+          document.querySelectorAll("thead th.sortable").forEach((th) => {
+            const active = th.dataset.sort === state.sort.key;
+            th.classList.toggle("on", active);
+            const arrow = th.querySelector(".arrow");
+            if (arrow) arrow.textContent = active ? (state.sort.dir > 0 ? "↑" : "↓") : "";
+          });
+        }
+
+        function setView(id) {
+          state.view = id;
+          state.query = "";
+          $("#search").value = "";
+          state.selected.clear();
+          render();
+        }
+
+        /* ---------------- detail ---------------- */
+        function openDetail(id) {
+          state.active = id;
+          renderDetail();
+          $("#app").classList.add("has-detail");
+          if (window.innerWidth <= 1200) $("#scrim").classList.add("on");
+          renderTable();
+        }
+        function closeDetail() {
+          state.active = null;
+          $("#app").classList.remove("has-detail");
+          $("#scrim").classList.remove("on");
+          renderTable();
+        }
+        function renderDetail() {
+          const file = state.files.find((f) => f.id === state.active);
+          const panel = $("#detail");
+          if (!file) { panel.innerHTML = ""; return; }
+          const group = groupOf(file.group);
+          panel.innerHTML = `
+            <div class="detail-head">
+              <span class="detail-kicker">FILE DETAILS</span>
+              <button class="icon-btn" id="detailClose" title="关闭">${icon("i-close")}</button>
+            </div>
+            <span class="detail-type" data-kind="${file.kind}">${icon(kindIcon[file.kind] || "i-other")}</span>
+            <h2>${esc(file.name)}</h2>
+            <p class="detail-sub">${kindLabel[file.kind]} · ${file.id.toUpperCase()}</p>
+            <div class="detail-grid">
+              <div><dt>SIZE</dt><dd>${human(file.bytes)}</dd></div>
+              <div><dt>UPDATED</dt><dd>${file.date}</dd></div>
+              <div><dt>VISIBILITY</dt><dd>${file.public ? "公开直链" : "私有"}</dd></div>
+              <div><dt>STARRED</dt><dd>${file.favorite ? "是" : "否"}</dd></div>
+            </div>
+            <div class="detail-field">
+              <label for="detailGroup">分组</label>
+              <select id="detailGroup">
+                <option value="" ${!file.group ? "selected" : ""}>未分组</option>
+                ${collections.map((g) => `<option value="${g.id}" ${file.group === g.id ? "selected" : ""}>${g.name}</option>`).join("")}
+              </select>
+            </div>
+            <div class="detail-actions">
+              <button data-dact="download">${icon("i-download")} 下载文件</button>
+              <button data-dact="copy">${icon("i-link")} 复制公开直链</button>
+              <button data-dact="favorite">${icon("i-star")} ${file.favorite ? "取消收藏" : "收藏"}</button>
+              <button data-dact="public">${icon(file.public ? "i-eye-off" : "i-eye")} ${file.public ? "设为私有" : "设为公开"}</button>
+              <button class="danger" data-dact="delete">${icon("i-trash")} 删除</button>
+            </div>
+            <p class="detail-hash">SHA-256 · ${"9f2c8a1e".repeat(4)}…</p>`;
+          $("#detailClose").addEventListener("click", closeDetail);
+          $("#detailGroup").addEventListener("change", (event) => {
+            file.group = event.target.value;
+            toast("分组已更新");
+            render();
+          });
+          panel.querySelectorAll("[data-dact]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const act = button.dataset.dact;
+              if (act === "download") toast("已开始下载（演示）");
+              if (act === "copy") copyLink(file);
+              if (act === "favorite") { file.favorite = !file.favorite; toast(file.favorite ? "已收藏" : "已取消收藏"); render(); }
+              if (act === "public") { file.public = !file.public; toast(file.public ? "已设为公开" : "已设为私有"); render(); }
+              if (act === "delete") { state.files = state.files.filter((f) => f.id !== file.id); closeDetail(); toast("已删除（演示）"); render(); }
+            });
+          });
+        }
+
+        /* ---------------- actions ---------------- */
+        function copyLink(file) {
+          const text = `https://index.local/s/${file.id}`;
+          const done = () => toast("直链已复制");
+          if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => { fallbackCopy(text); done(); });
+          else { fallbackCopy(text); done(); }
+        }
+        function fallbackCopy(text) {
+          const area = document.createElement("textarea");
+          area.value = text;
+          area.style.position = "fixed";
+          area.style.opacity = "0";
+          document.body.append(area);
+          area.select();
+          try { document.execCommand("copy"); } catch (error) { /* ignore */ }
+          area.remove();
+        }
+        let toastTimer = 0;
+        function toast(message) {
+          const node = $("#toast");
+          node.textContent = message;
+          node.classList.add("on");
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(() => node.classList.remove("on"), 1600);
+        }
+
+        function toggleFileFlag(ids, key) {
+          state.files.forEach((file) => { if (ids.includes(file.id)) file[key] = key === "favorite" ? !file.favorite : !file.public; });
+        }
+        function bulk(action) {
+          const ids = [...state.selected];
+          if (!ids.length) return;
+          if (action === "favorite") { state.files.forEach((f) => { if (ids.includes(f.id)) f.favorite = true; }); toast(`已收藏 ${ids.length} 个文件`); }
+          if (action === "public") { state.files.forEach((f) => { if (ids.includes(f.id)) f.public = true; }); toast(`已公开 ${ids.length} 个文件`); }
+          if (action === "group") {
+            const name = window.prompt("移动到哪个分组？（留空 = 未分组）", "");
+            if (name === null) return;
+            const target = collections.find((g) => g.name === name.trim());
+            if (name.trim() && !target) { toast("没有这个分组，请先在命令面板新建"); return; }
+            state.files.forEach((f) => { if (ids.includes(f.id)) f.group = target ? target.id : ""; });
+            toast("分组已更新");
+          }
+          if (action === "delete") {
+            if (!window.confirm(`删除 ${ids.length} 个文件？（演示）`)) return;
+            state.files = state.files.filter((f) => !ids.includes(f.id));
+            state.selected.clear();
+            toast("已删除");
+          }
+          if (action === "clear") state.selected.clear();
+          if (action !== "clear") state.selected.clear();
+          render();
+        }
+
+        /* ---------------- upload ---------------- */
+        const sampleUploads = ["季度复盘.pptx", "录屏-交互.mov", "参考图-03.png", "预算表.xlsx", "语音备忘.m4a"];
+        function simulateUpload(name) {
+          const fileName = name || sampleUploads[Math.floor(Math.random() * sampleUploads.length)];
+          const id = `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const item = { id, name: fileName, progress: 0 };
+          state.queue.push(item);
+          renderUploadStrip();
+          const timer = setInterval(() => {
+            item.progress = Math.min(100, item.progress + 8 + Math.random() * 14);
+            renderUploadStrip();
+            if (item.progress >= 100) {
+              clearInterval(timer);
+              const ext = (fileName.split(".").pop() || "").toLowerCase();
+              const kind = ["jpg","jpeg","png","gif","webp","heic"].includes(ext) ? "image"
+                : ["mp4","mov","mkv","webm"].includes(ext) ? "video"
+                : ["mp3","wav","flac","m4a"].includes(ext) ? "audio"
+                : ["zip","rar","7z","sketch"].includes(ext) ? "archive"
+                : ext === "pdf" ? "pdf"
+                : ["doc","docx"].includes(ext) ? "doc"
+                : ["xls","xlsx","csv"].includes(ext) ? "sheet"
+                : ["ppt","pptx"].includes(ext) ? "slides"
+                : ["md","txt"].includes(ext) ? "text" : "other";
+              state.files.unshift({
+                id, name: fileName, group: state.view.startsWith("group:") ? state.view.slice(6) : "",
+                kind, bytes: Math.round((Math.random() * 20 + 0.4) * 1e6),
+                date: "2026-11-02 09:32", favorite: false, public: false,
+              });
+              state.queue = state.queue.filter((q) => q.id !== id);
+              renderUploadStrip();
+              toast(`已上传 ${fileName}`);
+              render();
+            }
+          }, 160);
+        }
+        function renderUploadStrip() {
+          const strip = $("#uploadStrip");
+          strip.classList.toggle("on", state.queue.length > 0);
+          strip.innerHTML = state.queue.map((item) => `
+            <div class="up-row">
+              <span class="up-name">${esc(item.name)}</span>
+              <span class="up-state">${Math.round(item.progress)}%</span>
+              <span class="up-track"><i style="width:${item.progress}%"></i></span>
+            </div>`).join("");
+        }
+
+        /* ---------------- command palette ---------------- */
+        let cmdIndex = 0;
+        let cmdItems = [];
+        function commands() {
+          return [
+            { label: "上传文件", hint: "UPLOAD", icon: "i-upload", run: () => $("#fileInput").click() },
+            { label: "新建分组", hint: "COLLECTION", icon: "i-folder", run: () => {
+              const name = window.prompt("新分组名称", "");
+              if (!name || !name.trim()) return;
+              if (!collections.some((g) => g.name === name.trim())) collections.push({ id: `g-${Date.now()}`, name: name.trim(), color: "#2f6fed" });
+              toast(`已创建分组 ${name.trim()}`);
+              render();
+            } },
+            { label: "切换到全部文件", hint: "VIEW", icon: "i-files", run: () => setView("all") },
+            { label: "切换到收藏", hint: "VIEW", icon: "i-star", run: () => setView("pinned") },
+            { label: "切换配色", hint: "THEME", icon: "i-swap", run: cyclePalette },
+            { label: "切换列表 / 网格", hint: "LAYOUT", icon: "i-grid", run: () => setGrid(!state.grid) },
+          ];
+        }
+        function openCmd() {
+          $("#cmd").classList.add("on");
+          $("#cmdInput").value = "";
+          cmdIndex = 0;
+          renderCmd("");
+          setTimeout(() => $("#cmdInput").focus(), 0);
+        }
+        function closeCmd() { $("#cmd").classList.remove("on"); }
+        function renderCmd(query) {
+          const q = query.trim().toLowerCase();
+          const list = $("#cmdList");
+          list.innerHTML = "";
+          cmdItems = [];
+          const addGroup = (label) => list.append(el("div", "cmd-group-label", label));
+          const addItem = (data) => {
+            const index = cmdItems.length;
+            cmdItems.push(data);
+            const button = el("button", `cmd-item ${index === cmdIndex ? "sel" : ""}`);
+            button.type = "button";
+            button.innerHTML = `${icon(data.icon)}<span>${esc(data.label)}</span><small>${data.hint}</small>`;
+            button.addEventListener("click", () => { closeCmd(); data.run(); });
+            button.addEventListener("mousemove", () => { cmdIndex = index; highlightCmd(); });
+            list.append(button);
+          };
+          const matchedFiles = state.files.filter((f) => !q || f.name.toLowerCase().includes(q)).slice(0, 6);
+          if (matchedFiles.length) { addGroup("FILES"); matchedFiles.forEach((f) => addItem({ label: f.name, hint: human(f.bytes), icon: kindIcon[f.kind], run: () => openDetail(f.id) })); }
+          const matchedGroups = collections.filter((g) => !q || g.name.toLowerCase().includes(q));
+          if (matchedGroups.length) { addGroup("COLLECTIONS"); matchedGroups.forEach((g) => addItem({ label: g.name, hint: `${state.files.filter((f) => f.group === g.id).length} FILES`, icon: "i-folder", run: () => setView(`group:${g.id}`) })); }
+          const cmds = commands().filter((c) => !q || c.label.toLowerCase().includes(q));
+          if (cmds.length) { addGroup("COMMANDS"); cmds.forEach((c) => addItem(c)); }
+          if (!cmdItems.length) list.append(el("div", "cmd-empty", "没有匹配项。按 Esc 关闭。"));
+          highlightCmd();
+        }
+        function highlightCmd() {
+          $("#cmdList").querySelectorAll(".cmd-item").forEach((item, index) => item.classList.toggle("sel", index === cmdIndex));
+        }
+
+        /* ---------------- palette / theme ---------------- */
+        function applyPalette() {
+          document.documentElement.dataset.palette = state.palette;
+          localStorage.setItem("index-palette", state.palette);
+          $("#paletteName").textContent = paletteName[state.palette];
+        }
+        function cyclePalette() {
+          const order = ["graphite", "frost", "mono"];
+          state.palette = order[(order.indexOf(state.palette) + 1) % order.length];
+          applyPalette();
+          toast(`配色：${paletteName[state.palette]}`);
+        }
+        function setGrid(next) {
+          state.grid = next;
+          render();
+        }
+
+        /* ---------------- events ---------------- */
+        document.querySelectorAll("thead th.sortable").forEach((th) => {
+          th.addEventListener("click", () => {
+            const key = th.dataset.sort;
+            if (state.sort.key === key) state.sort.dir *= -1;
+            else state.sort = { key, dir: key === "name" ? 1 : -1 };
+            render();
+          });
+        });
+        $("#search").addEventListener("input", (event) => { state.query = event.target.value; state.selected.clear(); render(); });
+        $("#search").addEventListener("keydown", (event) => { if (event.key === "Escape") { event.target.value = ""; state.query = ""; render(); event.target.blur(); } });
+        $("#uploadBtn").addEventListener("click", () => $("#fileInput").click());
+        $("#cmdBtn").addEventListener("click", openCmd);
+        $("#paletteBtn").addEventListener("click", cyclePalette);
+        $("#selectAll").addEventListener("change", (event) => {
+          const rows = sortedRows();
+          if (event.target.checked) rows.forEach((f) => state.selected.add(f.id));
+          else state.selected.clear();
+          render();
+        });
+        $("#publicFilter").addEventListener("click", () => { state.publicOnly = !state.publicOnly; render(); });
+        $("#sortSelect").addEventListener("change", (event) => { state.sort = { key: event.target.value, dir: event.target.value === "name" ? 1 : -1 }; render(); });
+        $("#dirBtn").addEventListener("click", () => { state.sort.dir *= -1; render(); });
+        $("#listView").addEventListener("click", () => setGrid(false));
+        $("#gridView").addEventListener("click", () => setGrid(true));
+        $("#fileInput").addEventListener("change", (event) => { Array.from(event.target.files || []).forEach((f) => simulateUpload(f.name)); event.target.value = ""; });
+        $("#scrim").addEventListener("click", closeDetail);
+        $("#cmdScrim").addEventListener("click", closeCmd);
+        $("#cmdInput").addEventListener("input", (event) => { cmdIndex = 0; renderCmd(event.target.value); });
+        $("#cmdInput").addEventListener("keydown", (event) => {
+          if (event.key === "ArrowDown") { event.preventDefault(); cmdIndex = Math.min(cmdItems.length - 1, cmdIndex + 1); highlightCmd(); }
+          if (event.key === "ArrowUp") { event.preventDefault(); cmdIndex = Math.max(0, cmdIndex - 1); highlightCmd(); }
+          if (event.key === "Enter") { event.preventDefault(); cmdItems[cmdIndex]?.run(); closeCmd(); }
+          if (event.key === "Escape") closeCmd();
+        });
+        document.querySelectorAll("#bulkbar [data-bulk]").forEach((button) => button.addEventListener("click", () => bulk(button.dataset.bulk)));
+        $("#rows").addEventListener("change", (event) => {
+          const checkbox = event.target.closest('input[type="checkbox"]');
+          if (!checkbox) return;
+          const id = checkbox.closest("tr").dataset.id;
+          if (checkbox.checked) state.selected.add(id); else state.selected.delete(id);
+          render();
+        });
+        $("#rows").addEventListener("click", (event) => {
+          const tr = event.target.closest("tr");
+          if (!tr || event.target.closest('input[type="checkbox"]')) return;
+          const file = state.files.find((f) => f.id === tr.dataset.id);
+          const action = event.target.closest("[data-act]")?.dataset.act;
+          if (!file) return;
+          if (!action) { openDetail(file.id); return; }
+          if (action === "favorite") { file.favorite = !file.favorite; toast(file.favorite ? "已收藏" : "已取消收藏"); render(); }
+          if (action === "copy") copyLink(file);
+          if (action === "download") toast("已开始下载（演示）");
+          if (action === "public") { file.public = !file.public; toast(file.public ? "已设为公开" : "已设为私有"); render(); }
+          if (action === "detail") openDetail(file.id);
+        });
+        document.addEventListener("keydown", (event) => {
+          const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName || "");
+          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openCmd(); return; }
+          if (!typing && event.key === "/") { event.preventDefault(); $("#search").focus(); return; }
+          if (event.key === "Escape") { closeCmd(); closeDetail(); }
+        });
+        let dragDepth = 0;
+        document.addEventListener("dragenter", (event) => { if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return; dragDepth++; $("#dropveil").classList.add("on"); });
+        document.addEventListener("dragover", (event) => { if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault(); });
+        document.addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $("#dropveil").classList.remove("on"); });
+        document.addEventListener("drop", (event) => {
+          if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+          event.preventDefault(); dragDepth = 0; $("#dropveil").classList.remove("on");
+          const names = Array.from(event.dataTransfer?.files || []).map((f) => f.name);
+          (names.length ? names : ["拖入的文件.pdf"]).forEach((name) => simulateUpload(name));
+        });
+
+        /* ---------------- boot ---------------- */
+        applyPalette();
+        render();
+      })();
+    </script>
+  </body>
+</html>
