@@ -27,6 +27,8 @@ const emit = defineEmits<{
   delete: [file: FileItem];
   "move-group": [file: FileItem, groupName: string];
   reorder: [orderedIds: string[]];
+  "drag-start": [file: FileItem];
+  "drag-end": [];
 }>();
 
 const listEl = ref<HTMLElement | null>(null);
@@ -56,7 +58,15 @@ function mountSortable(): void {
     ghostClass: "drag-ghost",
     chosenClass: "drag-chosen",
     dragClass: "drag-dragging",
+    // SortableJS 的 onStart 在原生和降级模式下都会触发；把当前文件交给父组件，
+    // 父组件据此让左栏分组标签成为可投放目标（不依赖 dataTransfer 类型）。
+    onStart: (event) => {
+      const id = (event.item as HTMLElement).dataset.id;
+      const file = props.files.find((entry) => entry.id === id);
+      if (file) emit("drag-start", file);
+    },
     onEnd: (event) => {
+      emit("drag-end");
       if (event.oldIndex === event.newIndex) return;
       const orderedIds = currentOrder();
       if (orderedIds.length > 1) emit("reorder", orderedIds);

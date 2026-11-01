@@ -271,6 +271,19 @@ ul {
   color: var(--accent-strong);
 }
 
+/* 文件拖到分组标签上时的落点高亮。 */
+.nav-item.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 1px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.nav-item.is-drop-target .nav-count {
+  background: rgb(91 91 224 / 0.18);
+  color: var(--accent-strong);
+}
+
 /* 分组导航：全部/收藏之下，分组多时自己滚动 */
 .nav-sep {
   margin: 10px 4px 8px;
@@ -1640,6 +1653,13 @@ ul {
   }
 
   .chip.active .chip-icon {
+    color: var(--accent-strong);
+  }
+
+  .chip.is-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: 1px;
+    background: var(--accent-soft);
     color: var(--accent-strong);
   }
 

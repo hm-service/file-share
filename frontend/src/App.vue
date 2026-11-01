@@ -271,6 +271,59 @@ async function onMoveGroup(file: FileItem, groupName: string): Promise<void> {
   }
 }
 
+/* ---------- 把文件拖到左栏分组标签 ---------- */
+
+/**
+ * FileList 在拖拽开始/结束时通过事件告知当前文件 id —— 比 dataTransfer 的类型更可靠，
+ * SortableJS 的原生/降级模式都能用。groupDropTarget 用于落点高亮。
+ */
+const groupDropTarget = ref<string | null>(null);
+const draggingFileId = ref<string | null>(null);
+
+function startFileDrag(file: FileItem): void {
+  draggingFileId.value = file.id;
+}
+
+function endFileDrag(): void {
+  draggingFileId.value = null;
+  groupDropTarget.value = null;
+}
+
+function onGroupDragEnter(event: DragEvent, groupName: string): void {
+  if (draggingFileId.value === null) return;
+  event.preventDefault();
+  groupDropTarget.value = groupName;
+}
+
+function onGroupDragOver(event: DragEvent, groupName: string): void {
+  if (draggingFileId.value === null) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  groupDropTarget.value = groupName;
+}
+
+function onGroupDragLeave(event: DragEvent, groupName: string): void {
+  const current = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
+  if (groupDropTarget.value === groupName) groupDropTarget.value = null;
+}
+
+/** 松手即改分组；空串表示移入未分组。 */
+async function onGroupDrop(event: DragEvent, groupName: string): Promise<void> {
+  event.preventDefault();
+  const fileId = draggingFileId.value ?? "";
+  draggingFileId.value = null;
+  groupDropTarget.value = null;
+  const file = files.value.find((entry) => entry.id === fileId);
+  if (!file || file.group_name === groupName) return;
+  try {
+    await updateFileGroup(fileId, groupName);
+    await refresh();
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
 /** 拖拽后的新顺序先落到本地（Vue 重新渲染时保持 DOM 已有顺序），再提交服务端。 */
 function applyOrder(orderedIds: string[]): void {
   const nextOrder = new Map(orderedIds.map((id, index) => [id, index] as const));
@@ -338,12 +391,14 @@ function swallowDrop(event: DragEvent): void {
 onMounted(() => {
   document.addEventListener("dragover", swallowDrop);
   document.addEventListener("drop", swallowDrop);
+  document.addEventListener("dragend", endFileDrag);
   void refresh();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("dragover", swallowDrop);
   document.removeEventListener("drop", swallowDrop);
+  document.removeEventListener("dragend", endFileDrag);
   window.clearTimeout(actionErrorTimer);
 });
 </script>
@@ -394,9 +449,13 @@ onBeforeUnmount(() => {
           :key="group"
           type="button"
           class="nav-item nav-item-group"
-          :class="{ active: isGroupActive(group) }"
+          :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
           :aria-current="isGroupActive(group) ? 'page' : undefined"
           @click="showGroup(group)"
+          @dragenter="onGroupDragEnter($event, group)"
+          @dragover="onGroupDragOver($event, group)"
+          @dragleave="onGroupDragLeave($event, group)"
+          @drop="onGroupDrop($event, group)"
         >
           <span class="nav-icon" v-html="ICONS.folder"></span>
           <span class="nav-label">{{ group }}</span>
@@ -406,9 +465,13 @@ onBeforeUnmount(() => {
           v-if="ungroupedCount > 0"
           type="button"
           class="nav-item nav-item-group"
-          :class="{ active: isUngrouped }"
+          :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
           :aria-current="isUngrouped ? 'page' : undefined"
           @click="showUngrouped"
+          @dragenter="onGroupDragEnter($event, '')"
+          @dragover="onGroupDragOver($event, '')"
+          @dragleave="onGroupDragLeave($event, '')"
+          @drop="onGroupDrop($event, '')"
         >
           <span class="nav-icon" v-html="ICONS.inbox"></span>
           <span class="nav-label">{{ t("nav.ungrouped") }}</span>
@@ -517,9 +580,13 @@ onBeforeUnmount(() => {
           type="button"
           class="chip"
           role="tab"
-          :class="{ active: isGroupActive(group) }"
+          :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
           :aria-selected="isGroupActive(group)"
           @click="showGroup(group)"
+          @dragenter="onGroupDragEnter($event, group)"
+          @dragover="onGroupDragOver($event, group)"
+          @dragleave="onGroupDragLeave($event, group)"
+          @drop="onGroupDrop($event, group)"
         >
           <span class="chip-icon" v-html="ICONS.folder"></span>
           <span class="chip-label">{{ group }}</span>
@@ -529,9 +596,13 @@ onBeforeUnmount(() => {
           type="button"
           class="chip"
           role="tab"
-          :class="{ active: isUngrouped }"
+          :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
           :aria-selected="isUngrouped"
           @click="showUngrouped"
+          @dragenter="onGroupDragEnter($event, '')"
+          @dragover="onGroupDragOver($event, '')"
+          @dragleave="onGroupDragLeave($event, '')"
+          @drop="onGroupDrop($event, '')"
         >
           <span class="chip-icon" v-html="ICONS.inbox"></span>
           <span class="chip-label">{{ t("nav.ungrouped") }}</span>
@@ -563,6 +634,8 @@ onBeforeUnmount(() => {
                 @delete="onDelete"
                 @move-group="onMoveGroup"
                 @reorder="onReorder"
+                @drag-start="startFileDrag"
+                @drag-end="endFileDrag"
               />
             </section>
           </div>
@@ -595,6 +668,8 @@ onBeforeUnmount(() => {
             @delete="onDelete"
             @move-group="onMoveGroup"
             @reorder="onReorder"
+            @drag-start="startFileDrag"
+            @drag-end="endFileDrag"
           />
           <div v-else class="empty">
             <span class="empty-icon" v-html="emptyIcon"></span>
