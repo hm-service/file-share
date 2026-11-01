@@ -42,6 +42,9 @@ export type MessageKey =
   | "auth.error"
   | "nav.all-files"
   | "nav.favorites"
+  | "nav.groups"
+  | "nav.no-groups"
+  | "nav.ungrouped"
   | "nav.search-placeholder"
   | "nav.file-count"
   | "nav.no-results"
@@ -75,8 +78,11 @@ export type MessageKey =
   | "action.delete"
   | "action.make-public"
   | "action.make-private"
+  | "action.move-group"
+  | "action.new-group"
   | "action.logout"
   | "badge.public"
+  | "group.new-prompt"
   | "confirm.delete"
   | "meta.unknown-time"
   | "lang.label"
@@ -103,6 +109,9 @@ const messages: Record<MessageKey, Message> = {
   "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
   "nav.all-files": { zh: "全部文件", en: "All files" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
+  "nav.groups": { zh: "分组", en: "Groups" },
+  "nav.no-groups": { zh: "暂无分组", en: "No groups yet" },
+  "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
   "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
   "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
   "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
@@ -139,8 +148,11 @@ const messages: Record<MessageKey, Message> = {
   "action.delete": { zh: "删除", en: "Delete" },
   "action.make-public": { zh: "设为公开", en: "Make public" },
   "action.make-private": { zh: "设为私有", en: "Make private" },
+  "action.move-group": { zh: "移动到分组", en: "Move to group" },
+  "action.new-group": { zh: "新建分组…", en: "New group…" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
+  "group.new-prompt": { zh: "输入分组名", en: "Enter a group name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },

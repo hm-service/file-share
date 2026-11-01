@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -16,6 +17,7 @@ import (
 
 	"file-share/api"
 	"file-share/app"
+	"file-share/core"
 	"file-share/db"
 	"file-share/internal/testenv"
 )
@@ -67,7 +69,9 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/favorite"},
 		{http.MethodPost, "/api/files/abc/public"},
 		{http.MethodGet, "/api/files/abc/download"},
+		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
+		{http.MethodPut, "/api/files/order"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.target, func(t *testing.T) {
@@ -203,7 +207,7 @@ func TestListFiles(t *testing.T) {
 		t.Fatalf("空列表应当序列化成 []，得到 %s", recorder.Body.String())
 	}
 
-	// 直接往库里插记录以控制创建时间与排序。
+	// 直接往库里插记录：插入顺序就是列表顺序（sort_order 递增）。
 	records := []db.File{
 		{ID: "bbbb", Filename: "b.txt", SHA256: "b1", Size: 1, CreatedAt: 100},
 		{ID: "aaaa", Filename: "a.txt", SHA256: "a1", Size: 2, CreatedAt: 200, IsPublic: true},
@@ -225,6 +229,8 @@ func TestListFiles(t *testing.T) {
 			IsFavorite bool   `json:"is_favorite"`
 			IsPublic   bool   `json:"is_public"`
 			CreatedAt  int64  `json:"created_at"`
+			GroupName  string `json:"group_name"`
+			SortOrder  int64  `json:"sort_order"`
 		} `json:"files"`
 	}
 	testenv.DecodeInto(t, recorder, &payload)
@@ -232,14 +238,21 @@ func TestListFiles(t *testing.T) {
 	for _, file := range payload.Files {
 		gotIDs = append(gotIDs, file.ID)
 	}
-	// created_at 倒序；同一秒按 id 升序。
-	if strings.Join(gotIDs, ",") != "aaaa,cccc,bbbb" {
-		t.Errorf("列表顺序 = %v，想要 [aaaa cccc bbbb]", gotIDs)
+	if strings.Join(gotIDs, ",") != "bbbb,aaaa,cccc" {
+		t.Errorf("列表顺序 = %v，想要 [bbbb aaaa cccc]", gotIDs)
 	}
-	if last := payload.Files[len(payload.Files)-1]; last.CreatedAt != 100 || last.Filename != "b.txt" || last.Size != 1 {
+	for i, file := range payload.Files {
+		if file.SortOrder != int64(i+1) {
+			t.Errorf("%s sort_order = %d，想要 %d", file.ID, file.SortOrder, i+1)
+		}
+		if file.GroupName != "" {
+			t.Errorf("%s group_name = %q，想要空串", file.ID, file.GroupName)
+		}
+	}
+	if last := payload.Files[len(payload.Files)-1]; last.CreatedAt != 200 || last.Filename != "c.txt" || last.Size != 3 {
 		t.Errorf("字段映射不对: %+v", last)
 	}
-	if !payload.Files[0].IsPublic || !payload.Files[1].IsFavorite {
+	if !payload.Files[1].IsPublic || !payload.Files[2].IsFavorite {
 		t.Error("收藏 / 公开标记没有映射出来")
 	}
 }
@@ -755,7 +768,8 @@ func TestUnknownRoutesAndMethods(t *testing.T) {
 		}{
 			{http.MethodPost, "/api/files", "GET, HEAD"},
 			{http.MethodGet, "/api/upload", "POST"},
-			{http.MethodPut, "/api/files/abc", "DELETE"},
+			{http.MethodPut, "/api/files/abc", "PATCH, DELETE"},
+			{http.MethodGet, "/api/files/abc", "PATCH, DELETE"},
 			{http.MethodGet, "/api/files/abc/favorite", "POST"},
 			{http.MethodGet, "/api/files/abc/public", "POST"},
 		}
@@ -771,6 +785,13 @@ func TestUnknownRoutesAndMethods(t *testing.T) {
 			if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 				t.Errorf("%s %s Content-Type = %q", item.method, item.target, got)
 			}
+		}
+	})
+
+	t.Run("批量排序路径只接受 PUT", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodPost, "/api/files/order", "")
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST /api/files/order 状态码 = %d，想要 405", recorder.Code)
 		}
 	})
 
@@ -1005,6 +1026,190 @@ func TestAccessLog(t *testing.T) {
 	if len(logged) != 2 {
 		t.Errorf("访问日志条数 = %d，想要 2", len(logged))
 	}
+}
+
+// fileJSON 是列表与 PATCH 响应里一条记录的完整字段（契约 §5 的 file 对象 + 分组/排序）。
+type fileJSON struct {
+	ID         string `json:"id"`
+	Filename   string `json:"filename"`
+	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"`
+	IsFavorite bool   `json:"is_favorite"`
+	IsPublic   bool   `json:"is_public"`
+	CreatedAt  int64  `json:"created_at"`
+	GroupName  string `json:"group_name"`
+	SortOrder  int64  `json:"sort_order"`
+}
+
+func listFileIDs(t *testing.T, handler http.Handler, token string) []string {
+	t.Helper()
+	recorder := testenv.Do(handler, http.MethodGet, "/api/files", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/files 状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Files []fileJSON `json:"files"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	ids := make([]string, 0, len(payload.Files))
+	for _, file := range payload.Files {
+		ids = append(ids, file.ID)
+	}
+	return ids
+}
+
+// PATCH /api/files/{id}：改分组名、trim、空串表示未分组，并把记录移到列表末尾。
+func TestUpdateGroupRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+
+	recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"group_name": "  工作  "}, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var updated fileJSON
+	testenv.DecodeInto(t, recorder, &updated)
+	if updated.ID != first.ID || updated.Filename != "first.txt" || updated.SHA256 != first.SHA256 || updated.Size != first.Size {
+		t.Errorf("PATCH 应当返回完整记录: %+v", updated)
+	}
+	if updated.GroupName != "工作" {
+		t.Errorf("group_name = %q，想要 trim 后的「工作」", updated.GroupName)
+	}
+	// 两条记录 sort_order 是 1、2；改分组后 first 被移到末尾，应当是 3。
+	if updated.SortOrder != 3 {
+		t.Errorf("sort_order = %d，想要 3（移到末尾）", updated.SortOrder)
+	}
+	if got := listFileIDs(t, handler, token); len(got) != 2 || got[0] != second.ID || got[1] != first.ID {
+		t.Errorf("列表顺序 = %v，想要 first 在最后", got)
+	}
+
+	// 空串 / 缺字段都表示未分组。
+	for _, body := range []map[string]any{{"group_name": ""}, {}} {
+		recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID, body, token)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("清空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+		testenv.DecodeInto(t, recorder, &updated)
+		if updated.GroupName != "" {
+			t.Errorf("清空分组后 group_name = %q，想要空串", updated.GroupName)
+		}
+	}
+
+	// 非法分组名（超长 / 控制字符）。
+	longName := strings.Repeat("a", core.MaxGroupNameBytes+1)
+	for name, body := range map[string]map[string]any{
+		"超长":   {"group_name": longName},
+		"控制字符": {"group_name": "a\nb"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID, body, token)
+			assertJSONError(t, recorder, http.StatusBadRequest, "分组名无效")
+		})
+	}
+
+	// 错误文案走 Accept-Language。
+	recorder = testenv.DoRequest(handler, http.MethodPatch, "/api/files/"+first.ID,
+		bytes.NewReader([]byte(`{"group_name":"`+longName+`"}`)), "application/json", token,
+		map[string]string{"Accept-Language": "en"})
+	assertJSONError(t, recorder, http.StatusBadRequest, "Invalid group name")
+
+	// 请求体不是合法 JSON。
+	recorder = testenv.DoRaw(handler, http.MethodPatch, "/api/files/"+first.ID,
+		bytes.NewReader([]byte("not json")), "application/json", token)
+	assertJSONError(t, recorder, http.StatusBadRequest, "请求体不是合法的 JSON")
+
+	// 记录不存在。
+	assertJSONError(t, testenv.DoJSON(handler, http.MethodPatch, "/api/files/absent",
+		map[string]any{"group_name": "x"}, token), http.StatusNotFound, "找不到该文件")
+
+	// 未登录。
+	assertJSONError(t, testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"group_name": "x"}, ""), http.StatusUnauthorized, "需要登录")
+
+	// 方法不对：这条路径上只允许 PATCH / DELETE。
+	recorder = testenv.Do(handler, http.MethodGet, "/api/files/"+first.ID, token)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET 状态码 = %d，想要 405", recorder.Code)
+	}
+	if got := recorder.Header().Get("Allow"); got != "PATCH, DELETE" {
+		t.Errorf("Allow = %q，想要 PATCH, DELETE", got)
+	}
+}
+
+// PUT /api/files/order：批量重写顺序；成功 204，非法 400，记录不存在 404 且整体回滚。
+func TestSetOrderRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	third := testenv.SeedUpload(t, instance, "third.txt", []byte("third"))
+
+	order := func(items []map[string]any) *httptest.ResponseRecorder {
+		return testenv.DoJSON(handler, http.MethodPut, "/api/files/order", map[string]any{"items": items}, token)
+	}
+	items := []map[string]any{
+		{"id": third.ID, "sort_order": 10},
+		{"id": first.ID, "sort_order": 20},
+		{"id": second.ID, "sort_order": 30},
+	}
+	recorder := order(items)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 0 {
+		t.Errorf("204 不该有响应体: %q", recorder.Body.String())
+	}
+	wantOrder := []string{third.ID, first.ID, second.ID}
+	if got := listFileIDs(t, handler, token); len(got) != 3 || got[0] != wantOrder[0] || got[1] != wantOrder[1] || got[2] != wantOrder[2] {
+		t.Errorf("排序后列表 = %v，想要 %v", got, wantOrder)
+	}
+
+	// 任一条记录不存在：整体 404，原顺序不变。
+	badItems := append([]map[string]any{{"id": "absent", "sort_order": 1}}, items...)
+	recorder = order(badItems)
+	assertJSONError(t, recorder, http.StatusNotFound, "找不到该文件")
+	if got := listFileIDs(t, handler, token); len(got) != 3 || got[0] != wantOrder[0] || got[1] != wantOrder[1] || got[2] != wantOrder[2] {
+		t.Errorf("回滚后列表 = %v，想要原顺序 %v", got, wantOrder)
+	}
+
+	// 非法排序数据。
+	invalidCases := map[string]any{
+		"空列表":   []map[string]any{},
+		"重复 id": []map[string]any{{"id": first.ID, "sort_order": 1}, {"id": first.ID, "sort_order": 2}},
+		"空 id":  []map[string]any{{"id": "", "sort_order": 1}},
+		"负数":    []map[string]any{{"id": first.ID, "sort_order": -1}},
+		"超过上界":  []map[string]any{{"id": first.ID, "sort_order": core.MaxSortOrder + 1}},
+	}
+	for name, bad := range invalidCases {
+		t.Run(name, func(t *testing.T) {
+			assertJSONError(t, order(bad.([]map[string]any)), http.StatusBadRequest, "排序数据无效")
+		})
+	}
+
+	// 超过 2000 项：能过请求体上限（该接口单独放宽到 256 KiB），由业务校验回 400。
+	tooMany := make([]map[string]any, 0, core.MaxOrderItems+1)
+	for i := 0; i <= core.MaxOrderItems; i++ {
+		tooMany = append(tooMany, map[string]any{"id": fmt.Sprintf("id-%04d", i), "sort_order": i})
+	}
+	assertJSONError(t, order(tooMany), http.StatusBadRequest, "排序数据无效")
+
+	// 错误文案走 Accept-Language。
+	recorder = testenv.DoRequest(handler, http.MethodPut, "/api/files/order",
+		bytes.NewReader([]byte(`{"items":[]}`)), "application/json", token,
+		map[string]string{"Accept-Language": "en"})
+	assertJSONError(t, recorder, http.StatusBadRequest, "Invalid ordering data")
+
+	// 请求体不是合法 JSON。
+	recorder = testenv.DoRaw(handler, http.MethodPut, "/api/files/order",
+		bytes.NewReader([]byte("not json")), "application/json", token)
+	assertJSONError(t, recorder, http.StatusBadRequest, "请求体不是合法的 JSON")
+
+	// 未登录。
+	assertJSONError(t, testenv.DoJSON(handler, http.MethodPut, "/api/files/order",
+		map[string]any{"items": items}, ""), http.StatusUnauthorized, "需要登录")
 }
 
 // 并发上传同一份内容：两个请求都成功，只有一个 blob，没有残留临时文件。

@@ -1,14 +1,17 @@
 <script setup lang="ts">
 /**
- * 主页面（/）的界面壳：左侧导航 + 文件列表 + 浮动上传坞。
+ * 主页面（/）的界面壳：左侧导航（全部 / 收藏 / 分组） + 文件列表 + 浮动上传坞。
  *
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
- * （收藏 / 公开状态是全局的，上传完成后也可能出现新记录）。
- * 拖放监听挂在主区域上：桌面端整个内容区都可以接文件，窄屏同样可用。
+ * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
+ *
+ * 一级分组没有独立接口：分组名与段内顺序都来自每条文件的 group_name / sort_order，
+ * 所以左栏的分组列表由文件集合现算；「全部」视图按分组分段渲染（未分组段在最后），
+ * 收藏与单分组视图平铺。拖拽排序只改段内顺序，交给后端 PUT /api/files/order。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-import FileRow from "@/components/FileRow.vue";
+import FileList from "@/components/FileList.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
 import UploadDock from "@/components/UploadDock.vue";
 import {
@@ -16,8 +19,10 @@ import {
   deleteFile,
   downloadFile,
   listFiles,
+  reorderFiles,
   toggleFavorite,
   togglePublic,
+  updateFileGroup,
 } from "@/api";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
@@ -30,26 +35,159 @@ const loadError = ref("");
 const actionError = ref("");
 let actionErrorTimer = 0;
 
-/** 当前视图与文件名过滤（纯前端，后端列表接口是全集）。 */
-const view = ref<"all" | "favorites">("all");
+/** 当前视图：全部 / 收藏 / 单个分组 / 未分组。 */
+type ViewKind = "all" | "favorites" | "group" | "ungrouped";
+const view = ref<{ kind: ViewKind; group?: string }>({ kind: "all" });
 const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 
-const favorites = computed(() => files.value.filter((file) => file.is_favorite));
+/* ---------- 分组派生 ---------- */
+
+// 固定用中文排序规则：分组名含中文时按拼音（而不是浏览器 UI 语言的码点顺序），跨语言一致
+const collator = new Intl.Collator("zh-Hans", { numeric: true, sensitivity: "base" });
+
+/** 全部分组名，按名称排序（没有分组接口，分组就是文件里出现过的非空 group_name）。 */
+const groups = computed(() => {
+  const names = new Set<string>();
+  for (const file of files.value) {
+    if (file.group_name) names.add(file.group_name);
+  }
+  return [...names].sort(collator.compare);
+});
+
+const groupCounts = computed(() => {
+  const counts = new Map<string, number>();
+  for (const file of files.value) {
+    if (file.group_name) counts.set(file.group_name, (counts.get(file.group_name) ?? 0) + 1);
+  }
+  return counts;
+});
+
+const ungroupedCount = computed(() => {
+  let count = 0;
+  for (const file of files.value) {
+    if (!file.group_name) count += 1;
+  }
+  return count;
+});
+
+/** 段内顺序：sort_order 优先；同一序号（例如都还是初始值）时新的在前。 */
+const sortedFiles = computed(() => {
+  return [...files.value].sort((a, b) => {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+    if (a.created_at !== b.created_at) return b.created_at - a.created_at;
+    return a.id.localeCompare(b.id);
+  });
+});
+
+const keyword = computed(() => query.value.trim().toLowerCase());
+/** 搜索过滤中不允许拖拽：DOM 里只是子集，提交顺序会打乱整段。 */
+const sortingDisabled = computed(() => keyword.value.length > 0);
+
+function matchesQuery(file: FileItem): boolean {
+  return !keyword.value || file.filename.toLowerCase().includes(keyword.value);
+}
+
+/** 平铺视图（收藏 / 单分组 / 未分组）的可见文件。 */
 const visibleFiles = computed(() => {
-  const base = view.value === "favorites" ? favorites.value : files.value;
-  const keyword = query.value.trim().toLowerCase();
-  if (!keyword) return base;
-  return base.filter((file) => file.filename.toLowerCase().includes(keyword));
+  const base = sortedFiles.value.filter(matchesQuery);
+  switch (view.value.kind) {
+    case "favorites":
+      return base.filter((file) => file.is_favorite);
+    case "group":
+      return base.filter((file) => file.group_name === view.value.group);
+    case "ungrouped":
+      return base.filter((file) => !file.group_name);
+    default:
+      return base;
+  }
 });
-const pageTitle = computed(() =>
-  view.value === "favorites" ? t("nav.favorites") : t("nav.all-files"),
-);
+
+interface FileSection {
+  key: string;
+  title: string;
+  ungrouped: boolean;
+  files: FileItem[];
+}
+
+/**
+ * 「全部」视图的分段：每个分组一段（名称排序），未分组段放最后。
+ * 搜索时过滤文件并隐藏空段；没有分组时只剩未分组段，仍带标题。
+ */
+const allSections = computed<FileSection[]>(() => {
+  const sections: FileSection[] = groups.value.map((group) => ({
+    key: `group:${group}`,
+    title: group,
+    ungrouped: false,
+    files: sortedFiles.value.filter((file) => file.group_name === group && matchesQuery(file)),
+  }));
+  const ungroupedFiles = sortedFiles.value.filter((file) => !file.group_name && matchesQuery(file));
+  if (ungroupedFiles.length) {
+    sections.push({
+      key: "ungrouped",
+      title: t("nav.ungrouped"),
+      ungrouped: true,
+      files: ungroupedFiles,
+    });
+  }
+  return sections.filter((section) => section.files.length > 0);
+});
+
+const pageTitle = computed(() => {
+  switch (view.value.kind) {
+    case "favorites":
+      return t("nav.favorites");
+    case "ungrouped":
+      return t("nav.ungrouped");
+    case "group":
+      return view.value.group ?? "";
+    default:
+      return t("nav.all-files");
+  }
+});
+const pageCount = computed(() => visibleFiles.value.length);
 const emptyKey = computed(() => {
-  if (query.value.trim()) return "nav.no-results" as const;
-  return view.value === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-all" as const);
+  if (keyword.value) return "nav.no-results" as const;
+  return view.value.kind === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-all" as const);
 });
+const emptyIcon = computed(() => {
+  if (view.value.kind === "favorites") return ICONS.star;
+  if (view.value.kind === "group" || view.value.kind === "ungrouped") return ICONS.folder;
+  return ICONS.file;
+});
+
+const isAll = computed(() => view.value.kind === "all");
+const isFavorites = computed(() => view.value.kind === "favorites");
+const isUngrouped = computed(() => view.value.kind === "ungrouped");
+const isGroupActive = (group: string): boolean =>
+  view.value.kind === "group" && view.value.group === group;
+
+function showAll(): void {
+  view.value = { kind: "all" };
+}
+
+function showFavorites(): void {
+  view.value = { kind: "favorites" };
+}
+
+function showGroup(group: string): void {
+  view.value = { kind: "group", group };
+}
+
+function showUngrouped(): void {
+  view.value = { kind: "ungrouped" };
+}
+
+/** 文件被移走后当前分组可能消失：刷新后回退到「全部」，避免停在一个空视图。 */
+function validateView(): void {
+  if (view.value.kind === "group" && !groups.value.includes(view.value.group ?? "")) {
+    view.value = { kind: "all" };
+  }
+  if (view.value.kind === "ungrouped" && ungroupedCount.value === 0) {
+    view.value = { kind: "all" };
+  }
+}
 
 /* ---------- 列表数据与操作 ---------- */
 
@@ -77,6 +215,7 @@ async function refresh(): Promise<void> {
   try {
     files.value = await listFiles();
     loadError.value = "";
+    validateView();
   } catch (error) {
     if (isUnauthorized(error)) return;
     loadError.value = t("error.load");
@@ -118,6 +257,37 @@ async function onDelete(file: FileItem): Promise<void> {
     await refresh();
   } catch (error) {
     showActionError(error);
+  }
+}
+
+/** 移动到分组（空串 = 未分组；新分组名会随着文件出现自动出现在左栏）。 */
+async function onMoveGroup(file: FileItem, groupName: string): Promise<void> {
+  if (file.group_name === groupName) return;
+  try {
+    await updateFileGroup(file.id, groupName);
+    await refresh();
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+/** 拖拽后的新顺序先落到本地（Vue 重新渲染时保持 DOM 已有顺序），再提交服务端。 */
+function applyOrder(orderedIds: string[]): void {
+  const nextOrder = new Map(orderedIds.map((id, index) => [id, index] as const));
+  for (const file of files.value) {
+    const order = nextOrder.get(file.id);
+    if (order !== undefined) file.sort_order = order;
+  }
+}
+
+async function onReorder(orderedIds: string[]): Promise<void> {
+  applyOrder(orderedIds);
+  try {
+    await reorderFiles(orderedIds.map((id, index) => ({ id, sort_order: index })));
+  } catch (error) {
+    showActionError(error);
+    // 回滚：重新拉服务端顺序（刷新也会恢复分组计数等派生数据）
+    await refresh();
   }
 }
 
@@ -180,7 +350,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="shell">
-    <!-- 桌面端侧栏：品牌 / 上传入口 / 视图切换 / 语言与退出 -->
+    <!-- 桌面端侧栏：品牌 / 上传入口 / 视图切换 / 分组 / 语言与退出 -->
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark" v-html="ICONS.upload"></span>
@@ -197,13 +367,7 @@ onBeforeUnmount(() => {
       <p class="upload-hint">{{ t("upload.hint") }}</p>
 
       <nav class="nav" :aria-label="t('nav.all-files')">
-        <button
-          type="button"
-          class="nav-item"
-          :class="{ active: view === 'all' }"
-          :aria-current="view === 'all' ? 'page' : undefined"
-          @click="view = 'all'"
-        >
+        <button type="button" class="nav-item" :class="{ active: isAll }" :aria-current="isAll ? 'page' : undefined" @click="showAll">
           <span class="nav-icon" v-html="ICONS.file"></span>
           <span class="nav-label">{{ t("nav.all-files") }}</span>
           <span class="nav-count">{{ files.length }}</span>
@@ -211,15 +375,47 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="nav-item"
-          :class="{ active: view === 'favorites' }"
-          :aria-current="view === 'favorites' ? 'page' : undefined"
-          @click="view = 'favorites'"
+          :class="{ active: isFavorites }"
+          :aria-current="isFavorites ? 'page' : undefined"
+          @click="showFavorites"
         >
           <span class="nav-icon" v-html="ICONS.star"></span>
           <span class="nav-label">{{ t("nav.favorites") }}</span>
-          <span class="nav-count">{{ favorites.length }}</span>
+          <span class="nav-count">{{ files.filter((file) => file.is_favorite).length }}</span>
         </button>
       </nav>
+
+      <div class="nav-sep"></div>
+      <p class="nav-section-title">{{ t("nav.groups") }}</p>
+
+      <div class="nav nav-groups">
+        <button
+          v-for="group in groups"
+          :key="group"
+          type="button"
+          class="nav-item nav-item-group"
+          :class="{ active: isGroupActive(group) }"
+          :aria-current="isGroupActive(group) ? 'page' : undefined"
+          @click="showGroup(group)"
+        >
+          <span class="nav-icon" v-html="ICONS.folder"></span>
+          <span class="nav-label">{{ group }}</span>
+          <span class="nav-count">{{ groupCounts.get(group) ?? 0 }}</span>
+        </button>
+        <button
+          v-if="ungroupedCount > 0"
+          type="button"
+          class="nav-item nav-item-group"
+          :class="{ active: isUngrouped }"
+          :aria-current="isUngrouped ? 'page' : undefined"
+          @click="showUngrouped"
+        >
+          <span class="nav-icon" v-html="ICONS.inbox"></span>
+          <span class="nav-label">{{ t("nav.ungrouped") }}</span>
+          <span class="nav-count">{{ ungroupedCount }}</span>
+        </button>
+        <p v-if="!groups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
+      </div>
 
       <div class="sidebar-foot">
         <LocaleSwitch />
@@ -268,7 +464,7 @@ onBeforeUnmount(() => {
       <header class="page-head">
         <div class="page-titles">
           <h1 class="page-title">{{ pageTitle }}</h1>
-          <p class="page-sub">{{ t("nav.file-count", { count: visibleFiles.length }) }}</p>
+          <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
         </div>
         <label class="search">
           <span class="search-icon" v-html="ICONS.search"></span>
@@ -288,9 +484,9 @@ onBeforeUnmount(() => {
           type="button"
           class="tab"
           role="tab"
-          :class="{ active: view === 'all' }"
-          :aria-selected="view === 'all'"
-          @click="view = 'all'"
+          :class="{ active: isAll }"
+          :aria-selected="isAll"
+          @click="showAll"
         >
           {{ t("nav.all-files") }}
           <span class="tab-count">{{ files.length }}</span>
@@ -299,12 +495,46 @@ onBeforeUnmount(() => {
           type="button"
           class="tab"
           role="tab"
-          :class="{ active: view === 'favorites' }"
-          :aria-selected="view === 'favorites'"
-          @click="view = 'favorites'"
+          :class="{ active: isFavorites }"
+          :aria-selected="isFavorites"
+          @click="showFavorites"
         >
           {{ t("nav.favorites") }}
-          <span class="tab-count">{{ favorites.length }}</span>
+          <span class="tab-count">{{ files.filter((file) => file.is_favorite).length }}</span>
+        </button>
+      </div>
+
+      <!-- 窄屏分组 chips：横向滚动，含未分组，当前分组高亮 -->
+      <div
+        v-if="groups.length || ungroupedCount > 0"
+        class="chips"
+        role="tablist"
+        :aria-label="t('nav.groups')"
+      >
+        <button
+          v-for="group in groups"
+          :key="group"
+          type="button"
+          class="chip"
+          role="tab"
+          :class="{ active: isGroupActive(group) }"
+          :aria-selected="isGroupActive(group)"
+          @click="showGroup(group)"
+        >
+          <span class="chip-icon" v-html="ICONS.folder"></span>
+          <span class="chip-label">{{ group }}</span>
+        </button>
+        <button
+          v-if="ungroupedCount > 0"
+          type="button"
+          class="chip"
+          role="tab"
+          :class="{ active: isUngrouped }"
+          :aria-selected="isUngrouped"
+          @click="showUngrouped"
+        >
+          <span class="chip-icon" v-html="ICONS.inbox"></span>
+          <span class="chip-label">{{ t("nav.ungrouped") }}</span>
         </button>
       </div>
 
@@ -314,35 +544,69 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <ul v-if="visibleFiles.length" class="list-card">
-          <FileRow
-            v-for="file in visibleFiles"
-            :key="file.id"
-            :file="file"
-            @favorite="onFavorite(file)"
-            @download="onDownload(file)"
-            @visibility="onVisibility(file)"
-            @delete="onDelete(file)"
-          />
-        </ul>
+        <!-- 全部视图：按分组分段（未分组段在最后），每个分段一个可拖拽列表 -->
+        <template v-if="isAll">
+          <div v-if="allSections.length" class="sections">
+            <section v-for="section in allSections" :key="section.key" class="group-section">
+              <header class="group-head">
+                <span class="group-icon" v-html="section.ungrouped ? ICONS.inbox : ICONS.folder"></span>
+                <h2 class="group-title">{{ section.title }}</h2>
+                <span class="group-count">{{ section.files.length }}</span>
+              </header>
+              <FileList
+                :files="section.files"
+                :groups="groups"
+                :sortable="!sortingDisabled"
+                @favorite="onFavorite"
+                @download="onDownload"
+                @visibility="onVisibility"
+                @delete="onDelete"
+                @move-group="onMoveGroup"
+                @reorder="onReorder"
+              />
+            </section>
+          </div>
+          <div v-else class="empty">
+            <span class="empty-icon" v-html="emptyIcon"></span>
+            <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
+            <template v-if="loaded && !query.trim()">
+              <p class="empty-text">
+                <span class="desktop-only">{{ t("upload.hint") }}</span>
+                <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
+              </p>
+              <button type="button" class="upload-secondary" @click="pickFiles">
+                <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
+                {{ t("upload.button") }}
+              </button>
+            </template>
+          </div>
+        </template>
 
-        <div v-else class="empty">
-          <span class="empty-icon" v-html="view === 'favorites' ? ICONS.star : ICONS.file"></span>
-          <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
-          <p v-if="loaded && !query.trim() && view === 'all'" class="empty-text">
-            <span class="desktop-only">{{ t("upload.hint") }}</span>
-            <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
-          </p>
-          <button
-            v-if="loaded && !query.trim() && view === 'all'"
-            type="button"
-            class="upload-secondary"
-            @click="pickFiles"
-          >
-            <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
-            {{ t("upload.button") }}
-          </button>
-        </div>
+        <!-- 收藏 / 单个分组 / 未分组：平铺列表，同样支持拖拽排序 -->
+        <template v-else>
+          <FileList
+            v-if="visibleFiles.length"
+            :files="visibleFiles"
+            :groups="groups"
+            :sortable="!sortingDisabled"
+            @favorite="onFavorite"
+            @download="onDownload"
+            @visibility="onVisibility"
+            @delete="onDelete"
+            @move-group="onMoveGroup"
+            @reorder="onReorder"
+          />
+          <div v-else class="empty">
+            <span class="empty-icon" v-html="emptyIcon"></span>
+            <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
+            <template v-if="loaded && !query.trim() && isFavorites">
+              <button type="button" class="upload-secondary" @click="pickFiles">
+                <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
+                {{ t("upload.button") }}
+              </button>
+            </template>
+          </div>
+        </template>
       </section>
 
       <div v-if="dropActive" class="drop-overlay" aria-hidden="true">

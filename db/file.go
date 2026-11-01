@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"errors"
+
+	"file-share/core"
 )
 
 // ErrNotFound 表示记录不存在；调用方据此回 404，而不是 500。
@@ -17,9 +19,11 @@ type File struct {
 	IsFavorite bool   `json:"is_favorite"`
 	IsPublic   bool   `json:"is_public"`
 	CreatedAt  int64  `json:"created_at"`
+	GroupName  string `json:"group_name"`
+	SortOrder  int64  `json:"sort_order"`
 }
 
-const fileColumns = "id, filename, sha256, size, is_favorite, is_public, created_at"
+const fileColumns = "id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order"
 
 // rowScanner 让单行查询与多行查询共用一套扫描代码。
 type rowScanner interface {
@@ -29,17 +33,18 @@ type rowScanner interface {
 func scanFile(row rowScanner) (*File, error) {
 	var file File
 	if err := row.Scan(&file.ID, &file.Filename, &file.SHA256, &file.Size,
-		&file.IsFavorite, &file.IsPublic, &file.CreatedAt); err != nil {
+		&file.IsFavorite, &file.IsPublic, &file.CreatedAt, &file.GroupName, &file.SortOrder); err != nil {
 		return nil, err
 	}
 	return &file, nil
 }
 
-// ListFiles 按创建时间倒序返回全部记录；同一秒创建的按 id 升序，保证排序稳定。
+// ListFiles 按用户排定的顺序返回全部记录：sort_order 升序，其次创建时间倒序、
+// id 升序 —— 后两级保证迁移来的旧数据（sort_order 全 0）仍是原来的顺序，且结果稳定。
 func (s *Store) ListFiles() ([]File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query("SELECT " + fileColumns + " FROM file ORDER BY created_at DESC, id ASC")
+	rows, err := s.db.Query("SELECT " + fileColumns + " FROM file ORDER BY sort_order ASC, created_at DESC, id ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -83,14 +88,87 @@ func (s *Store) PublicFile(id string) (*File, error) {
 	return file, nil
 }
 
-// InsertFile 插入一条记录。id 重复属于程序 bug，直接让错误往上抛。
+// InsertFile 插入一条记录并把它排在列表末尾：sort_order 取当前最大值 +1。
+// 上传与秒传都走这里，所以新文件默认出现在最后；id 重复属于程序 bug，直接让错误往上抛。
 func (s *Store) InsertFile(file File) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(
-		"INSERT INTO file ("+fileColumns+") VALUES (?, ?, ?, ?, ?, ?, ?)",
-		file.ID, file.Filename, file.SHA256, file.Size, file.IsFavorite, file.IsPublic, file.CreatedAt)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&file.SortOrder); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		"INSERT INTO file ("+fileColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		file.ID, file.Filename, file.SHA256, file.Size, file.IsFavorite, file.IsPublic,
+		file.CreatedAt, file.GroupName, file.SortOrder); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateGroup 改写一条记录的分组名，并把它移到列表末尾（sort_order 取最大值 +1），
+// 返回更新后的完整记录。分组与排序必须同批生效，所以放在一个事务里。
+func (s *Store) UpdateGroup(id, groupName string) (*File, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var next int64
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&next); err != nil {
+		return nil, err
+	}
+	result, err := tx.Exec("UPDATE file SET group_name = ?, sort_order = ? WHERE id = ?", groupName, next, id)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed == 0 {
+		return nil, ErrNotFound
+	}
+	file, err := scanFile(tx.QueryRow("SELECT "+fileColumns+" FROM file WHERE id = ?", id))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+// SetOrder 在一个事务里重写一批记录的顺序；任何一条记录不存在就整体回滚并返回 ErrNotFound，
+// 批量排序要么全部生效、要么一条都不动。
+func (s *Store) SetOrder(items []core.OrderItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range items {
+		result, err := tx.Exec("UPDATE file SET sort_order = ? WHERE id = ?", item.SortOrder, item.ID)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed == 0 {
+			return ErrNotFound
+		}
+	}
+	return tx.Commit()
 }
 
 // ToggleFavorite 翻转收藏状态并返回翻转后的值；记录不存在返回 ErrNotFound。

@@ -22,7 +22,8 @@
 
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
 - **上传与拖放**：点击上传或把文件拖到内容区任意位置；右下角滑出上传坞显示指纹计算 / 预检 / 上传进度，支持取消与重试，完成后自动消失。单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
-- **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索；每行常驻收藏、下载、复制直链、公开/私有、删除。
+- **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索；每行常驻收藏、下载、复制直链、公开/私有、移动到分组、删除。
+- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换），全部视图按分组分段展示；行内菜单可移动到分组或新建分组，拖拽行首 grip 可调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为侧栏 + 内容区 + 右下角浮动上传坞；≤900px 收成顶栏 + 标签页 + 贴底上传面板，文件操作按钮常显并适配安全区。
@@ -99,6 +100,8 @@ podman kube play k8s.file-share.yaml
 | `POST` | `/api/upload` | 上传（流式校验 SHA-256） |
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |
 | `POST` | `/api/files/{id}/public` | 切换公开 |
+| `PATCH` | `/api/files/{id}` | 设置分组（`group_name`，空串=未分组） |
+| `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载 |
 | `GET` | `/s/{id}` | 公开直链下载（无需登录） |
 | `DELETE` | `/api/files/{id}` | 删除 |
@@ -144,6 +147,27 @@ curl -s -H "Authorization: Bearer $SESSION" \
 # {"id":"3f2c…","sha256":"e3b0c442…"}
 ```
 
+### 分组与排序接口
+
+一级分组没有独立的分组表：`group_name` 是文件上的字符串字段，空串表示未分组；分组列表由文件集合现算。
+排序使用 `sort_order`（升序，越小越靠前）。
+
+**设置分组**：`PATCH /api/files/{id}`，JSON `{"group_name":"工作"}`（trim 后 ≤64 字节，空串=移出分组）。
+成功返回完整文件对象，并自动移到列表末尾；非法分组名 400，文件不存在 404。
+
+```bash
+curl -s -X PATCH -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
+  -d '{"group_name":"工作"}' http://127.0.0.1:8080/api/files/3f2c…
+```
+
+**拖拽排序**：`PUT /api/files/order`，按新顺序提交该段文件（前端用 0..n-1 编号）：
+
+```json
+{"items":[{"id":"3f2c…","sort_order":0},{"id":"8a1b…","sort_order":1}]}
+```
+
+成功返回 `204`；重复 id、不存在的 id、非法序号 → 400/404 且整批回滚。该接口请求体上限 256 KiB（最多 2000 项）。
+
 ## 数据与升级
 
 ```
@@ -152,8 +176,9 @@ DATA_DIR/
   files/<sha256>         内容寻址的物理文件
 ```
 
-数据升级**不向后兼容**：结构变更时直接清空 `DATA_DIR` 重建（升级前先备份）。
-检测到旧版本数据（`files.db` / `favorite.json`）或未知 schema 版本时服务会拒绝启动。
+当前 schema 为 `user_version = 2`（v2 起新增 `group_name` / `sort_order`）。启动时会把 v1 旧库在事务内一次性迁移到 v2
+（两条 `ALTER TABLE`，旧文件默认未分组、顺序不变）；更高版本会拒绝启动。
+检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。升级前先备份 `DATA_DIR`。
 
 ## 目录结构
 

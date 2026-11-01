@@ -14,7 +14,7 @@ import (
 	"file-share/httpx"
 )
 
-// handleListFiles 返回全部记录，按创建时间倒序。
+// handleListFiles 返回全部记录，按用户排定的顺序（sort_order）与创建时间排序。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	files, err := s.App.ListFiles()
 	if err != nil {
@@ -158,6 +158,37 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Write(w, http.StatusOK, map[string]any{"id": record.ID, "sha256": record.SHA256})
+}
+
+// handleUpdateGroup 改写分组名；成功后记录被移到列表末尾，响应是更新后的完整记录。
+func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		GroupName string `json:"group_name"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	record, err := s.App.UpdateGroup(r.PathValue("file_id"), payload.GroupName)
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, record)
+}
+
+// handleSetOrder 批量重写列表顺序，成功回 204（无响应体）。
+func (s *Server) handleSetOrder(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Items []core.OrderItem `json:"items"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if err := s.App.SetOrder(payload.Items); err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {

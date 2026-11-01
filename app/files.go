@@ -11,7 +11,7 @@ import (
 	"file-share/db"
 )
 
-// ListFiles 返回全部文件记录，按创建时间倒序。
+// ListFiles 返回全部文件记录，按用户排定的顺序（sort_order）与创建时间排序。
 func (a *App) ListFiles() ([]db.File, error) {
 	files, err := a.Store.ListFiles()
 	if err != nil {
@@ -55,6 +55,31 @@ func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool,
 		return nil, false, core.Fail(500, "store.insert")
 	}
 	return record, true, nil
+}
+
+// UpdateGroup 改写一条记录的分组名并把它移到列表末尾，返回更新后的完整记录。
+func (a *App) UpdateGroup(id, rawGroupName string) (*db.File, error) {
+	groupName, ok := core.NormalizeGroupName(rawGroupName)
+	if !ok {
+		return nil, core.Fail(400, "group.invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	record, err := a.Store.UpdateGroup(id, groupName)
+	if err != nil {
+		return nil, storeFailure(err, "internal")
+	}
+	return record, nil
+}
+
+// SetOrder 批量重写列表顺序；任一条记录不存在就整体失败，原顺序保持不变。
+func (a *App) SetOrder(items []core.OrderItem) error {
+	if !core.ValidOrderItems(items) {
+		return core.Fail(400, "order.invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return storeFailure(a.Store.SetOrder(items), "internal")
 }
 
 // ToggleFavorite 翻转收藏并返回翻转后的状态。

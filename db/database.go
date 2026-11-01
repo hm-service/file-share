@@ -17,8 +17,8 @@ import (
 )
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
-// 对不上的一律当作旧数据要求清空重来，不写迁移。
-const schemaVersion = 1
+// 只有 v1（分组/排序两列之前）会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS file (
     size        INTEGER NOT NULL,      -- 字节数
     is_favorite INTEGER NOT NULL DEFAULT 0,
     is_public   INTEGER NOT NULL DEFAULT 0,
-    created_at  INTEGER NOT NULL       -- unix 秒
+    created_at  INTEGER NOT NULL,      -- unix 秒
+    group_name  TEXT    NOT NULL DEFAULT '', -- 一级分组名，空串表示未分组
+    sort_order  INTEGER NOT NULL DEFAULT 0   -- 升序，越小越靠前
 );
 
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
@@ -40,8 +42,8 @@ type Store struct {
 	mu sync.Mutex
 }
 
-// Open 打开（必要时创建）数据库。新库建表并打上 schema 版本；已有的库版本对不上就报错，
-// 交给启动流程退出 —— 旧数据不做迁移。
+// Open 打开（必要时创建）数据库。新库直接建当前 schema；已有的 v1 库就地迁移到当前版本；
+// 其它版本对不上就报错，交给启动流程退出 —— 不存在其它兼容分支。
 func Open(path string) (*Store, error) {
 	_, statErr := os.Stat(path)
 	fresh := errors.Is(statErr, fs.ErrNotExist)
@@ -82,9 +84,16 @@ func Open(path string) (*Store, error) {
 			handle.Close()
 			return nil, err
 		}
-		if version != schemaVersion {
+		switch version {
+		case schemaVersion:
+		case 1:
+			if err := store.migrateV1ToV2(); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("migrate database to v%d: %w", schemaVersion, err)
+			}
+		default:
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d: remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -116,6 +125,27 @@ func (s *Store) createSchema() error {
 		return fmt.Errorf("set schema version: %w", err)
 	}
 	return nil
+}
+
+// migrateV1ToV2 给 v1 库补上分组与排序两列。SQLite 的 DDL 是事务性的，
+// 两条 ALTER 与 user_version 的更新放在同一个事务里：中途失败整体回滚，
+// 不会留下「只加了一列」的半截库让下次启动再次迁移时撞上 duplicate column。
+func (s *Store) migrateV1ToV2() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE file ADD COLUMN group_name TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("ALTER TABLE file ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) schemaVersion() (int, error) {

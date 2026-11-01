@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -41,6 +42,20 @@ func fail(w http.ResponseWriter, r *http.Request, status int, key string) {
 // unauthorized 是 401 的固定写法（带 WWW-Authenticate），文案同样本地化。
 func unauthorized(w http.ResponseWriter, r *http.Request, key string) {
 	httpx.Unauthorized(w, i18n.T(language(r), key))
+}
+
+// decodeJSON 解析 JSON 请求体；失败时写好错误体并返回 false。
+// 体积超限（无 Content-Length、靠分块传输绕过了预检）回 413，其余解析错误回 400。
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
+		if isBodyTooLarge(err) {
+			fail(w, r, http.StatusRequestEntityTooLarge, "request.too-big")
+		} else {
+			fail(w, r, http.StatusBadRequest, "request.json")
+		}
+		return false
+	}
+	return true
 }
 
 // businessFail 把业务层抛的「状态码 + 文案键」渲染成当前语言的错误体；不是业务错误的一律 500。

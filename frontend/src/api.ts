@@ -14,6 +14,7 @@ import type {
   CheckFileResponse,
   FileItem,
   FileListResponse,
+  FileOrderItem,
   UploadResponse,
 } from "./types";
 
@@ -198,6 +199,24 @@ export function togglePublic(id: string): Promise<{ is_public: boolean }> {
 /** DELETE /api/files/{id}（204，无响应体）。 */
 export function deleteFile(id: string): Promise<void> {
   return request<void>(`/api/files/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** PATCH /api/files/{id}：修改一级分组（空串 = 移出分组），返回更新后的完整记录。 */
+export function updateFileGroup(id: string, groupName: string): Promise<FileItem> {
+  return request<FileItem>(`/api/files/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_name: groupName }),
+  });
+}
+
+/** PUT /api/files/order：拖拽后按段内新顺序提交（0..n-1），成功 204。 */
+export function reorderFiles(items: FileOrderItem[]): Promise<void> {
+  return request<void>("/api/files/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
 }
 
 /** 公开直链（复制用）：同源 /s/{id}，匿名可下载。 */

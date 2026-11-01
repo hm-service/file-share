@@ -41,8 +41,9 @@ type App struct {
 	signer   *core.SessionSigner
 	proxies  *httpx.Proxies
 
-	// mu 把「check_file 落记录 / 上传落 blob 与记录 / 删除记录与 blob」串起来：
-	// 引用计数与 blob 删除之间若插进别的写操作，就会删掉刚被引用的 blob。
+	// mu 把「check_file 落记录 / 上传落 blob 与记录 / 删除记录与 blob / 改分组 / 批量排序」
+	// 串起来：引用计数与 blob 删除之间若插进别的写操作，就会删掉刚被引用的 blob；
+	// 分组与排序也要看到稳定的当前最大值。
 	mu sync.Mutex
 }
 

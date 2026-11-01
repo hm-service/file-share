@@ -235,6 +235,7 @@ func TestBodyLimit(t *testing.T) {
 		{name: "秒传预检 1 MiB", path: "/api/check_file", limit: MaxCheckFileBodyBytes, key: "request.too-big", limited: true},
 		{name: "上传 MAX_FILE_SIZE + 1 MiB", path: "/api/upload", limit: maxFileSize + uploadBodyOverhead, key: "upload.too-big", limited: true},
 		{name: "其它 JSON 接口 64 KiB", path: "/api/files", limit: MaxJSONBodyBytes, key: "request.too-big", limited: true},
+		{name: "批量排序 256 KiB", path: "/api/files/order", limit: MaxOrderBodyBytes, key: "request.too-big", limited: true},
 		{name: "带路径参数的接口", path: "/api/files/abc/favorite", limit: MaxJSONBodyBytes, key: "request.too-big", limited: true},
 		{name: "页面不限制", path: "/"},
 		{name: "静态资源不限制", path: "/assets/app-abc.js"},

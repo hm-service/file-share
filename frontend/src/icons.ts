@@ -29,6 +29,12 @@ export const ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   bolt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2z"/></svg>',
+  folder:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.4a2 2 0 0 1 2-2h3.3l1.9 2.1h7.8a2 2 0 0 1 2 2v7.1a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
+  inbox:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.6 4.8h14.8l1.9 8v4.4a2 2 0 0 1-2 2H4.7a2 2 0 0 1-2-2v-4.4z"/><path d="M3 13.2h4.1l1.3 2h7.2l1.3-2H21"/></svg>',
+  grip: '<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="8" cy="5.5" r="1.35"/><circle cx="12" cy="5.5" r="1.35"/><circle cx="8" cy="10" r="1.35"/><circle cx="12" cy="10" r="1.35"/><circle cx="8" cy="14.5" r="1.35"/><circle cx="12" cy="14.5" r="1.35"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
 } as const;
 
 /** 文件类型图标：一条公共样式头 + 各自的路径，按扩展名分类渲染。 */

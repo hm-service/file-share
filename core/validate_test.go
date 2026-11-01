@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -73,5 +74,73 @@ func TestErrorShape(t *testing.T) {
 	}
 	if err.Error() != "file.not-found" {
 		t.Errorf("Error() = %q，想要键名", err.Error())
+	}
+}
+
+func TestNormalizeGroupName(t *testing.T) {
+	maxBytes := strings.Repeat("a", MaxGroupNameBytes)
+	tooLong := strings.Repeat("a", MaxGroupNameBytes+1)
+	chinese := strings.Repeat("组", 21) // 21 × 3 = 63 字节
+
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "空串", raw: "", want: "", ok: true},
+		{name: "只有空白", raw: " \t\n ", want: "", ok: true},
+		{name: "去首尾空白", raw: "  工作  ", want: "工作", ok: true},
+		{name: "64 字节", raw: maxBytes, want: maxBytes, ok: true},
+		{name: "65 字节", raw: tooLong},
+		{name: "中文 63 字节", raw: chinese, want: chinese, ok: true},
+		{name: "含 NUL", raw: "a\x00b"},
+		{name: "含换行", raw: "a\nb"},
+		{name: "含 DEL", raw: "a\x7fb"},
+		{name: "中间带制表符", raw: "a\tb"},
+		{name: "首尾制表符被 trim 后合法", raw: "\tabc\t", want: "abc", ok: true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			got, ok := NormalizeGroupName(item.raw)
+			if ok != item.ok {
+				t.Fatalf("NormalizeGroupName(%q) ok = %v，想要 %v", item.raw, ok, item.ok)
+			}
+			if ok && got != item.want {
+				t.Errorf("NormalizeGroupName(%q) = %q，想要 %q", item.raw, got, item.want)
+			}
+		})
+	}
+}
+
+func TestValidOrderItems(t *testing.T) {
+	makeItems := func(count int) []OrderItem {
+		items := make([]OrderItem, 0, count)
+		for i := 0; i < count; i++ {
+			items = append(items, OrderItem{ID: fmt.Sprintf("id-%d", i), SortOrder: int64(i)})
+		}
+		return items
+	}
+	cases := []struct {
+		name  string
+		items []OrderItem
+		want  bool
+	}{
+		{name: "空列表", items: nil},
+		{name: "单项", items: []OrderItem{{ID: "a", SortOrder: 0}}, want: true},
+		{name: "2000 项", items: makeItems(MaxOrderItems), want: true},
+		{name: "超过 2000 项", items: makeItems(MaxOrderItems + 1)},
+		{name: "重复 id", items: []OrderItem{{ID: "a", SortOrder: 1}, {ID: "a", SortOrder: 2}}},
+		{name: "空 id", items: []OrderItem{{ID: "", SortOrder: 1}}},
+		{name: "负数顺序", items: []OrderItem{{ID: "a", SortOrder: -1}}},
+		{name: "顺序上界", items: []OrderItem{{ID: "a", SortOrder: MaxSortOrder}}, want: true},
+		{name: "顺序超过上界", items: []OrderItem{{ID: "a", SortOrder: MaxSortOrder + 1}}},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := ValidOrderItems(item.items); got != item.want {
+				t.Errorf("ValidOrderItems() = %v，想要 %v", got, item.want)
+			}
+		})
 	}
 }

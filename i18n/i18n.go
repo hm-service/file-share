@@ -43,6 +43,8 @@ var catalog = map[string]entry{
 	"store.favorite":           {"切换收藏失败", "Failed to toggle favorite"},
 	"store.public":             {"切换公开状态失败", "Failed to toggle visibility"},
 	"store.delete":             {"删除文件失败", "Failed to delete the file"},
+	"group.invalid":            {"分组名无效", "Invalid group name"},
+	"order.invalid":            {"排序数据无效", "Invalid ordering data"},
 	"internal":                 {"服务器内部错误", "Internal server error"},
 	"not-found":                {"资源不存在", "Not found"},
 	"method-not-allowed":       {"方法不允许", "Method not allowed"},

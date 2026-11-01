@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -51,9 +50,14 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true},
 		{http.MethodPost, "/api/files/{file_id}/public", server.handlePublic, true},
 		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
+		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateGroup, true},
 		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true},
 		{http.MethodGet, "/s/{file_id}", server.handlePublicDownload, false},
 	})
+	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
+	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
+	// 非 PUT 的请求因此落到 /api/files/{file_id} 的兜底上回 405，不影响约定内的调用。
+	mux.HandleFunc(http.MethodPut+" /api/files/order", server.requireSession(server.handleSetOrder))
 	mux.HandleFunc("/", server.handleNotFound)
 	return mux
 }
@@ -111,12 +115,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		if isBodyTooLarge(err) {
-			fail(w, r, http.StatusRequestEntityTooLarge, "request.too-big")
-			return
-		}
-		fail(w, r, http.StatusBadRequest, "request.json")
+	if !decodeJSON(w, r, &payload) {
 		return
 	}
 	if !s.App.Authenticate(payload.Token) {

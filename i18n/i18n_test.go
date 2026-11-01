@@ -25,6 +25,8 @@ var contractKeys = []string{
 	"store.favorite",
 	"store.public",
 	"store.delete",
+	"group.invalid",
+	"order.invalid",
 	"internal",
 	"not-found",
 	"method-not-allowed",

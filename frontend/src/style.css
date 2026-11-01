@@ -271,6 +271,39 @@ ul {
   color: var(--accent-strong);
 }
 
+/* 分组导航：全部/收藏之下，分组多时自己滚动 */
+.nav-sep {
+  margin: 10px 4px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.nav-section-title {
+  padding: 0 11px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav-groups {
+  flex: 0 1 auto;
+  min-height: 0;
+  padding-right: 2px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.nav-item-group .nav-icon {
+  opacity: 0.7;
+}
+
+.nav-empty {
+  padding: 4px 11px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
 .sidebar-foot {
   display: flex;
   flex-direction: column;
@@ -397,6 +430,11 @@ ul {
   display: none;
 }
 
+/* 窄屏分组 chips：桌面端由侧栏承担分组导航，这里隐藏 */
+.chips {
+  display: none;
+}
+
 .content {
   flex: 1 1 auto;
   min-height: 0;
@@ -431,6 +469,56 @@ ul {
   container-type: inline-size;
 }
 
+/* 「全部」视图按分组分段 */
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.group-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+}
+
+.group-icon {
+  display: inline-flex;
+  color: var(--ink-3);
+}
+
+.group-icon svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.group-title {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-count {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgb(20 23 44 / 0.05);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
 .file-row {
   display: flex;
   align-items: center;
@@ -445,6 +533,52 @@ ul {
 
 .file-row:hover {
   background: #fafbff;
+}
+
+/* 拖拽把手：常显低透明度，hover 加深；触屏长按 120ms 才进入拖拽 */
+.drag-handle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  margin: 0 -6px 0 -4px;
+  color: var(--ink-3);
+  cursor: grab;
+  opacity: 0.45;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
+}
+
+.drag-handle svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.drag-handle:hover {
+  color: var(--ink-2);
+  opacity: 1;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.file-row.drag-ghost {
+  border-radius: 12px;
+  background: var(--accent-soft);
+  opacity: 0.6;
+}
+
+.file-row.drag-chosen {
+  background: #fafbff;
+}
+
+.file-row.drag-dragging {
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
 }
 
 .file-tile {
@@ -636,6 +770,84 @@ ul {
 .icon-btn.delete:hover {
   background: var(--rose-soft);
   color: var(--rose);
+}
+
+.icon-btn.group:hover {
+  color: var(--accent);
+}
+
+/* 「移动到分组」菜单：Teleport 到 body，fixed 定位避免被列表卡片裁剪 */
+.group-menu {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 216px;
+  max-height: 328px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  scrollbar-width: thin;
+}
+
+.group-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.group-menu-item:hover {
+  background: var(--surface-2);
+}
+
+.group-menu-item.is-new {
+  color: var(--accent-strong);
+}
+
+.group-menu-check {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 15px;
+  color: var(--accent);
+}
+
+.group-menu-check svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.group-menu-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ink-3);
+}
+
+.group-menu-icon svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.group-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-menu-sep {
+  margin: 4px 2px;
+  border-top: 1px solid var(--line);
 }
 
 /* 内容区很窄（手机 / 小窗口）时，操作按钮换到第二行，文件名拿回整行。 */
@@ -1379,6 +1591,64 @@ ul {
 
   .tab.active .tab-count {
     background: rgb(255 255 255 / 0.22);
+  }
+
+  /* 标签页之下的分组 chips：横向滚动，当前分组高亮 */
+  .chips {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 10px 16px 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chip {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 11px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .chip-icon {
+    display: inline-flex;
+    color: var(--ink-3);
+  }
+
+  .chip-icon svg {
+    display: block;
+    width: 13px;
+    height: 13px;
+  }
+
+  .chip.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .chip.active .chip-icon {
+    color: var(--accent-strong);
+  }
+
+  .sections {
+    gap: 16px;
+  }
+
+  .group-head {
+    padding: 0 2px;
   }
 
   .content {

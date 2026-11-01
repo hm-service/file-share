@@ -65,24 +65,29 @@ CREATE TABLE IF NOT EXISTS file (
   size        INTEGER NOT NULL,             -- 字节数
   is_favorite INTEGER NOT NULL DEFAULT 0,   -- 0/1，全局收藏
   is_public   INTEGER NOT NULL DEFAULT 0,   -- 0/1，公开后 /s/{id} 可匿名下载
+  group_name  TEXT    NOT NULL DEFAULT '',  -- 一级分组名，空串 = 未分组
+  sort_order  INTEGER NOT NULL DEFAULT 0,   -- 列表顺序，升序，越小越靠前
   created_at  INTEGER NOT NULL              -- unix 秒
 );
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 ```
 
 - 单库文件、单连接（`SetMaxOpenConns(1)`），无外键；一致性由代码保证。
-- `PRAGMA user_version = 1` 标识当前结构。
+- `PRAGMA user_version = 2` 标识当前结构；v1 旧库启动时在事务内一次性迁移（两条 `ALTER TABLE` + 版本号），
+  新库直接建 v2；更高版本 fail-fast。
+- 列表排序：`ORDER BY sort_order ASC, created_at DESC, id ASC`；上传/秒传插入时 `sort_order = MAX+1`。
+- 分组是文件上的字符串字段（一级、无分组表）；分组列表由文件集合现算，空串表示未分组。
 - 收藏与公开状态是全局的（本服务只有一个凭据身份）。
 - 删除记录时，若同一 `sha256` 已无其他记录引用，则删除物理文件。
-- **数据升级策略**：不承诺向后兼容。检测到旧格式（`DATA_DIR/files.db` 或
-  `DATA_DIR/favorite.json`）或未知 schema 版本时，服务拒绝启动并要求清空 `DATA_DIR`；
+- **数据升级策略**：结构变更在启动时一次性迁移（不做运行期兼容分支）；检测到更旧的 Python 版本数据
+  （`DATA_DIR/files.db` 或 `DATA_DIR/favorite.json`）或更高的 schema 版本时，服务拒绝启动；
   升级前备份 `DATA_DIR` 是既定代价。
 
 ## 5. 页面
 
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 主应用 | 桌面：左侧导航（全部/收藏、上传入口）+ 内容区（文件名搜索、文件列表、行内操作）+ 右下角浮动上传坞；窄屏：顶部工具栏 + 标签页 + 列表 + 贴底上传坞；内容区整块可拖放上传 |
+| `/` | 主应用 | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、分段文件列表、行内操作、拖拽排序）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
 | `/auth` | 登录页 | 输入 `AUTH_TOKEN` 换取会话；成功后进入主应用 |
 
 前端为两个独立 HTML 入口（`index.html` / `auth.html`），不引入路由库；
@@ -94,8 +99,14 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 上传队列以浮动上传坞呈现（桌面右下角、窄屏贴底），支持取消（中断请求，状态记为已取消）与重试（重新排队）；
   内容区整块都是拖放目标，拖入文件时显示覆盖层提示，松开即入队。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
+- 全部视图按分组分段展示（分组标题 + 数量，未分组段放最后）；收藏与单分组视图平铺。
+  搜索按文件名过滤并隐藏空段；过滤期间禁用拖拽，避免提交子集顺序打乱隐藏文件。
+- 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
+  侧栏 / 移动端 chips 用于按分组过滤；不提供空分组、分组重命名/删除与跨组拖拽。
+- 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
+  `PUT /api/files/order` 失败时提示并回滚到服务端顺序。
 - 文件名搜索与「全部 / 收藏」切换都是前端行为（只在已拉取的列表上过滤，不新增后端接口）。
-- 响应式：桌面为固定侧栏 + 内容区 + 浮动上传坞；≤900px 改为顶部工具栏 + 标签页 + 文件列表 + 贴底上传面板，
+- 响应式：桌面为固定侧栏 + 内容区 + 浮动上传坞；≤900px 改为顶部工具栏 + 标签页 + 分组 chips + 文件列表 + 贴底上传面板，
   文件操作按钮常显并适配安全区。两种布局共用同一套组件与状态。
 
 ## 6. 接口
@@ -118,9 +129,11 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/files` | 列表：`{"files":[{"id","filename","sha256","size","is_favorite","is_public","created_at"}]}`，按创建时间倒序 |
+| GET | `/api/files` | 列表：`{"files":[{"id","filename","sha256","size","is_favorite","is_public","group_name","sort_order","created_at"}]}`，按 `sort_order` 升序、创建时间倒序 |
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）；命中则直接建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
 | POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256；成功 `{"id","sha256"}`；超限 413 |
+| PATCH | `/api/files/{id}` | 设置分组：`{"group_name":"工作"}`（trim 后 ≤64 字节，空串=未分组）；成功返回完整文件，并移到列表末尾；非法 400，不存在 404 |
+| PUT | `/api/files/order` | 批量排序：`{"items":[{"id","sort_order"}]}`（1..2000 项，id 不重复，0..1e9）；成功 204；任一 id 不存在则整批回滚 404 |
 | POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |
 | POST | `/api/files/{id}/public` | 切换公开，返回 `{"is_public":bool}` |
 | GET | `/api/files/{id}/download` | 附件下载（支持 Range/HEAD） |
@@ -154,8 +167,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
   `X-Frame-Options: DENY`、严格 CSP
   （`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';`）。
-- 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、秒传表单 1 MiB、上传 `MAX_FILE_SIZE`；
-  文件名只取 basename 并做长度/字符校验。
+- 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、排序接口 256 KiB（最多 2000 项）、秒传表单 1 MiB、上传 `MAX_FILE_SIZE`；
+  文件名只取 basename 并做长度/字符校验，分组名 trim 后 ≤64 字节且不含控制字符。
 - 并发闸门：认证、业务 API、静态资源/公开下载各自独立信号量；Argon2id 计算并发受认证闸门约束。
 - 反代职责：TLS、限流、访问控制在反向代理完成；应用只信任 `TRUSTED_PROXIES` 内的转发头。
 - 日志：结构化 JSON 到 stdout，一条请求一行，含真实客户端 IP 与 RFC 3339 时间戳；
@@ -177,4 +190,6 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 无多用户/权限模型：`AUTH_TOKEN` 是唯一身份，收藏与公开状态全局共享。
 - 会话不可单独撤销；轮换 `SESSION_SIGNING_KEY` 会让所有设备下线。
 - 公开直链无过期时间/访问计数；需要更细粒度分享控制时再引入独立分享表。
-- 旧数据不迁移；升级前必须备份并清空 `DATA_DIR`。
+- 分组只有一级，且没有独立分组表：不能创建空分组，也不支持重命名/删除分组；移动文件只能通过行内菜单，跨组拖拽未实现。
+- 拖拽只按段提交相对顺序；搜索过滤时禁用拖拽。收藏视图的拖拽只调整收藏项之间的 `sort_order`。
+- 旧 Python 版本数据不迁移；v1 起的 SQLite 结构会在启动时自动迁移，升级前仍需备份 `DATA_DIR`。

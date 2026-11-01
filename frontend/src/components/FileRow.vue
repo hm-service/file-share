@@ -1,9 +1,12 @@
 <script setup lang="ts">
 /**
- * 列表里的一行文件：类型图标块 + 名称/元信息 + 常驻操作按钮。
+ * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 常驻操作按钮。
  *
  * 复制直链只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
+ *
+ * 「移动到分组」菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的
+ * 下拉菜单会被切掉；菜单定位按按钮 rect 计算并夹在视口内，滚动/缩放/Esc/点外面都关闭。
  */
 import { computed, onBeforeUnmount, ref } from "vue";
 
@@ -13,13 +16,20 @@ import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
 import type { FileItem } from "@/types";
 
-const props = defineProps<{ file: FileItem }>();
+const props = defineProps<{
+  file: FileItem;
+  /** 全部分组名（用于「移动到分组」菜单）。 */
+  groups: readonly string[];
+  /** 可拖拽排序的列表才显示把手；搜索过滤时顺序不可提交，把手隐藏。 */
+  draggable: boolean;
+}>();
 
 const emit = defineEmits<{
   favorite: [];
   download: [];
   visibility: [];
   delete: [];
+  "move-group": [groupName: string];
 }>();
 
 /** 按扩展名挑选文件类型图标 + 配色，让长列表更容易用图标与颜色扫读。 */
@@ -79,6 +89,8 @@ const kind = computed<FileKind>(() => {
   return "other";
 });
 
+/* ---------- 复制直链 ---------- */
+
 const copied = ref(false);
 let copiedTimer = 0;
 
@@ -121,11 +133,82 @@ async function copyLink(): Promise<void> {
   }, 1200);
 }
 
-onBeforeUnmount(() => window.clearTimeout(copiedTimer));
+/* ---------- 「移动到分组」菜单 ---------- */
+
+const MENU_WIDTH = 216;
+const MENU_MAX_HEIGHT = 328;
+
+const menuOpen = ref(false);
+const menuEl = ref<HTMLElement | null>(null);
+const menuStyle = ref<{ left: string; top: string }>({ left: "0px", top: "0px" });
+let triggerEl: HTMLElement | null = null;
+
+function closeMenu(): void {
+  if (!menuOpen.value) return;
+  menuOpen.value = false;
+  window.removeEventListener("pointerdown", onOutsidePointer, true);
+  window.removeEventListener("keydown", onMenuKeydown, true);
+  window.removeEventListener("resize", closeMenu);
+  window.removeEventListener("scroll", closeMenu, true);
+}
+
+function onOutsidePointer(event: PointerEvent): void {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (menuEl.value?.contains(target) || triggerEl?.contains(target)) return;
+  closeMenu();
+}
+
+function onMenuKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  event.stopPropagation();
+  closeMenu();
+}
+
+function toggleGroupMenu(event: MouseEvent): void {
+  triggerEl = event.currentTarget as HTMLElement;
+  if (menuOpen.value) {
+    closeMenu();
+    return;
+  }
+  const rect = triggerEl.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(8, rect.right - MENU_WIDTH),
+    Math.max(8, window.innerWidth - MENU_WIDTH - 8),
+  );
+  let top = rect.bottom + 6;
+  if (top + MENU_MAX_HEIGHT > window.innerHeight - 8) {
+    top = Math.max(8, window.innerHeight - MENU_MAX_HEIGHT - 8);
+  }
+  menuStyle.value = { left: `${left}px`, top: `${top}px` };
+  menuOpen.value = true;
+  window.addEventListener("pointerdown", onOutsidePointer, true);
+  window.addEventListener("keydown", onMenuKeydown, true);
+  window.addEventListener("resize", closeMenu);
+  window.addEventListener("scroll", closeMenu, true);
+}
+
+function chooseGroup(groupName: string): void {
+  closeMenu();
+  emit("move-group", groupName);
+}
+
+function promptNewGroup(): void {
+  closeMenu();
+  const input = window.prompt(t("group.new-prompt"))?.trim();
+  if (input) emit("move-group", input);
+}
+
+onBeforeUnmount(() => {
+  window.clearTimeout(copiedTimer);
+  closeMenu();
+});
 </script>
 
 <template>
-  <li class="file-row">
+  <li class="file-row" :data-id="file.id">
+    <span v-if="draggable" class="drag-handle" aria-hidden="true" v-html="ICONS.grip"></span>
+
     <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
 
     <div class="file-body">
@@ -179,6 +262,17 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer));
 
       <button
         type="button"
+        class="icon-btn group"
+        :title="t('action.move-group')"
+        :aria-label="t('action.move-group')"
+        aria-haspopup="menu"
+        :aria-expanded="menuOpen"
+        v-html="ICONS.folder"
+        @click="toggleGroupMenu"
+      ></button>
+
+      <button
+        type="button"
         class="icon-btn delete"
         :title="t('action.delete')"
         :aria-label="t('action.delete')"
@@ -186,5 +280,54 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer));
         @click="emit('delete')"
       ></button>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="menuOpen"
+        ref="menuEl"
+        class="group-menu"
+        :style="menuStyle"
+        role="menu"
+        :aria-label="t('action.move-group')"
+      >
+        <button
+          type="button"
+          class="group-menu-item"
+          role="menuitemradio"
+          :aria-checked="file.group_name === ''"
+          @click="chooseGroup('')"
+        >
+          <span class="group-menu-check">
+            <span v-if="file.group_name === ''" v-html="ICONS.check"></span>
+          </span>
+          <span class="group-menu-icon" v-html="ICONS.inbox"></span>
+          <span class="group-menu-label">{{ t("nav.ungrouped") }}</span>
+        </button>
+
+        <button
+          v-for="group in groups"
+          :key="group"
+          type="button"
+          class="group-menu-item"
+          role="menuitemradio"
+          :aria-checked="file.group_name === group"
+          @click="chooseGroup(group)"
+        >
+          <span class="group-menu-check">
+            <span v-if="file.group_name === group" v-html="ICONS.check"></span>
+          </span>
+          <span class="group-menu-icon" v-html="ICONS.folder"></span>
+          <span class="group-menu-label">{{ group }}</span>
+        </button>
+
+        <div class="group-menu-sep" role="separator"></div>
+
+        <button type="button" class="group-menu-item is-new" role="menuitem" @click="promptNewGroup">
+          <span class="group-menu-check"></span>
+          <span class="group-menu-icon" v-html="ICONS.plus"></span>
+          <span class="group-menu-label">{{ t("action.new-group") }}</span>
+        </button>
+      </div>
+    </Teleport>
   </li>
 </template>

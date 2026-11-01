@@ -8,8 +8,18 @@ export interface FileItem {
   size: number;
   is_favorite: boolean;
   is_public: boolean;
+  /** 一级分组名；空串表示未分组。 */
+  group_name: string;
+  /** 所在分组（或未分组段）内的排序序号，0..n-1。 */
+  sort_order: number;
   /** unix 秒 */
   created_at: number;
+}
+
+/** PUT /api/files/order 的一项：拖拽后该段内的新序号。 */
+export interface FileOrderItem {
+  id: string;
+  sort_order: number;
 }
 
 export interface FileListResponse {

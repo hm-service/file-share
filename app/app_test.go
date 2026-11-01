@@ -428,3 +428,114 @@ func TestDownloadVisibility(t *testing.T) {
 		t.Fatal("不存在的记录下载应当 404")
 	}
 }
+
+func TestUpdateGroup(t *testing.T) {
+	instance := testenv.New(t)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+
+	before, err := instance.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	maxSort := before[len(before)-1].SortOrder
+
+	// 分组名会 trim，记录被移到末尾。
+	updated, err := instance.UpdateGroup(first.ID, "  工作  ")
+	if err != nil {
+		t.Fatalf("UpdateGroup() 报错: %v", err)
+	}
+	if updated.ID != first.ID || updated.GroupName != "工作" || updated.SortOrder != maxSort+1 {
+		t.Fatalf("UpdateGroup() = %+v，想要分组「工作」且 sort_order %d", updated, maxSort+1)
+	}
+	files, err := instance.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	if len(files) != 2 || files[0].ID != second.ID || files[1].ID != first.ID {
+		t.Fatalf("改分组后列表 = %+v，想要 first 在最后", files)
+	}
+
+	// 空串 = 未分组，仍然移到末尾。
+	updated, err = instance.UpdateGroup(first.ID, "")
+	if err != nil {
+		t.Fatalf("UpdateGroup() 报错: %v", err)
+	}
+	if updated.GroupName != "" {
+		t.Errorf("清空分组后 GroupName = %q，想要空串", updated.GroupName)
+	}
+
+	// 非法分组名：超长 / 控制字符。
+	for name, value := range map[string]string{
+		"超长":   strings.Repeat("a", core.MaxGroupNameBytes+1),
+		"控制字符": "a\nb",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := instance.UpdateGroup(first.ID, value)
+			assertBusinessError(t, err, 400, "group.invalid")
+		})
+	}
+	if _, err := instance.UpdateGroup("absent", "x"); err == nil {
+		t.Fatal("不存在的记录应当报错")
+	} else {
+		assertBusinessError(t, err, 404, "file.not-found")
+	}
+}
+
+func TestSetOrder(t *testing.T) {
+	instance := testenv.New(t)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	third := testenv.SeedUpload(t, instance, "third.txt", []byte("third"))
+
+	orderIDs := func() []string {
+		files, err := instance.ListFiles()
+		if err != nil {
+			t.Fatalf("ListFiles() 报错: %v", err)
+		}
+		ids := make([]string, 0, len(files))
+		for _, file := range files {
+			ids = append(ids, file.ID)
+		}
+		return ids
+	}
+
+	items := []core.OrderItem{
+		{ID: third.ID, SortOrder: 10},
+		{ID: first.ID, SortOrder: 20},
+		{ID: second.ID, SortOrder: 30},
+	}
+	if err := instance.SetOrder(items); err != nil {
+		t.Fatalf("SetOrder() 报错: %v", err)
+	}
+	if got := orderIDs(); len(got) != 3 || got[0] != third.ID || got[1] != first.ID || got[2] != second.ID {
+		t.Fatalf("排序后列表 = %v，想要 [third first second]", got)
+	}
+
+	// 任一条记录不存在：整体 404，原顺序不变。
+	if err := instance.SetOrder([]core.OrderItem{
+		{ID: first.ID, SortOrder: 1},
+		{ID: "absent", SortOrder: 2},
+	}); err == nil {
+		t.Fatal("不存在的记录应当报错")
+	} else {
+		assertBusinessError(t, err, 404, "file.not-found")
+	}
+	if got := orderIDs(); got[0] != third.ID || got[1] != first.ID || got[2] != second.ID {
+		t.Fatalf("回滚后列表 = %v，想要原顺序", got)
+	}
+
+	// 非法输入。
+	invalidCases := map[string][]core.OrderItem{
+		"空列表":   nil,
+		"重复 id": {{ID: first.ID, SortOrder: 1}, {ID: first.ID, SortOrder: 2}},
+		"空 id":  {{ID: "", SortOrder: 1}},
+		"负数":    {{ID: first.ID, SortOrder: -1}},
+		"超过上界":  {{ID: first.ID, SortOrder: core.MaxSortOrder + 1}},
+	}
+	for name, bad := range invalidCases {
+		t.Run(name, func(t *testing.T) {
+			assertBusinessError(t, instance.SetOrder(bad), 400, "order.invalid")
+		})
+	}
+}
