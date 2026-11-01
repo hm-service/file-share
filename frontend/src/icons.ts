@@ -30,3 +30,40 @@ export const ICONS = {
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   bolt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2z"/></svg>',
 } as const;
+
+/** 文件类型图标：一条公共样式头 + 各自的路径，按扩展名分类渲染。 */
+const typeIcon = (body: string): string =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+export const typeIcons = {
+  image: typeIcon(
+    '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="8.6" cy="9.4" r="1.5"/><path d="m5 17.2 4.6-4.6a1.4 1.4 0 0 1 2 0l6.4 6.4"/>',
+  ),
+  video: typeIcon(
+    '<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m10.4 9.1 4.8 2.9-4.8 2.9z" fill="currentColor" stroke="none"/>',
+  ),
+  audio: typeIcon(
+    '<path d="M9 17.5V5.6l9.5-1.9v11.8"/><circle cx="6.6" cy="17.6" r="2.4"/><circle cx="16.1" cy="15.7" r="2.4"/>',
+  ),
+  archive: typeIcon(
+    '<path d="M12 3.5 20.5 8v8L12 20.5 3.5 16V8z"/><path d="M3.5 8 12 12.5 20.5 8"/><path d="M12 12.5v8"/><path d="M12 15.5v2"/>',
+  ),
+  pdf: typeIcon(
+    '<path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/><text x="12" y="17.6" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="5.4" font-weight="700" fill="currentColor" stroke="none">PDF</text>',
+  ),
+  doc: typeIcon(
+    '<path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/><path d="M9.2 12.4h5.6M9.2 15.4h5.6"/>',
+  ),
+  sheet: typeIcon(
+    '<rect x="4" y="4" width="16" height="16" rx="2.4"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/>',
+  ),
+  slides: typeIcon(
+    '<rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M12 16v3.2M8.6 21h6.8"/><path d="M8.2 12.4V9.8M12 12.4V7.6M15.8 12.4v-1.8"/>',
+  ),
+  code: typeIcon('<path d="m8.6 8.2-4 3.8 4 3.8"/><path d="m15.4 8.2 4 3.8-4 3.8"/><path d="m13.4 5.4-2.8 13.2"/>'),
+  text: typeIcon('<path d="M5 6.2h14M5 10.2h10.5M5 14.2h14M5 18.2h8"/>'),
+  other: typeIcon('<path d="M6.5 3.5h6.4L17.5 8v12.5h-11z"/><path d="M12.9 3.5V8h4.6"/>'),
+} as const;
+
+export type FileKind = keyof typeof typeIcons;
+

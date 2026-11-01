@@ -9,7 +9,7 @@ import { computed, onBeforeUnmount, ref } from "vue";
 
 import { publicLink } from "@/api";
 import { formatSize, formatTime } from "@/format";
-import { ICONS } from "@/icons";
+import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
 import type { FileItem } from "@/types";
 
@@ -22,22 +22,60 @@ const emit = defineEmits<{
   delete: [];
 }>();
 
-/** 按扩展名给文件类型图标块配色，让长列表更容易用颜色扫读。 */
-const tone = computed(() => {
+/** 按扩展名挑选文件类型图标 + 配色，让长列表更容易用图标与颜色扫读。 */
+const kind = computed<FileKind>(() => {
   const extension = props.file.filename.split(".").pop()?.toLowerCase() ?? "";
-  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "avif", "ico"].includes(extension)) {
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "avif", "ico", "tiff"].includes(extension)) {
     return "image";
   }
-  if (["mp4", "mov", "mkv", "webm", "avi", "m4v"].includes(extension)) return "video";
-  if (["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus"].includes(extension)) return "audio";
-  if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst"].includes(extension)) return "archive";
+  if (["mp4", "mov", "mkv", "webm", "avi", "m4v", "mpeg", "mpg"].includes(extension)) return "video";
+  if (["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma"].includes(extension)) return "audio";
+  if (["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst"].includes(extension)) return "archive";
+  if (extension === "pdf") return "pdf";
+  if (["doc", "docx", "odt", "rtf", "pages"].includes(extension)) return "doc";
+  if (["xls", "xlsx", "csv", "tsv", "ods", "numbers"].includes(extension)) return "sheet";
+  if (["ppt", "pptx", "odp", "key"].includes(extension)) return "slides";
   if (
-    ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json", "yaml", "yml", "toml"].includes(
-      extension,
-    )
+    [
+      "json",
+      "yaml",
+      "yml",
+      "toml",
+      "ini",
+      "conf",
+      "js",
+      "mjs",
+      "cjs",
+      "ts",
+      "tsx",
+      "jsx",
+      "go",
+      "py",
+      "rs",
+      "sh",
+      "bash",
+      "zsh",
+      "css",
+      "scss",
+      "less",
+      "html",
+      "htm",
+      "xml",
+      "sql",
+      "c",
+      "cpp",
+      "h",
+      "java",
+      "kt",
+      "swift",
+      "rb",
+      "php",
+      "lua",
+    ].includes(extension)
   ) {
-    return "doc";
+    return "code";
   }
+  if (["txt", "md", "markdown", "log"].includes(extension)) return "text";
   return "other";
 });
 
@@ -88,7 +126,7 @@ onBeforeUnmount(() => window.clearTimeout(copiedTimer));
 
 <template>
   <li class="file-row">
-    <span class="file-tile" :class="`tone-${tone}`" v-html="ICONS.file"></span>
+    <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
 
     <div class="file-body">
       <div class="file-title-line">
