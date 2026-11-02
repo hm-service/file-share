@@ -17,7 +17,7 @@ RUN pnpm build
 # ==========================================
 # 第二阶段：构建 Go 二进制
 # ==========================================
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH

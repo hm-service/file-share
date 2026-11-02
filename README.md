@@ -31,7 +31,7 @@
 
 ## 快速开始
 
-需要 Go 1.27.2、Node 26.7.0、pnpm 11.28.5、`just`。
+需要 Go 1.27.3、Node 26.7.0、pnpm 11.28.5、`just`。
 
 ```bash
 export DATA_DIR=./.data
@@ -229,16 +229,16 @@ just check   # vet/test + 前端 typecheck
 
 | 包 | 覆盖率 |
 | --- | --- |
-| `main`（仓库根） | 70.6% |
-| `api` | 86.5% |
-| `app` | 73.9% |
-| `core` | 92.2% |
-| `db` | 77.2% |
+| `main`（仓库根） | 72.4% |
+| `api` | 88.0% |
+| `app` | 71.2% |
+| `core` | 93.2% |
+| `db` | 75.5% |
 | `httpx` | 90.6% |
 | `i18n` | 100.0% |
 | `internal/testenv` | —（纯测试脚手架，无测试文件） |
 
-实测命令：`go test ./... -cover -count=1`（Go 1.27.2，2026-10-19）。
+实测命令：`go test ./... -cover -count=1`（Go 1.27.3，2026-11-02）。
 
 ## License
 

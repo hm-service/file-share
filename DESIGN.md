@@ -10,7 +10,7 @@ file-share 是一个自托管的文件分享服务：上传文件后按 SHA-256 
 交付物是单个静态链接的 Go 二进制，前端构建产物通过 `go:embed` 编入二进制，
 运行期唯一的状态是数据目录 `DATA_DIR`。
 
-技术栈：Go 1.27.2（仅标准库 `net/http` + `modernc.org/sqlite` + `golang.org/x/crypto`）、
+技术栈：Go 1.27.3（仅标准库 `net/http` + `modernc.org/sqlite` + `golang.org/x/crypto`）、
 Vue 3 + Vite + TypeScript；前端全量位于 `frontend/`，构建产物固定为 `frontend/dist`。
 容器优先，面向 Podman（`podman kube play` / systemd Quadlet）。
 
