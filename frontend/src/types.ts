@@ -26,6 +26,11 @@ export interface FileListResponse {
   files: FileItem[];
 }
 
+/** POST /api/files/{id}/download-ticket 与分组票据的响应：浏览器可直接导航的短期地址。 */
+export interface DownloadTicketResponse {
+  url: string;
+}
+
 /** POST /api/auth 成功体。 */
 export interface AuthResponse {
   token: string;

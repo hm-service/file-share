@@ -110,31 +110,56 @@ func (s *Store) InsertFile(file File) error {
 	return tx.Commit()
 }
 
-// UpdateGroup 改写一条记录的分组名，并把它移到列表末尾（sort_order 取最大值 +1），
-// 返回更新后的完整记录。分组与排序必须同批生效，所以放在一个事务里。
-func (s *Store) UpdateGroup(id, groupName string) (*File, error) {
+// UpdateFile 按需改写一条记录的文件名与分组名：指针为 nil 表示不动这个字段。
+//
+// 改分组时把记录移到列表末尾（sort_order 取最大值 +1）；只改名时顺序不变。
+// 改名与移动分组要么一起生效、要么一起回滚，所以放在一个事务里。
+func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if filename == nil && groupName == nil {
+		return nil, errors.New("UpdateFile requires at least one field")
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var next int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&next); err != nil {
-		return nil, err
+
+	changed := int64(0)
+	if groupName != nil {
+		var next int64
+		if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&next); err != nil {
+			return nil, err
+		}
+		result, err := tx.Exec("UPDATE file SET group_name = ?, sort_order = ? WHERE id = ?", *groupName, next, id)
+		if err != nil {
+			return nil, err
+		}
+		changed, err = result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
 	}
-	result, err := tx.Exec("UPDATE file SET group_name = ?, sort_order = ? WHERE id = ?", groupName, next, id)
-	if err != nil {
-		return nil, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return nil, err
+	if filename != nil {
+		result, err := tx.Exec("UPDATE file SET filename = ? WHERE id = ?", *filename, id)
+		if err != nil {
+			return nil, err
+		}
+		// 只改名时以这次更新的行数判断记录是否存在；两个字段一起改时
+		// 分组更新已经确认过存在性，这里不必重复判断。
+		if changed == 0 {
+			changed, err = result.RowsAffected()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if changed == 0 {
 		return nil, ErrNotFound
 	}
+
 	file, err := scanFile(tx.QueryRow("SELECT "+fileColumns+" FROM file WHERE id = ?", id))
 	if err != nil {
 		return nil, err

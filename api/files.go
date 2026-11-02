@@ -160,15 +160,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"id": record.ID, "sha256": record.SHA256})
 }
 
-// handleUpdateGroup 改写分组名；成功后记录被移到列表末尾，响应是更新后的完整记录。
-func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
+// handleUpdateFile 按需改写文件名（重命名）与分组名；成功后响应更新后的完整记录。
+func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		GroupName string `json:"group_name"`
+		Filename  *string `json:"filename"`
+		GroupName *string `json:"group_name"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	record, err := s.App.UpdateGroup(r.PathValue("file_id"), payload.GroupName)
+	record, err := s.App.UpdateFile(r.PathValue("file_id"), payload.Filename, payload.GroupName)
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -237,6 +238,56 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 	// FormatMediaType 对非 ASCII 文件名自动改走 RFC 2231 的 filename* 形式。
 	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.File.Filename}))
 	http.ServeContent(w, r, download.File.Filename, time.Time{}, download.Blob)
+}
+
+// handleFileDownloadTicket 签一张 60 秒有效的下载票据。前端拿 url 后让浏览器直接导航：
+// 流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
+func (s *Server) handleFileDownloadTicket(w http.ResponseWriter, r *http.Request) {
+	ticket, err := s.App.IssueFileDownloadTicket(r.PathValue("file_id"))
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
+}
+
+// handleGroupDownloadTicket 给「整组打包下载」签票据。分组名走查询参数：
+// 字符串字段不限制 "/"，放进路径会被路由拆开。
+func (s *Server) handleGroupDownloadTicket(w http.ResponseWriter, r *http.Request) {
+	ticket, err := s.App.IssueGroupDownloadTicket(r.URL.Query().Get("name"))
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
+}
+
+// handleTicketDownload 是浏览器导航入口：票据自带目标（单个文件 / 分组 zip），
+// 这个路由不需要 Authorization —— 凭据就是票据本身。
+func (s *Server) handleTicketDownload(w http.ResponseWriter, r *http.Request) {
+	ticket, err := s.App.VerifyDownloadTicket(r.URL.Query().Get("t"))
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	switch ticket.Kind {
+	case core.TicketFile:
+		download, err := s.App.OpenDownload(ticket.Value)
+		if err != nil {
+			businessFail(w, r, err)
+			return
+		}
+		defer download.Close()
+		serveDownload(w, r, download)
+	case core.TicketGroup:
+		s.serveGroupZip(w, r, ticket.Value)
+	}
+}
+
+// ticketURL 拼出票据下载地址。票据是 base64url，字符集天然 URL 安全；
+// 票据放在查询参数而不是路径里，访问日志只记 /d，不会把凭据写进日志。
+func ticketURL(ticket string) string {
+	return "/d?t=" + ticket
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

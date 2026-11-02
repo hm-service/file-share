@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 主应用 | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、分段文件列表、行内操作、拖拽排序）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
+| `/` | 主应用 | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、文件列表、行内操作、分组内拖拽排序、整组打包下载）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
 | `/auth` | 登录页 | 输入 `AUTH_TOKEN` 换取会话；成功后进入主应用 |
 
 前端为两个独立 HTML 入口（`index.html` / `auth.html`），不引入路由库；
@@ -99,11 +99,16 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 上传队列以浮动上传坞呈现（桌面右下角、窄屏贴底），支持取消（中断请求，状态记为已取消）与重试（重新排队）；
   内容区整块都是拖放目标，拖入文件时显示覆盖层提示，松开即入队。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
-- 全部视图按分组分段展示（分组标题 + 数量，未分组段放最后）；收藏与单分组视图平铺。
-  搜索按文件名过滤并隐藏空段；过滤期间禁用拖拽，避免提交子集顺序打乱隐藏文件。
+- 「全部」视图平铺展示、固定按上传时间倒序（同一秒按 id 稳定排序），不参与拖拽；
+  收藏 / 单分组 / 未分组视图按 `sort_order` 排序，可拖拽调整顺序。
+  搜索按文件名过滤；过滤期间禁用拖拽，避免提交子集顺序打乱隐藏文件。
+- 行内操作：收藏、下载、重命名（`window.prompt`，与新建分组同一交互）、复制直链、公开/私有、
+  移动到分组、删除。重命名只改展示名 / 下载名，不动顺序。
 - 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
   也可以直接把文件拖到侧栏分组标签 / 移动端 chips 上（落点虚线高亮，松手即改分组）；
   侧栏 / 移动端 chips 同时用于按分组过滤；不提供空分组、分组重命名/删除与跨组拖拽。
+- 单分组视图提供「打包下载」：前端用登录态换 60 秒票据，再导航到 `/d?t=…` 由浏览器流式下载
+  `<分组名>.zip`；打包不重新压缩，同组重名自动加 ` (2)` 后缀。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
   `PUT /api/files/order` 失败时提示并回滚到服务端顺序。
 - 文件名搜索与「全部 / 收藏」切换都是前端行为（只在已拉取的列表上过滤，不新增后端接口）。
@@ -133,11 +138,13 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | GET | `/api/files` | 列表：`{"files":[{"id","filename","sha256","size","is_favorite","is_public","group_name","sort_order","created_at"}]}`，按 `sort_order` 升序、创建时间倒序 |
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）；命中则直接建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
 | POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256；成功 `{"id","sha256"}`；超限 413 |
-| PATCH | `/api/files/{id}` | 设置分组：`{"group_name":"工作"}`（trim 后 ≤64 字节，空串=未分组）；成功返回完整文件，并移到列表末尾；非法 400，不存在 404 |
+| PATCH | `/api/files/{id}` | 重命名 / 设置分组：`{"filename","group_name"}`（至少一个；分组名 trim 后 ≤64 字节，空串=未分组，改分组会移到列表末尾）；成功返回完整文件；非法 400，不存在 404 |
 | PUT | `/api/files/order` | 批量排序：`{"items":[{"id","sort_order"}]}`（1..2000 项，id 不重复，0..1e9）；成功 204；任一 id 不存在则整批回滚 404 |
 | POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |
 | POST | `/api/files/{id}/public` | 切换公开，返回 `{"is_public":bool}` |
-| GET | `/api/files/{id}/download` | 附件下载（支持 Range/HEAD） |
+| GET | `/api/files/{id}/download` | 附件下载（支持 Range/HEAD），需 Bearer |
+| GET | `/api/files/{id}/download-ticket` | 换短期下载票据：`{"url":"/d?t=…"}`（60 秒，绑定单文件） |
+| GET | `/api/groups/download-ticket?name=…` | 换分组打包票据：`{"url":"/d?t=…"}`（60 秒，绑定非空分组） |
 | DELETE | `/api/files/{id}` | 删除记录；无引用后删除物理文件；返回 204 |
 
 上传约束：字段顺序不限；服务端边收边算哈希，与客户端指纹不符即失败并清理临时文件；
@@ -149,6 +156,11 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/s/{id}` | 仅当记录 `is_public = 1` 且物理文件存在时返回附件；其余情况一律 404，不区分原因 |
+| GET | `/d?t=…` | 凭 60 秒票据下载：`file` 票据回单文件附件（支持 Range/HEAD）；`group` 票据回分组 zip；票据无效 / 过期一律 404 |
+
+票据格式：`base64url("<exp>|<kind>|<value>") + "." + base64url(HMAC-SHA256(key, "d1|"+payload))`，
+与会话共用 `SESSION_SIGNING_KEY` 但签名前缀不同，两者不能互相冒用。票据只放在查询参数里，
+访问日志只记录 `/d`，不会把凭据写进日志；下载完成后过期即失效。
 
 ### 6.4 探针
 
@@ -161,7 +173,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 - 认证：单 token（`AUTH_TOKEN`）。启动时用 Argon2id（m=19456, t=2, p=1）哈希，只保留哈希值；
   登录以恒定时间校验并补足最小耗时。
-- 授权：所有 `/api/*` 除 `POST /api/auth` 外均需有效会话；公开文件只通过 `/s/{id}` 暴露。
+- 授权：所有 `/api/*` 除 `POST /api/auth` 外均需有效会话；公开文件只通过 `/s/{id}` 暴露；
+  浏览器下载用 60 秒、绑定目标的 HMAC 票据走 `/d?t=…`，票据不是会话凭据，不进日志。
 - 会话签名密钥、登录令牌、就绪探针令牌都按 Secret 处理：读完立即从进程环境表删除。
 - 数据权限：`DATA_DIR` 0700、`files/` 0700、数据库 0600、物理文件 0600；启动时收紧，
   `/readyz` 持续断言。

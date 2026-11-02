@@ -6,8 +6,8 @@
  * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
  *
  * 一级分组没有独立接口：分组名与段内顺序都来自每条文件的 group_name / sort_order，
- * 所以左栏的分组列表由文件集合现算；「全部」视图按分组分段渲染（未分组段在最后），
- * 收藏与单分组视图平铺。拖拽排序只改段内顺序，交给后端 PUT /api/files/order。
+ * 所以左栏的分组列表由文件集合现算。「全部」视图不分段、固定按上传时间倒序，不参与拖拽；
+ * 收藏 / 单分组 / 未分组视图按 sort_order 排，可拖拽调整顺序（PUT /api/files/order）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -18,7 +18,9 @@ import {
   ApiError,
   deleteFile,
   downloadFile,
+  downloadGroup,
   listFiles,
+  renameFile,
   reorderFiles,
   toggleFavorite,
   togglePublic,
@@ -89,9 +91,17 @@ function matchesQuery(file: FileItem): boolean {
   return !keyword.value || file.filename.toLowerCase().includes(keyword.value);
 }
 
-/** 平铺视图（收藏 / 单分组 / 未分组）的可见文件。 */
+/** 「全部」视图的固定顺序：上传时间倒序，同一秒按 id 稳定排序；不参与拖拽。 */
+const timeOrderedFiles = computed(() => {
+  return [...files.value].sort((a, b) => {
+    if (a.created_at !== b.created_at) return b.created_at - a.created_at;
+    return a.id.localeCompare(b.id);
+  });
+});
+
+/** 当前视图的可见文件：全部按时间倒序，其余按用户排定的 sort_order，再按关键词过滤。 */
 const visibleFiles = computed(() => {
-  const base = sortedFiles.value.filter(matchesQuery);
+  const base = (isAll.value ? timeOrderedFiles.value : sortedFiles.value).filter(matchesQuery);
   switch (view.value.kind) {
     case "favorites":
       return base.filter((file) => file.is_favorite);
@@ -102,36 +112,6 @@ const visibleFiles = computed(() => {
     default:
       return base;
   }
-});
-
-interface FileSection {
-  key: string;
-  title: string;
-  ungrouped: boolean;
-  files: FileItem[];
-}
-
-/**
- * 「全部」视图的分段：每个分组一段（名称排序），未分组段放最后。
- * 搜索时过滤文件并隐藏空段；没有分组时只剩未分组段，仍带标题。
- */
-const allSections = computed<FileSection[]>(() => {
-  const sections: FileSection[] = groups.value.map((group) => ({
-    key: `group:${group}`,
-    title: group,
-    ungrouped: false,
-    files: sortedFiles.value.filter((file) => file.group_name === group && matchesQuery(file)),
-  }));
-  const ungroupedFiles = sortedFiles.value.filter((file) => !file.group_name && matchesQuery(file));
-  if (ungroupedFiles.length) {
-    sections.push({
-      key: "ungrouped",
-      title: t("nav.ungrouped"),
-      ungrouped: true,
-      files: ungroupedFiles,
-    });
-  }
-  return sections.filter((section) => section.files.length > 0);
 });
 
 const pageTitle = computed(() => {
@@ -160,8 +140,18 @@ const emptyIcon = computed(() => {
 const isAll = computed(() => view.value.kind === "all");
 const isFavorites = computed(() => view.value.kind === "favorites");
 const isUngrouped = computed(() => view.value.kind === "ungrouped");
+const isGroupView = computed(() => view.value.kind === "group");
 const isGroupActive = (group: string): boolean =>
   view.value.kind === "group" && view.value.group === group;
+
+/** 只有按 sort_order 排列的视图才开放拖拽；「全部」是固定时间序，搜索时 DOM 只是子集。 */
+const canSort = computed(() => !sortingDisabled.value && !isAll.value);
+
+/** 当前分组内的文件数（与搜索过滤无关）：为 0 时不显示「打包下载」。 */
+const currentGroupCount = computed(() => {
+  if (view.value.kind !== "group" || !view.value.group) return 0;
+  return groupCounts.value.get(view.value.group) ?? 0;
+});
 
 function showAll(): void {
   view.value = { kind: "all" };
@@ -244,7 +234,32 @@ async function onVisibility(file: FileItem): Promise<void> {
 
 async function onDownload(file: FileItem): Promise<void> {
   try {
-    await downloadFile(file.id, file.filename);
+    await downloadFile(file.id);
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+/** 当前分组整包下载：换票据后由浏览器逐条流式打包下载，不经过前端内存。 */
+async function onDownloadGroup(): Promise<void> {
+  const groupName = view.value.group;
+  if (!groupName) return;
+  try {
+    await downloadGroup(groupName);
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+/** 重命名：用 prompt 保持与「新建分组」一致的最小交互；取消 / 空名 / 同名都不发请求。 */
+async function onRename(file: FileItem): Promise<void> {
+  const input = window.prompt(t("rename.prompt"), file.filename);
+  if (input === null) return;
+  const filename = input.trim();
+  if (!filename || filename === file.filename) return;
+  try {
+    await renameFile(file.id, filename);
+    await refresh();
   } catch (error) {
     showActionError(error);
   }
@@ -529,16 +544,29 @@ onBeforeUnmount(() => {
           <h1 class="page-title">{{ pageTitle }}</h1>
           <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
         </div>
-        <label class="search">
-          <span class="search-icon" v-html="ICONS.search"></span>
-          <input
-            v-model="query"
-            type="search"
-            class="search-input"
-            :placeholder="t('nav.search-placeholder')"
-            :aria-label="t('nav.search-placeholder')"
-          />
-        </label>
+        <div class="page-actions">
+          <!-- 只看单个分组时提供整包下载；「全部 / 收藏 / 未分组」没有稳定的包边界，不提供。 -->
+          <button
+            v-if="isGroupView && currentGroupCount > 0"
+            type="button"
+            class="group-download"
+            :title="t('action.download-group')"
+            @click="onDownloadGroup"
+          >
+            <span class="group-download-icon" v-html="ICONS.download"></span>
+            {{ t("action.download-group") }}
+          </button>
+          <label class="search">
+            <span class="search-icon" v-html="ICONS.search"></span>
+            <input
+              v-model="query"
+              type="search"
+              class="search-input"
+              :placeholder="t('nav.search-placeholder')"
+              :aria-label="t('nav.search-placeholder')"
+            />
+          </label>
+        </div>
       </header>
 
       <!-- 窄屏用标签页切换视图；桌面端用侧栏导航 -->
@@ -615,73 +643,36 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <!-- 全部视图：按分组分段（未分组段在最后），每个分段一个可拖拽列表 -->
-        <template v-if="isAll">
-          <div v-if="allSections.length" class="sections">
-            <section v-for="section in allSections" :key="section.key" class="group-section">
-              <header class="group-head">
-                <span class="group-icon" v-html="section.ungrouped ? ICONS.inbox : ICONS.folder"></span>
-                <h2 class="group-title">{{ section.title }}</h2>
-                <span class="group-count">{{ section.files.length }}</span>
-              </header>
-              <FileList
-                :files="section.files"
-                :groups="groups"
-                :sortable="!sortingDisabled"
-                @favorite="onFavorite"
-                @download="onDownload"
-                @visibility="onVisibility"
-                @delete="onDelete"
-                @move-group="onMoveGroup"
-                @reorder="onReorder"
-                @drag-start="startFileDrag"
-                @drag-end="endFileDrag"
-              />
-            </section>
-          </div>
-          <div v-else class="empty">
-            <span class="empty-icon" v-html="emptyIcon"></span>
-            <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
-            <template v-if="loaded && !query.trim()">
-              <p class="empty-text">
-                <span class="desktop-only">{{ t("upload.hint") }}</span>
-                <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
-              </p>
-              <button type="button" class="upload-secondary" @click="pickFiles">
-                <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
-                {{ t("upload.button") }}
-              </button>
-            </template>
-          </div>
-        </template>
-
-        <!-- 收藏 / 单个分组 / 未分组：平铺列表，同样支持拖拽排序 -->
-        <template v-else>
-          <FileList
-            v-if="visibleFiles.length"
-            :files="visibleFiles"
-            :groups="groups"
-            :sortable="!sortingDisabled"
-            @favorite="onFavorite"
-            @download="onDownload"
-            @visibility="onVisibility"
-            @delete="onDelete"
-            @move-group="onMoveGroup"
-            @reorder="onReorder"
-            @drag-start="startFileDrag"
-            @drag-end="endFileDrag"
-          />
-          <div v-else class="empty">
-            <span class="empty-icon" v-html="emptyIcon"></span>
-            <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
-            <template v-if="loaded && !query.trim() && isFavorites">
-              <button type="button" class="upload-secondary" @click="pickFiles">
-                <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
-                {{ t("upload.button") }}
-              </button>
-            </template>
-          </div>
-        </template>
+        <!-- 全部视图按上传时间倒序平铺；收藏 / 分组 / 未分组按 sort_order 平铺 -->
+        <FileList
+          v-if="visibleFiles.length"
+          :files="visibleFiles"
+          :groups="groups"
+          :sortable="canSort"
+          @favorite="onFavorite"
+          @download="onDownload"
+          @rename="onRename"
+          @visibility="onVisibility"
+          @delete="onDelete"
+          @move-group="onMoveGroup"
+          @reorder="onReorder"
+          @drag-start="startFileDrag"
+          @drag-end="endFileDrag"
+        />
+        <div v-else class="empty">
+          <span class="empty-icon" v-html="emptyIcon"></span>
+          <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
+          <template v-if="loaded && !query.trim() && (isAll || isFavorites)">
+            <p v-if="isAll" class="empty-text">
+              <span class="desktop-only">{{ t("upload.hint") }}</span>
+              <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
+            </p>
+            <button type="button" class="upload-secondary" @click="pickFiles">
+              <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
+              {{ t("upload.button") }}
+            </button>
+          </template>
+        </div>
       </section>
 
       <div v-if="dropActive" class="drop-overlay" aria-hidden="true">

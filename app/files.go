@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"file-share/core"
@@ -57,19 +58,99 @@ func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool,
 	return record, true, nil
 }
 
-// UpdateGroup 改写一条记录的分组名并把它移到列表末尾，返回更新后的完整记录。
-func (a *App) UpdateGroup(id, rawGroupName string) (*db.File, error) {
-	groupName, ok := core.NormalizeGroupName(rawGroupName)
-	if !ok {
-		return nil, core.Fail(400, "group.invalid")
+// UpdateFile 按需改写文件名（filename）与分组名（groupName），指针为 nil 表示不动这个字段。
+// 改分组会把记录移到列表末尾；只改名保持原顺序。
+func (a *App) UpdateFile(id string, filename, rawGroupName *string) (*db.File, error) {
+	if filename == nil && rawGroupName == nil {
+		return nil, core.Fail(400, "request.empty")
+	}
+	if filename != nil && !core.ValidFilename(*filename) {
+		return nil, core.Fail(400, "upload.invalid-filename")
+	}
+	var groupName *string
+	if rawGroupName != nil {
+		normalized, ok := core.NormalizeGroupName(*rawGroupName)
+		if !ok {
+			return nil, core.Fail(400, "group.invalid")
+		}
+		groupName = &normalized
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	record, err := a.Store.UpdateGroup(id, groupName)
+	record, err := a.Store.UpdateFile(id, filename, groupName)
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}
 	return record, nil
+}
+
+// GroupFiles 返回一个分组内的全部记录（保持列表顺序）；分组为空时返回空切片，不报错。
+// 分组只是文件上的字符串字段，所以这里现算，没有独立的分组表可查。
+func (a *App) GroupFiles(groupName string) ([]db.File, error) {
+	if groupName == "" {
+		return nil, nil
+	}
+	all, err := a.ListFiles()
+	if err != nil {
+		return nil, err
+	}
+	files := make([]db.File, 0)
+	for _, file := range all {
+		if file.GroupName == groupName {
+			files = append(files, file)
+		}
+	}
+	return files, nil
+}
+
+// IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
+// blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
+func (a *App) IssueFileDownloadTicket(id string) (string, error) {
+	record, err := a.Store.File(id)
+	if err != nil {
+		return "", storeFailure(err, "internal")
+	}
+	if _, err := os.Stat(a.blobPath(record.SHA256)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", core.Fail(404, "file.not-found")
+		}
+		slog.Error("stat blob for download ticket failed", slog.Any("error", err))
+		return "", core.Fail(500, "internal")
+	}
+	ticket, err := a.tickets.Issue(core.TicketFile, record.ID, time.Now())
+	if err != nil {
+		slog.Error("issue file download ticket failed", slog.Any("error", err))
+		return "", core.Fail(500, "internal")
+	}
+	return ticket, nil
+}
+
+// IssueGroupDownloadTicket 给一个非空的分组签打包下载票据；分组名按库里的原样比较。
+func (a *App) IssueGroupDownloadTicket(rawName string) (string, error) {
+	name := strings.TrimSpace(rawName)
+	files, err := a.GroupFiles(name)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", core.Fail(404, "group.not-found")
+	}
+	ticket, err := a.tickets.Issue(core.TicketGroup, name, time.Now())
+	if err != nil {
+		slog.Error("issue group download ticket failed", slog.Any("error", err))
+		return "", core.Fail(500, "internal")
+	}
+	return ticket, nil
+}
+
+// VerifyDownloadTicket 校验下载票据。过期 / 签名不对 / 字段无效统一回一枚 404：
+// 下载路由不需要告诉匿名调用方「是过期了还是伪造的」。
+func (a *App) VerifyDownloadTicket(token string) (core.DownloadTicket, error) {
+	ticket, err := a.tickets.Verify(token, time.Now())
+	if err != nil {
+		return core.DownloadTicket{}, core.Fail(404, "download.invalid")
+	}
+	return ticket, nil
 }
 
 // SetOrder 批量重写列表顺序；任一条记录不存在就整体失败，原顺序保持不变。

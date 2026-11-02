@@ -429,7 +429,7 @@ func TestDownloadVisibility(t *testing.T) {
 	}
 }
 
-func TestUpdateGroup(t *testing.T) {
+func TestUpdateFile(t *testing.T) {
 	instance := testenv.New(t)
 	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
 	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
@@ -440,13 +440,22 @@ func TestUpdateGroup(t *testing.T) {
 	}
 	maxSort := before[len(before)-1].SortOrder
 
-	// 分组名会 trim，记录被移到末尾。
-	updated, err := instance.UpdateGroup(first.ID, "  工作  ")
+	// 只改名：顺序不动。
+	updated, err := instance.UpdateFile(first.ID, stringPtr("改名后.txt"), nil)
 	if err != nil {
-		t.Fatalf("UpdateGroup() 报错: %v", err)
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if updated.Filename != "改名后.txt" || updated.SortOrder != before[0].SortOrder {
+		t.Fatalf("只改名后 = %+v，想要新名字且 sort_order 不变", updated)
+	}
+
+	// 改分组：分组名会 trim，记录被移到末尾。
+	updated, err = instance.UpdateFile(first.ID, nil, stringPtr("  工作  "))
+	if err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
 	if updated.ID != first.ID || updated.GroupName != "工作" || updated.SortOrder != maxSort+1 {
-		t.Fatalf("UpdateGroup() = %+v，想要分组「工作」且 sort_order %d", updated, maxSort+1)
+		t.Fatalf("UpdateFile() = %+v，想要分组「工作」且 sort_order %d", updated, maxSort+1)
 	}
 	files, err := instance.ListFiles()
 	if err != nil {
@@ -457,9 +466,9 @@ func TestUpdateGroup(t *testing.T) {
 	}
 
 	// 空串 = 未分组，仍然移到末尾。
-	updated, err = instance.UpdateGroup(first.ID, "")
+	updated, err = instance.UpdateFile(first.ID, nil, stringPtr(""))
 	if err != nil {
-		t.Fatalf("UpdateGroup() 报错: %v", err)
+		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
 	if updated.GroupName != "" {
 		t.Errorf("清空分组后 GroupName = %q，想要空串", updated.GroupName)
@@ -471,16 +480,37 @@ func TestUpdateGroup(t *testing.T) {
 		"控制字符": "a\nb",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := instance.UpdateGroup(first.ID, value)
+			_, err := instance.UpdateFile(first.ID, nil, stringPtr(value))
 			assertBusinessError(t, err, 400, "group.invalid")
 		})
 	}
-	if _, err := instance.UpdateGroup("absent", "x"); err == nil {
+
+	// 非法文件名：空串 / 路径分隔符 / 控制字符。
+	for name, value := range map[string]string{
+		"空串":   "",
+		"路径":   "a/b.txt",
+		"控制字符": "a\nb.txt",
+	} {
+		t.Run("文件名"+name, func(t *testing.T) {
+			_, err := instance.UpdateFile(first.ID, stringPtr(value), nil)
+			assertBusinessError(t, err, 400, "upload.invalid-filename")
+		})
+	}
+
+	if _, err := instance.UpdateFile(first.ID, nil, nil); err == nil {
+		t.Fatal("两个字段都不给应当报错")
+	} else {
+		assertBusinessError(t, err, 400, "request.empty")
+	}
+	if _, err := instance.UpdateFile("absent", stringPtr("x.txt"), nil); err == nil {
 		t.Fatal("不存在的记录应当报错")
 	} else {
 		assertBusinessError(t, err, 404, "file.not-found")
 	}
 }
+
+// stringPtr 让测试里能直接写「改这个字段」；nil 表示不动。
+func stringPtr(value string) *string { return &value }
 
 func TestSetOrder(t *testing.T) {
 	instance := testenv.New(t)

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -69,6 +71,8 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/favorite"},
 		{http.MethodPost, "/api/files/abc/public"},
 		{http.MethodGet, "/api/files/abc/download"},
+		{http.MethodGet, "/api/files/abc/download-ticket"},
+		{http.MethodGet, "/api/groups/download-ticket"},
 		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
 		{http.MethodPut, "/api/files/order"},
@@ -1058,8 +1062,8 @@ func listFileIDs(t *testing.T, handler http.Handler, token string) []string {
 	return ids
 }
 
-// PATCH /api/files/{id}：改分组名、trim、空串表示未分组，并把记录移到列表末尾。
-func TestUpdateGroupRoute(t *testing.T) {
+// PATCH /api/files/{id}：按需改文件名 / 分组名；改分组会把记录移到末尾，只改名保持顺序。
+func TestUpdateFileRoute(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
 	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
@@ -1086,17 +1090,43 @@ func TestUpdateGroupRoute(t *testing.T) {
 		t.Errorf("列表顺序 = %v，想要 first 在最后", got)
 	}
 
-	// 空串 / 缺字段都表示未分组。
-	for _, body := range []map[string]any{{"group_name": ""}, {}} {
-		recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID, body, token)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("清空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
-		}
-		testenv.DecodeInto(t, recorder, &updated)
-		if updated.GroupName != "" {
-			t.Errorf("清空分组后 group_name = %q，想要空串", updated.GroupName)
-		}
+	// 空串 = 未分组，仍然移到末尾。
+	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"group_name": ""}, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("清空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
+	testenv.DecodeInto(t, recorder, &updated)
+	if updated.GroupName != "" {
+		t.Errorf("清空分组后 group_name = %q，想要空串", updated.GroupName)
+	}
+
+	// 只改名：文件名变了，顺序（sort_order）不动。
+	beforeRename := updated.SortOrder
+	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"filename": "改名后.txt"}, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("改名状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	testenv.DecodeInto(t, recorder, &updated)
+	if updated.Filename != "改名后.txt" || updated.GroupName != "" || updated.SortOrder != beforeRename {
+		t.Errorf("改名后 = %+v，想要新文件名、未分组且顺序不变", updated)
+	}
+
+	// 两个字段一起改：名字与分组都生效，记录移到末尾。
+	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+second.ID,
+		map[string]any{"filename": "second-new.txt", "group_name": "归档"}, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("同时改名与分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	testenv.DecodeInto(t, recorder, &updated)
+	if updated.Filename != "second-new.txt" || updated.GroupName != "归档" || updated.SortOrder != beforeRename+1 {
+		t.Errorf("同时改两个字段后 = %+v，想要新名字、分组「归档」且移到末尾", updated)
+	}
+
+	// 空请求体：没给任何要改的字段，按契约报 400。
+	assertJSONError(t, testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{}, token), http.StatusBadRequest, "请求未包含要修改的字段")
 
 	// 非法分组名（超长 / 控制字符）。
 	longName := strings.Repeat("a", core.MaxGroupNameBytes+1)
@@ -1110,11 +1140,24 @@ func TestUpdateGroupRoute(t *testing.T) {
 		})
 	}
 
+	// 非法文件名（空串 / 路径分隔符 / 控制字符）。
+	for name, value := range map[string]string{
+		"空串":   "",
+		"路径":   "a/b.txt",
+		"控制字符": "a\nb.txt",
+	} {
+		t.Run("文件名"+name, func(t *testing.T) {
+			recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+				map[string]any{"filename": value}, token)
+			assertJSONError(t, recorder, http.StatusBadRequest, "文件名无效")
+		})
+	}
+
 	// 错误文案走 Accept-Language。
 	recorder = testenv.DoRequest(handler, http.MethodPatch, "/api/files/"+first.ID,
-		bytes.NewReader([]byte(`{"group_name":"`+longName+`"}`)), "application/json", token,
+		bytes.NewReader([]byte(`{"filename":""}`)), "application/json", token,
 		map[string]string{"Accept-Language": "en"})
-	assertJSONError(t, recorder, http.StatusBadRequest, "Invalid group name")
+	assertJSONError(t, recorder, http.StatusBadRequest, "Invalid file name")
 
 	// 请求体不是合法 JSON。
 	recorder = testenv.DoRaw(handler, http.MethodPatch, "/api/files/"+first.ID,
@@ -1123,11 +1166,11 @@ func TestUpdateGroupRoute(t *testing.T) {
 
 	// 记录不存在。
 	assertJSONError(t, testenv.DoJSON(handler, http.MethodPatch, "/api/files/absent",
-		map[string]any{"group_name": "x"}, token), http.StatusNotFound, "找不到该文件")
+		map[string]any{"filename": "x.txt"}, token), http.StatusNotFound, "找不到该文件")
 
 	// 未登录。
 	assertJSONError(t, testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
-		map[string]any{"group_name": "x"}, ""), http.StatusUnauthorized, "需要登录")
+		map[string]any{"filename": "x.txt"}, ""), http.StatusUnauthorized, "需要登录")
 
 	// 方法不对：这条路径上只允许 PATCH / DELETE。
 	recorder = testenv.Do(handler, http.MethodGet, "/api/files/"+first.ID, token)
@@ -1253,4 +1296,202 @@ func TestConcurrentDuplicateUploads(t *testing.T) {
 	if !testenv.BlobExists(instance, sha) {
 		t.Error("blob 应当存在")
 	}
+}
+
+// 下载票据：登录后换成 /d?t= 短期地址，浏览器直接导航即可匿名下载（支持 Range / HEAD）。
+func TestFileDownloadTicket(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	content := []byte("ticket download body")
+	record := testenv.SeedUpload(t, instance, "票据.bin", content)
+
+	recorder := testenv.Do(handler, http.MethodGet, "/api/files/"+record.ID+"/download-ticket", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	if !strings.HasPrefix(payload.URL, "/d?t=") {
+		t.Fatalf("url = %q，想要 /d?t=<ticket>", payload.URL)
+	}
+
+	t.Run("票据可匿名下载", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodGet, payload.URL, "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if disposition := recorder.Header().Get("Content-Disposition"); !strings.HasPrefix(disposition, "attachment;") {
+			t.Errorf("Content-Disposition = %q", disposition)
+		}
+		if !bytes.Equal(recorder.Body.Bytes(), content) {
+			t.Errorf("下载内容 = %q", recorder.Body.Bytes())
+		}
+	})
+
+	t.Run("票据同样支持 Range 与 HEAD", func(t *testing.T) {
+		ranged := testenv.DoRequest(handler, http.MethodGet, payload.URL, nil, "", "",
+			map[string]string{"Range": "bytes=0-3"})
+		if ranged.Code != http.StatusPartialContent {
+			t.Fatalf("Range 状态码 = %d，想要 206", ranged.Code)
+		}
+		head := testenv.Do(handler, http.MethodHead, payload.URL, "")
+		if head.Code != http.StatusOK || head.Body.Len() != 0 {
+			t.Errorf("HEAD /d = %d，体长 %d", head.Code, head.Body.Len())
+		}
+	})
+
+	t.Run("票据无效", func(t *testing.T) {
+		for _, target := range []string{"/d", "/d?t=", "/d?t=nope", "/d?t=abc.def", "/d/extra"} {
+			recorder := testenv.Do(handler, http.MethodGet, target, "")
+			if recorder.Code != http.StatusNotFound {
+				t.Errorf("%s 状态码 = %d，想要 404", target, recorder.Code)
+				continue
+			}
+			if recc := recorder.Header().Get("Content-Type"); recc != "application/json; charset=utf-8" {
+				t.Errorf("%s Content-Type = %q", target, recc)
+			}
+		}
+	})
+
+	t.Run("过期票据", func(t *testing.T) {
+		signer := core.NewTicketSigner([]byte(instance.Config.SessionSigningKey))
+		expired, err := signer.Issue(core.TicketFile, record.ID, time.Now().Add(-2*core.DownloadTicketTTL))
+		if err != nil {
+			t.Fatalf("Issue() 报错: %v", err)
+		}
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/d?t="+expired, ""),
+			http.StatusNotFound, "下载链接无效或已过期")
+	})
+
+	t.Run("记录不存在", func(t *testing.T) {
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/absent/download-ticket", token),
+			http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("blob 丢失", func(t *testing.T) {
+		lost := testenv.SeedUpload(t, instance, "lost.bin", []byte("gone"))
+		testenv.RemoveBlob(t, instance, lost.SHA256)
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/"+lost.ID+"/download-ticket", token),
+			http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/download-ticket", token)
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
+			t.Errorf("票据接口 POST = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+		}
+		recorder = testenv.Do(handler, http.MethodPost, "/d?t=x", "")
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
+			t.Errorf("POST /d = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+		}
+	})
+}
+
+// 分组打包下载：一个分组一个 zip，重名自动加序号，不含未分组与其他分组的文件。
+func TestGroupZipDownload(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	alpha := testenv.SeedUpload(t, instance, "a.txt", []byte("alpha"))
+	beta := testenv.SeedUpload(t, instance, "b.txt", []byte("beta"))
+	duplicate := testenv.SeedUpload(t, instance, "a.txt", []byte("second alpha"))
+	other := testenv.SeedUpload(t, instance, "other.txt", []byte("other"))
+
+	moveToGroup := func(id string) {
+		t.Helper()
+		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+id,
+			map[string]any{"group_name": "工作"}, token)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+	}
+	for _, id := range []string{alpha.ID, beta.ID, duplicate.ID} {
+		moveToGroup(id)
+	}
+
+	recorder := testenv.Do(handler, http.MethodGet,
+		"/api/groups/download-ticket?name="+url.QueryEscape("工作"), token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	if !strings.HasPrefix(payload.URL, "/d?t=") {
+		t.Fatalf("url = %q", payload.URL)
+	}
+
+	zipRecorder := testenv.Do(handler, http.MethodGet, payload.URL, "")
+	if zipRecorder.Code != http.StatusOK {
+		t.Fatalf("zip 状态码 = %d（body=%s）", zipRecorder.Code, zipRecorder.Body.String())
+	}
+	if got := zipRecorder.Header().Get("Content-Type"); got != "application/zip" {
+		t.Errorf("Content-Type = %q，想要 application/zip", got)
+	}
+	disposition := zipRecorder.Header().Get("Content-Disposition")
+	if !strings.HasPrefix(disposition, "attachment;") || !strings.Contains(disposition, "filename*=utf-8''") {
+		t.Errorf("Content-Disposition = %q，想要附件且文件名走 RFC 2231", disposition)
+	}
+
+	body := zipRecorder.Body.Bytes()
+	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("响应不是合法 zip: %v", err)
+	}
+	wantNames := []string{"a.txt", "b.txt", "a (2).txt"}
+	if len(archive.File) != len(wantNames) {
+		t.Fatalf("zip 条目数 = %d，想要 %d", len(archive.File), len(wantNames))
+	}
+	wantContents := map[string]string{
+		"a.txt":     "alpha",
+		"b.txt":     "beta",
+		"a (2).txt": "second alpha",
+	}
+	for i, entry := range archive.File {
+		if entry.Name != wantNames[i] {
+			t.Errorf("第 %d 个条目 = %q，想要 %q", i, entry.Name, wantNames[i])
+		}
+		if entry.Method != zip.Store {
+			t.Errorf("条目 %q 的压缩方式 = %d，想要 Store", entry.Name, entry.Method)
+		}
+		reader, err := entry.Open()
+		if err != nil {
+			t.Fatalf("打开条目 %q 失败: %v", entry.Name, err)
+		}
+		data, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			t.Fatalf("读取条目 %q 失败: %v", entry.Name, err)
+		}
+		if string(data) != wantContents[entry.Name] {
+			t.Errorf("条目 %q 内容 = %q，想要 %q", entry.Name, data, wantContents[entry.Name])
+		}
+	}
+
+	t.Run("分组不存在", func(t *testing.T) {
+		assertJSONError(t, testenv.Do(handler, http.MethodGet,
+			"/api/groups/download-ticket?name="+url.QueryEscape("没有这个组"), token),
+			http.StatusNotFound, "分组不存在")
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/groups/download-ticket", token),
+			http.StatusNotFound, "分组不存在")
+	})
+
+	// 未分组的文件不在任何 zip 里：直接检查唯一那张 zip 没有 other.txt。
+	for _, entry := range archive.File {
+		if entry.Name == other.Filename {
+			t.Errorf("未分组文件 %q 不该出现在分组 zip 里", other.Filename)
+		}
+	}
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodPost, "/api/groups/download-ticket", token)
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
+			t.Errorf("POST 分组票据 = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+		}
+	})
 }

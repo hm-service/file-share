@@ -98,8 +98,8 @@ func TestListOrdersBySortOrder(t *testing.T) {
 	}
 }
 
-// 更新分组会把记录移到末尾，之后新插入的记录仍然从新的最大值继续 +1。
-func TestUpdateGroupMovesToEnd(t *testing.T) {
+// 改分组会把记录移到末尾；只改名保持原顺序；两个字段可以一起改。
+func TestUpdateFile(t *testing.T) {
 	store := testStore(t)
 	for _, id := range []string{"aa", "bb", "cc"} {
 		if err := store.InsertFile(sampleFile(id, "sha-"+id, 100)); err != nil {
@@ -107,37 +107,65 @@ func TestUpdateGroupMovesToEnd(t *testing.T) {
 		}
 	}
 
-	updated, err := store.UpdateGroup("aa", "工作")
+	// 只改名：文件名变了，顺序不动。
+	updated, err := store.UpdateFile("bb", textPtr("新名字.txt"), nil)
 	if err != nil {
-		t.Fatalf("UpdateGroup() 报错: %v", err)
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if updated.Filename != "新名字.txt" || updated.SortOrder != 2 || updated.GroupName != "" {
+		t.Fatalf("只改名后 = %+v，想要新文件名且 sort_order 2", updated)
+	}
+	if files, err := store.ListFiles(); err != nil || len(files) != 3 || files[1].ID != "bb" {
+		t.Fatalf("只改名后列表 = %+v, %v，想要 bb 仍在第二位", files, err)
+	}
+
+	// 改分组：移到末尾。
+	updated, err = store.UpdateFile("aa", nil, textPtr("工作"))
+	if err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
 	if updated.ID != "aa" || updated.GroupName != "工作" || updated.SortOrder != 4 {
-		t.Fatalf("UpdateGroup() = %+v，想要分组「工作」且 sort_order 4", updated)
+		t.Fatalf("UpdateFile() = %+v，想要分组「工作」且 sort_order 4", updated)
 	}
 	if files, err := store.ListFiles(); err != nil || len(files) != 3 || files[2].ID != "aa" {
 		t.Fatalf("改分组后列表 = %+v, %v，想要 aa 在最后", files, err)
 	}
 
-	// 清空分组 = 未分组，同样移到末尾。
-	updated, err = store.UpdateGroup("aa", "")
+	// 两个字段一起改：同样移到末尾。
+	updated, err = store.UpdateFile("cc", textPtr("重命名.txt"), textPtr("归档"))
 	if err != nil {
-		t.Fatalf("UpdateGroup() 报错: %v", err)
+		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.GroupName != "" || updated.SortOrder != 5 {
-		t.Fatalf("清空分组后 = %+v，想要空串分组与 sort_order 5", updated)
+	if updated.Filename != "重命名.txt" || updated.GroupName != "归档" || updated.SortOrder != 5 {
+		t.Fatalf("同时改名与分组后 = %+v，想要新名字、分组「归档」、sort_order 5", updated)
+	}
+
+	// 清空分组 = 未分组，同样移到末尾。
+	updated, err = store.UpdateFile("aa", nil, textPtr(""))
+	if err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if updated.GroupName != "" || updated.SortOrder != 6 {
+		t.Fatalf("清空分组后 = %+v，想要空串分组与 sort_order 6", updated)
 	}
 
 	if err := store.InsertFile(sampleFile("dd", "sha-dd", 100)); err != nil {
 		t.Fatalf("InsertFile() 报错: %v", err)
 	}
-	if got, err := store.File("dd"); err != nil || got.SortOrder != 6 {
-		t.Fatalf("新插入记录的 sort_order = %+v, %v，想要 6", got, err)
+	if got, err := store.File("dd"); err != nil || got.SortOrder != 7 {
+		t.Fatalf("新插入记录的 sort_order = %+v, %v，想要 7", got, err)
 	}
 
-	if _, err := store.UpdateGroup("absent", "x"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.UpdateFile("absent", nil, textPtr("x")); !errors.Is(err, ErrNotFound) {
 		t.Errorf("不存在的记录应当返回 ErrNotFound，得到 %v", err)
 	}
+	if _, err := store.UpdateFile("aa", nil, nil); err == nil {
+		t.Error("两个字段都为 nil 应当报错")
+	}
 }
+
+// textPtr 让测试里能直接写「改这个字段」；nil 表示不动。
+func textPtr(value string) *string { return &value }
 
 // 批量排序整体生效；有一条记录不存在就整体回滚。
 func TestSetOrder(t *testing.T) {

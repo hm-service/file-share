@@ -394,6 +394,46 @@ ul {
   font-size: 12px;
 }
 
+.page-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 单分组视图的整包下载入口：和搜索框同高 */
+.group-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.group-download:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.group-download-icon {
+  display: inline-flex;
+}
+
+.group-download-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
 .search {
   display: flex;
   align-items: center;
@@ -480,56 +520,6 @@ ul {
   background: var(--surface);
   box-shadow: var(--shadow-md);
   container-type: inline-size;
-}
-
-/* 「全部」视图按分组分段 */
-.sections {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-
-.group-section {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.group-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 4px;
-}
-
-.group-icon {
-  display: inline-flex;
-  color: var(--ink-3);
-}
-
-.group-icon svg {
-  display: block;
-  width: 15px;
-  height: 15px;
-}
-
-.group-title {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12.5px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.group-count {
-  flex: 0 0 auto;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: rgb(20 23 44 / 0.05);
-  color: var(--ink-3);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
 }
 
 .file-row {
@@ -1561,8 +1551,14 @@ ul {
     font-size: 22px;
   }
 
-  .search {
-    width: 100%;
+  .page-actions {
+    gap: 8px;
+  }
+
+  .page-actions .search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
   }
 
   .tabs {
@@ -1661,14 +1657,6 @@ ul {
     outline-offset: -3px;
     background: var(--accent-soft);
     color: var(--accent-strong);
-  }
-
-  .sections {
-    gap: 16px;
-  }
-
-  .group-head {
-    padding: 0 2px;
   }
 
   .content {

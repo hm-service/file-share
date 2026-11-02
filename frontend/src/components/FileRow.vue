@@ -27,6 +27,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   favorite: [];
   download: [];
+  rename: [];
   visibility: [];
   delete: [];
   "move-group": [groupName: string];
@@ -237,6 +238,15 @@ onBeforeUnmount(() => {
         :aria-label="t('action.download')"
         v-html="ICONS.download"
         @click="emit('download')"
+      ></button>
+
+      <button
+        type="button"
+        class="icon-btn rename"
+        :title="t('action.rename')"
+        :aria-label="t('action.rename')"
+        v-html="ICONS.pencil"
+        @click="emit('rename')"
       ></button>
 
       <button

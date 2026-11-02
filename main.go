@@ -95,9 +95,11 @@ func run() int {
 func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) http.Handler {
 	routes := api.NewMux(instance)
 
-	// 公开下载与页面 / 静态资源同属「静态」一类，共用一个信号量。
+	// 公开下载（/s/、/d）与页面 / 静态资源同属「静态」一类，共用一个信号量。
 	static := http.NewServeMux()
 	static.Handle("/s/", routes)
+	static.Handle("/d", routes)
+	static.Handle("/d/", routes)
 	static.Handle("/", siteHandler(files))
 	staticHandler := api.Concurrency(limits.static, static)
 
@@ -109,6 +111,8 @@ func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) ht
 	root.Handle("/readyz", api.Concurrency(api.ReadyzConcurrency, routes))
 	root.Handle("/livez", routes)
 	root.Handle("/s/", staticHandler)
+	root.Handle("/d", staticHandler)
+	root.Handle("/d/", staticHandler)
 	root.Handle("/", staticHandler)
 	return api.Middleware(instance, root)
 }

@@ -50,9 +50,13 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true},
 		{http.MethodPost, "/api/files/{file_id}/public", server.handlePublic, true},
 		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
-		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateGroup, true},
+		{http.MethodGet, "/api/files/{file_id}/download-ticket", server.handleFileDownloadTicket, true},
+		{http.MethodGet, "/api/groups/download-ticket", server.handleGroupDownloadTicket, true},
+		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true},
 		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true},
 		{http.MethodGet, "/s/{file_id}", server.handlePublicDownload, false},
+		// /d?t= 是浏览器导航下载入口：票据自带目标，不需要 Authorization。
+		{http.MethodGet, "/d", server.handleTicketDownload, false},
 	})
 	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
 	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
@@ -80,8 +84,9 @@ func (s *Server) register(mux *http.ServeMux, routes []route) {
 		allow := allowValue(methods)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", allow)
-			// /api/* 与 /s/* 是给程序用的接口，405 也要是 JSON 错误体。
-			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") {
+			// /api/*、/s/*、/d* 是给程序 / 浏览器下载用的接口，405 也要是 JSON 错误体。
+			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") ||
+				r.URL.Path == "/d" || strings.HasPrefix(r.URL.Path, "/d/") {
 				fail(w, r, http.StatusMethodNotAllowed, "method-not-allowed")
 				return
 			}
@@ -105,6 +110,9 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/s/"):
 		// 公开路由上的一切「没有」都回同一句话，不泄露记录是否存在 / 是否私有。
 		fail(w, r, http.StatusNotFound, "file.not-found")
+	case strings.HasPrefix(path, "/d/"):
+		// 下载入口只认 /d?t=，多余的路径一律按「链接无效」处理。
+		fail(w, r, http.StatusNotFound, "download.invalid")
 	default:
 		http.NotFound(w, r)
 	}

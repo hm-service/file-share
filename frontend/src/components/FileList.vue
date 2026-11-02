@@ -23,6 +23,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   favorite: [file: FileItem];
   download: [file: FileItem];
+  rename: [file: FileItem];
   visibility: [file: FileItem];
   delete: [file: FileItem];
   "move-group": [file: FileItem, groupName: string];
@@ -100,6 +101,7 @@ onBeforeUnmount(destroySortable);
       :draggable="sortable"
       @favorite="emit('favorite', file)"
       @download="emit('download', file)"
+      @rename="emit('rename', file)"
       @visibility="emit('visibility', file)"
       @delete="emit('delete', file)"
       @move-group="(groupName) => emit('move-group', file, groupName)"

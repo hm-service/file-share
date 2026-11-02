@@ -72,6 +72,8 @@ export type MessageKey =
   | "action.favorite"
   | "action.unfavorite"
   | "action.download"
+  | "action.download-group"
+  | "action.rename"
   | "action.copy-link"
   | "action.copy-link-private"
   | "action.copied"
@@ -83,6 +85,7 @@ export type MessageKey =
   | "action.logout"
   | "badge.public"
   | "group.new-prompt"
+  | "rename.prompt"
   | "confirm.delete"
   | "meta.unknown-time"
   | "lang.label"
@@ -142,6 +145,8 @@ const messages: Record<MessageKey, Message> = {
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
+  "action.download-group": { zh: "打包下载", en: "Download as ZIP" },
+  "action.rename": { zh: "重命名", en: "Rename" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
   "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
   "action.copied": { zh: "已复制", en: "Copied" },
@@ -153,6 +158,7 @@ const messages: Record<MessageKey, Message> = {
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
   "group.new-prompt": { zh: "输入分组名", en: "Enter a group name" },
+  "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },

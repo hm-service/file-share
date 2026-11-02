@@ -4,7 +4,8 @@
  * - 每个请求都带 `Authorization: Bearer <session>` 与 `Accept-Language`（后端按它挑错误文案）。
  * - 除登录接口外，401 一律清 session 跳 /auth（登录页自己把 401 显示成「令牌不正确」）。
  * - 错误体是 `{"detail": "..."}`，直接作为 ApiError.message（后端已本地化）。
- * - 下载必须带 Bearer：fetch 拿 blob → objectURL → 触发 <a download>，不能直接 location.href。
+ * - 下载不能直接导航到需要 Bearer 的接口：先换 60 秒有效的下载票据，再让浏览器导航到
+ *   票据地址，由浏览器完成流式下载（Range / 原生进度都在浏览器侧）。
  */
 import { abortError, isAbortError } from "./abort";
 import { getLocale, t } from "./i18n";
@@ -12,6 +13,7 @@ import { getSession, toLogin } from "./session";
 import type {
   AuthResponse,
   CheckFileResponse,
+  DownloadTicketResponse,
   FileItem,
   FileListResponse,
   FileOrderItem,
@@ -210,6 +212,15 @@ export function updateFileGroup(id: string, groupName: string): Promise<FileItem
   });
 }
 
+/** PATCH /api/files/{id}：重命名文件，返回更新后的完整记录。 */
+export function renameFile(id: string, filename: string): Promise<FileItem> {
+  return request<FileItem>(`/api/files/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+  });
+}
+
 /** PUT /api/files/order：拖拽后按段内新顺序提交（0..n-1），成功 204。 */
 export function reorderFiles(items: FileOrderItem[]): Promise<void> {
   return request<void>("/api/files/order", {
@@ -225,32 +236,33 @@ export function publicLink(id: string): string {
 }
 
 /**
- * GET /api/files/{id}/download：带 Bearer 取回 blob，再触发浏览器下载。
- * 直接用 location.href 或 <a href> 不会带 Authorization 头，所以必须走 fetch。
+ * 用票据 URL 触发浏览器下载。
+ *
+ * 不能直接给 /api/files/{id}/download 加 href —— 导航带不了 Authorization 头；
+ * 也不用 fetch + blob —— 大文件会整份进内存，而且 Safari 在异步回调里点 <a download>
+ * 常常不生效。换成「先换短期票据，再让浏览器导航」：流式、可续传、原生进度都在浏览器侧。
  */
-export async function downloadFile(id: string, filename: string): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/files/${encodeURIComponent(id)}/download`, {
-      headers: authHeaders(),
-    });
-  } catch {
-    throw new ApiError(t("error.network"), 0);
-  }
-  if (!response.ok) {
-    const payload = parseJson(await response.text().catch(() => ""));
-    if (response.status === 401) toLogin();
-    throw new ApiError(detailOf(payload) || t("error.network"), response.status);
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
+function startDownload(url: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = filename;
   anchor.rel = "noopener";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  // 立刻 revoke 在部分浏览器里会让下载还没开始就失效，推迟一拍再回收
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** GET /api/files/{id}/download-ticket：换一个 60 秒有效的下载地址。 */
+export async function downloadFile(id: string): Promise<void> {
+  const payload = await request<DownloadTicketResponse>(
+    `/api/files/${encodeURIComponent(id)}/download-ticket`,
+  );
+  startDownload(payload.url);
+}
+
+/** GET /api/groups/download-ticket?name=…：换一个分组打包（zip）下载地址。 */
+export async function downloadGroup(groupName: string): Promise<void> {
+  const payload = await request<DownloadTicketResponse>(
+    `/api/groups/download-ticket?name=${encodeURIComponent(groupName)}`,
+  );
+  startDownload(payload.url);
 }
