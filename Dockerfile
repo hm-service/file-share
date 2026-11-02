@@ -1,10 +1,10 @@
 # ==========================================
 # 第一阶段：构建前端
 # ==========================================
-FROM --platform=$BUILDPLATFORM node:26.7.0-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:26.13.0-alpine AS frontend
 
 # 版本在模板生成时注入
-RUN npm install -g pnpm@11.28.5
+RUN npm install -g pnpm@12.16.1
 
 WORKDIR /build/frontend
 

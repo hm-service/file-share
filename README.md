@@ -31,7 +31,7 @@
 
 ## 快速开始
 
-需要 Go 1.27.3、Node 26.7.0、pnpm 11.28.5、`just`。
+需要 Go 1.27.3、Node 26.13.0、pnpm 12.16.1、`just`。
 
 ```bash
 export DATA_DIR=./.data
