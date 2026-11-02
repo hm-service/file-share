@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"file-share/core"
@@ -84,25 +83,6 @@ func (a *App) UpdateFile(id string, filename, rawGroupName *string) (*db.File, e
 	return record, nil
 }
 
-// GroupFiles 返回一个分组内的全部记录（保持列表顺序）；分组为空时返回空切片，不报错。
-// 分组只是文件上的字符串字段，所以这里现算，没有独立的分组表可查。
-func (a *App) GroupFiles(groupName string) ([]db.File, error) {
-	if groupName == "" {
-		return nil, nil
-	}
-	all, err := a.ListFiles()
-	if err != nil {
-		return nil, err
-	}
-	files := make([]db.File, 0)
-	for _, file := range all {
-		if file.GroupName == groupName {
-			files = append(files, file)
-		}
-	}
-	return files, nil
-}
-
 // IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
 // blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
 func (a *App) IssueFileDownloadTicket(id string) (string, error) {
@@ -117,7 +97,7 @@ func (a *App) IssueFileDownloadTicket(id string) (string, error) {
 		slog.Error("stat blob for download ticket failed", slog.Any("error", err))
 		return "", core.Fail(500, "internal")
 	}
-	ticket, err := a.tickets.Issue(core.TicketFile, record.ID, time.Now())
+	ticket, err := a.tickets.Issue(record.ID, time.Now())
 	if err != nil {
 		slog.Error("issue file download ticket failed", slog.Any("error", err))
 		return "", core.Fail(500, "internal")
@@ -125,32 +105,14 @@ func (a *App) IssueFileDownloadTicket(id string) (string, error) {
 	return ticket, nil
 }
 
-// IssueGroupDownloadTicket 给一个非空的分组签打包下载票据；分组名按库里的原样比较。
-func (a *App) IssueGroupDownloadTicket(rawName string) (string, error) {
-	name := strings.TrimSpace(rawName)
-	files, err := a.GroupFiles(name)
-	if err != nil {
-		return "", err
-	}
-	if len(files) == 0 {
-		return "", core.Fail(404, "group.not-found")
-	}
-	ticket, err := a.tickets.Issue(core.TicketGroup, name, time.Now())
-	if err != nil {
-		slog.Error("issue group download ticket failed", slog.Any("error", err))
-		return "", core.Fail(500, "internal")
-	}
-	return ticket, nil
-}
-
-// VerifyDownloadTicket 校验下载票据。过期 / 签名不对 / 字段无效统一回一枚 404：
+// VerifyDownloadTicket 校验下载票据并返回文件 id。过期 / 签名不对 / 字段无效统一回一枚 404：
 // 下载路由不需要告诉匿名调用方「是过期了还是伪造的」。
-func (a *App) VerifyDownloadTicket(token string) (core.DownloadTicket, error) {
-	ticket, err := a.tickets.Verify(token, time.Now())
+func (a *App) VerifyDownloadTicket(token string) (string, error) {
+	fileID, err := a.tickets.Verify(token, time.Now())
 	if err != nil {
-		return core.DownloadTicket{}, core.Fail(404, "download.invalid")
+		return "", core.Fail(404, "download.invalid")
 	}
-	return ticket, nil
+	return fileID, nil
 }
 
 // SetOrder 批量重写列表顺序；任一条记录不存在就整体失败，原顺序保持不变。

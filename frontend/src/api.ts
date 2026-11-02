@@ -240,11 +240,16 @@ export function publicLink(id: string): string {
  *
  * 不能直接给 /api/files/{id}/download 加 href —— 导航带不了 Authorization 头；
  * 也不用 fetch + blob —— 大文件会整份进内存，而且 Safari 在异步回调里点 <a download>
- * 常常不生效。换成「先换短期票据，再让浏览器导航」：流式、可续传、原生进度都在浏览器侧。
+ * 常常不生效。换成「先换短期票据，再让浏览器下载」：流式、可续传、原生进度都在浏览器侧。
+ *
+ * 必须带 download 属性：否则浏览器把 /d 当成一次同帧导航，连续点多个文件时后一次导航
+ * 会取消前一次下载（分组「全部下载」只剩最后一个）。download 为空串时文件名取服务端的
+ * Content-Disposition，重命名后的名字仍然正确。
  */
 function startDownload(url: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
+  anchor.download = "";
   anchor.rel = "noopener";
   document.body.appendChild(anchor);
   anchor.click();
@@ -255,14 +260,6 @@ function startDownload(url: string): void {
 export async function downloadFile(id: string): Promise<void> {
   const payload = await request<DownloadTicketResponse>(
     `/api/files/${encodeURIComponent(id)}/download-ticket`,
-  );
-  startDownload(payload.url);
-}
-
-/** GET /api/groups/download-ticket?name=…：换一个分组打包（zip）下载地址。 */
-export async function downloadGroup(groupName: string): Promise<void> {
-  const payload = await request<DownloadTicketResponse>(
-    `/api/groups/download-ticket?name=${encodeURIComponent(groupName)}`,
   );
   startDownload(payload.url);
 }

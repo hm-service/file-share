@@ -18,7 +18,6 @@ import {
   ApiError,
   deleteFile,
   downloadFile,
-  downloadGroup,
   listFiles,
   renameFile,
   reorderFiles,
@@ -147,7 +146,7 @@ const isGroupActive = (group: string): boolean =>
 /** 只有按 sort_order 排列的视图才开放拖拽；「全部」是固定时间序，搜索时 DOM 只是子集。 */
 const canSort = computed(() => !sortingDisabled.value && !isAll.value);
 
-/** 当前分组内的文件数（与搜索过滤无关）：为 0 时不显示「打包下载」。 */
+/** 当前分组内的文件数（与搜索过滤无关）：为 0 时不显示「全部下载」。 */
 const currentGroupCount = computed(() => {
   if (view.value.kind !== "group" || !view.value.group) return 0;
   return groupCounts.value.get(view.value.group) ?? 0;
@@ -240,12 +239,19 @@ async function onDownload(file: FileItem): Promise<void> {
   }
 }
 
-/** 当前分组整包下载：换票据后由浏览器逐条流式打包下载，不经过前端内存。 */
+/**
+ * 分组「全部下载」：按当前分组顺序逐个换票据并触发下载，每个文件是独立的一次下载。
+ * 浏览器可能询问「是否允许下载多个文件」，允许后即可一次保存整组。
+ */
 async function onDownloadGroup(): Promise<void> {
-  const groupName = view.value.group;
-  if (!groupName) return;
+  if (view.value.kind !== "group") return;
+  const groupName = view.value.group ?? "";
+  const targets = sortedFiles.value.filter((file) => file.group_name === groupName);
+  if (!targets.length) return;
   try {
-    await downloadGroup(groupName);
+    for (const file of targets) {
+      await downloadFile(file.id);
+    }
   } catch (error) {
     showActionError(error);
   }
@@ -545,7 +551,7 @@ onBeforeUnmount(() => {
           <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
         </div>
         <div class="page-actions">
-          <!-- 只看单个分组时提供整包下载；「全部 / 收藏 / 未分组」没有稳定的包边界，不提供。 -->
+          <!-- 只看单个分组时提供「全部下载」；「全部 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
           <button
             v-if="isGroupView && currentGroupCount > 0"
             type="button"

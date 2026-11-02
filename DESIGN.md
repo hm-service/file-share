@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 主应用 | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、文件列表、行内操作、分组内拖拽排序、整组打包下载）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
+| `/` | 主应用 | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、文件列表、行内操作、分组内拖拽排序、分组全部下载）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
 | `/auth` | 登录页 | 输入 `AUTH_TOKEN` 换取会话；成功后进入主应用 |
 
 前端为两个独立 HTML 入口（`index.html` / `auth.html`），不引入路由库；
@@ -107,8 +107,8 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
   也可以直接把文件拖到侧栏分组标签 / 移动端 chips 上（落点虚线高亮，松手即改分组）；
   侧栏 / 移动端 chips 同时用于按分组过滤；不提供空分组、分组重命名/删除与跨组拖拽。
-- 单分组视图提供「打包下载」：前端用登录态换 60 秒票据，再导航到 `/d?t=…` 由浏览器流式下载
-  `<分组名>.zip`；打包不重新压缩，同组重名自动加 ` (2)` 后缀。
+- 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态换 60 秒票据、逐个触发 `/d?t=…` 下载，
+  每个文件是浏览器里独立的一次下载（不打包成 zip）；浏览器可能询问是否允许下载多个文件。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
   `PUT /api/files/order` 失败时提示并回滚到服务端顺序。
 - 文件名搜索与「全部 / 收藏」切换都是前端行为（只在已拉取的列表上过滤，不新增后端接口）。
@@ -144,7 +144,6 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | POST | `/api/files/{id}/public` | 切换公开，返回 `{"is_public":bool}` |
 | GET | `/api/files/{id}/download` | 附件下载（支持 Range/HEAD），需 Bearer |
 | GET | `/api/files/{id}/download-ticket` | 换短期下载票据：`{"url":"/d?t=…"}`（60 秒，绑定单文件） |
-| GET | `/api/groups/download-ticket?name=…` | 换分组打包票据：`{"url":"/d?t=…"}`（60 秒，绑定非空分组） |
 | DELETE | `/api/files/{id}` | 删除记录；无引用后删除物理文件；返回 204 |
 
 上传约束：字段顺序不限；服务端边收边算哈希，与客户端指纹不符即失败并清理临时文件；
@@ -156,9 +155,9 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/s/{id}` | 仅当记录 `is_public = 1` 且物理文件存在时返回附件；其余情况一律 404，不区分原因 |
-| GET | `/d?t=…` | 凭 60 秒票据下载：`file` 票据回单文件附件（支持 Range/HEAD）；`group` 票据回分组 zip；票据无效 / 过期一律 404 |
+| GET | `/d?t=…` | 凭 60 秒票据下载单个文件，返回附件（支持 Range/HEAD）；票据无效 / 过期一律 404 |
 
-票据格式：`base64url("<exp>|<kind>|<value>") + "." + base64url(HMAC-SHA256(key, "d1|"+payload))`，
+票据格式：`base64url("<exp>|<file_id>") + "." + base64url(HMAC-SHA256(key, "d1|"+payload))`，
 与会话共用 `SESSION_SIGNING_KEY` 但签名前缀不同，两者不能互相冒用。票据只放在查询参数里，
 访问日志只记录 `/d`，不会把凭据写进日志；下载完成后过期即失效。
 
@@ -174,7 +173,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 - 认证：单 token（`AUTH_TOKEN`）。启动时用 Argon2id（m=19456, t=2, p=1）哈希，只保留哈希值；
   登录以恒定时间校验并补足最小耗时。
 - 授权：所有 `/api/*` 除 `POST /api/auth` 外均需有效会话；公开文件只通过 `/s/{id}` 暴露；
-  浏览器下载用 60 秒、绑定目标的 HMAC 票据走 `/d?t=…`，票据不是会话凭据，不进日志。
+  浏览器下载用 60 秒、绑定单个文件的 HMAC 票据走 `/d?t=…`，票据不是会话凭据，不进日志。
 - 会话签名密钥、登录令牌、就绪探针令牌都按 Secret 处理：读完立即从进程环境表删除。
 - 数据权限：`DATA_DIR` 0700、`files/` 0700、数据库 0600、物理文件 0600；启动时收紧，
   `/readyz` 持续断言。

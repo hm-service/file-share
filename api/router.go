@@ -51,11 +51,10 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodPost, "/api/files/{file_id}/public", server.handlePublic, true},
 		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
 		{http.MethodGet, "/api/files/{file_id}/download-ticket", server.handleFileDownloadTicket, true},
-		{http.MethodGet, "/api/groups/download-ticket", server.handleGroupDownloadTicket, true},
 		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true},
 		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true},
 		{http.MethodGet, "/s/{file_id}", server.handlePublicDownload, false},
-		// /d?t= 是浏览器导航下载入口：票据自带目标，不需要 Authorization。
+		// /d?t= 是浏览器导航下载入口：票据绑定单个文件，不需要 Authorization。
 		{http.MethodGet, "/d", server.handleTicketDownload, false},
 	})
 	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：

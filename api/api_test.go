@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -72,7 +70,6 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/public"},
 		{http.MethodGet, "/api/files/abc/download"},
 		{http.MethodGet, "/api/files/abc/download-ticket"},
-		{http.MethodGet, "/api/groups/download-ticket"},
 		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
 		{http.MethodPut, "/api/files/order"},
@@ -1360,7 +1357,7 @@ func TestFileDownloadTicket(t *testing.T) {
 
 	t.Run("过期票据", func(t *testing.T) {
 		signer := core.NewTicketSigner([]byte(instance.Config.SessionSigningKey))
-		expired, err := signer.Issue(core.TicketFile, record.ID, time.Now().Add(-2*core.DownloadTicketTTL))
+		expired, err := signer.Issue(record.ID, time.Now().Add(-2*core.DownloadTicketTTL))
 		if err != nil {
 			t.Fatalf("Issue() 报错: %v", err)
 		}
@@ -1388,110 +1385,6 @@ func TestFileDownloadTicket(t *testing.T) {
 		recorder = testenv.Do(handler, http.MethodPost, "/d?t=x", "")
 		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
 			t.Errorf("POST /d = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
-		}
-	})
-}
-
-// 分组打包下载：一个分组一个 zip，重名自动加序号，不含未分组与其他分组的文件。
-func TestGroupZipDownload(t *testing.T) {
-	instance, handler := newAPI(t)
-	token := testenv.Token(t, instance)
-	alpha := testenv.SeedUpload(t, instance, "a.txt", []byte("alpha"))
-	beta := testenv.SeedUpload(t, instance, "b.txt", []byte("beta"))
-	duplicate := testenv.SeedUpload(t, instance, "a.txt", []byte("second alpha"))
-	other := testenv.SeedUpload(t, instance, "other.txt", []byte("other"))
-
-	moveToGroup := func(id string) {
-		t.Helper()
-		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+id,
-			map[string]any{"group_name": "工作"}, token)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
-		}
-	}
-	for _, id := range []string{alpha.ID, beta.ID, duplicate.ID} {
-		moveToGroup(id)
-	}
-
-	recorder := testenv.Do(handler, http.MethodGet,
-		"/api/groups/download-ticket?name="+url.QueryEscape("工作"), token)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
-	}
-	var payload struct {
-		URL string `json:"url"`
-	}
-	testenv.DecodeInto(t, recorder, &payload)
-	if !strings.HasPrefix(payload.URL, "/d?t=") {
-		t.Fatalf("url = %q", payload.URL)
-	}
-
-	zipRecorder := testenv.Do(handler, http.MethodGet, payload.URL, "")
-	if zipRecorder.Code != http.StatusOK {
-		t.Fatalf("zip 状态码 = %d（body=%s）", zipRecorder.Code, zipRecorder.Body.String())
-	}
-	if got := zipRecorder.Header().Get("Content-Type"); got != "application/zip" {
-		t.Errorf("Content-Type = %q，想要 application/zip", got)
-	}
-	disposition := zipRecorder.Header().Get("Content-Disposition")
-	if !strings.HasPrefix(disposition, "attachment;") || !strings.Contains(disposition, "filename*=utf-8''") {
-		t.Errorf("Content-Disposition = %q，想要附件且文件名走 RFC 2231", disposition)
-	}
-
-	body := zipRecorder.Body.Bytes()
-	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
-	if err != nil {
-		t.Fatalf("响应不是合法 zip: %v", err)
-	}
-	wantNames := []string{"a.txt", "b.txt", "a (2).txt"}
-	if len(archive.File) != len(wantNames) {
-		t.Fatalf("zip 条目数 = %d，想要 %d", len(archive.File), len(wantNames))
-	}
-	wantContents := map[string]string{
-		"a.txt":     "alpha",
-		"b.txt":     "beta",
-		"a (2).txt": "second alpha",
-	}
-	for i, entry := range archive.File {
-		if entry.Name != wantNames[i] {
-			t.Errorf("第 %d 个条目 = %q，想要 %q", i, entry.Name, wantNames[i])
-		}
-		if entry.Method != zip.Store {
-			t.Errorf("条目 %q 的压缩方式 = %d，想要 Store", entry.Name, entry.Method)
-		}
-		reader, err := entry.Open()
-		if err != nil {
-			t.Fatalf("打开条目 %q 失败: %v", entry.Name, err)
-		}
-		data, err := io.ReadAll(reader)
-		reader.Close()
-		if err != nil {
-			t.Fatalf("读取条目 %q 失败: %v", entry.Name, err)
-		}
-		if string(data) != wantContents[entry.Name] {
-			t.Errorf("条目 %q 内容 = %q，想要 %q", entry.Name, data, wantContents[entry.Name])
-		}
-	}
-
-	t.Run("分组不存在", func(t *testing.T) {
-		assertJSONError(t, testenv.Do(handler, http.MethodGet,
-			"/api/groups/download-ticket?name="+url.QueryEscape("没有这个组"), token),
-			http.StatusNotFound, "分组不存在")
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/groups/download-ticket", token),
-			http.StatusNotFound, "分组不存在")
-	})
-
-	// 未分组的文件不在任何 zip 里：直接检查唯一那张 zip 没有 other.txt。
-	for _, entry := range archive.File {
-		if entry.Name == other.Filename {
-			t.Errorf("未分组文件 %q 不该出现在分组 zip 里", other.Filename)
-		}
-	}
-
-	t.Run("方法不对", func(t *testing.T) {
-		recorder := testenv.Do(handler, http.MethodPost, "/api/groups/download-ticket", token)
-		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
-			t.Errorf("POST 分组票据 = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
 		}
 	})
 }

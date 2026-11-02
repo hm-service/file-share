@@ -251,37 +251,21 @@ func (s *Server) handleFileDownloadTicket(w http.ResponseWriter, r *http.Request
 	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
 }
 
-// handleGroupDownloadTicket 给「整组打包下载」签票据。分组名走查询参数：
-// 字符串字段不限制 "/"，放进路径会被路由拆开。
-func (s *Server) handleGroupDownloadTicket(w http.ResponseWriter, r *http.Request) {
-	ticket, err := s.App.IssueGroupDownloadTicket(r.URL.Query().Get("name"))
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
-}
-
-// handleTicketDownload 是浏览器导航入口：票据自带目标（单个文件 / 分组 zip），
-// 这个路由不需要 Authorization —— 凭据就是票据本身。
+// handleTicketDownload 是浏览器导航入口：票据绑定单个文件，不需要 Authorization ——
+// 凭据就是票据本身。分组「全部下载」由前端逐个文件调用这里，服务端不提供打包。
 func (s *Server) handleTicketDownload(w http.ResponseWriter, r *http.Request) {
-	ticket, err := s.App.VerifyDownloadTicket(r.URL.Query().Get("t"))
+	fileID, err := s.App.VerifyDownloadTicket(r.URL.Query().Get("t"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	switch ticket.Kind {
-	case core.TicketFile:
-		download, err := s.App.OpenDownload(ticket.Value)
-		if err != nil {
-			businessFail(w, r, err)
-			return
-		}
-		defer download.Close()
-		serveDownload(w, r, download)
-	case core.TicketGroup:
-		s.serveGroupZip(w, r, ticket.Value)
+	download, err := s.App.OpenDownload(fileID)
+	if err != nil {
+		businessFail(w, r, err)
+		return
 	}
+	defer download.Close()
+	serveDownload(w, r, download)
 }
 
 // ticketURL 拼出票据下载地址。票据是 base64url，字符集天然 URL 安全；

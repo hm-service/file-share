@@ -145,7 +145,7 @@ const messages: Record<MessageKey, Message> = {
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
-  "action.download-group": { zh: "打包下载", en: "Download as ZIP" },
+  "action.download-group": { zh: "全部下载", en: "Download all" },
   "action.rename": { zh: "重命名", en: "Rename" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
   "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },

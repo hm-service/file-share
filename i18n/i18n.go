@@ -39,7 +39,6 @@ var catalog = map[string]entry{
 	"upload.too-big":           {"文件超过上传上限", "File exceeds the upload limit"},
 	"upload.write":             {"写入文件失败", "Failed to write the file"},
 	"file.not-found":           {"找不到该文件", "File not found"},
-	"group.not-found":          {"分组不存在", "Group not found"},
 	"download.invalid":         {"下载链接无效或已过期", "Download link is invalid or expired"},
 	"store.list":               {"读取文件列表失败", "Failed to list files"},
 	"store.insert":             {"保存文件记录失败", "Failed to save the file record"},
