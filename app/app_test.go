@@ -10,6 +10,7 @@ import (
 
 	"file-share/app"
 	"file-share/core"
+	"file-share/db"
 	"file-share/internal/testenv"
 )
 
@@ -566,6 +567,61 @@ func TestSetOrder(t *testing.T) {
 	for name, bad := range invalidCases {
 		t.Run(name, func(t *testing.T) {
 			assertBusinessError(t, instance.SetOrder(bad), 400, "order.invalid")
+		})
+	}
+}
+
+func TestRenameGroup(t *testing.T) {
+	instance := testenv.New(t)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	kept := testenv.SeedUpload(t, instance, "kept.txt", []byte("kept"))
+	for _, file := range []*db.File{first, second} {
+		if _, err := instance.UpdateFile(file.ID, nil, stringPtr("旧组")); err != nil {
+			t.Fatalf("UpdateFile() 报错: %v", err)
+		}
+	}
+	if _, err := instance.UpdateFile(kept.ID, nil, stringPtr("保留组")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+
+	// 组名会 trim；组内顺序保持（second 在前、first 在后）。
+	if err := instance.RenameGroup("  旧组  ", " 新组 "); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	files, err := instance.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	byID := make(map[string]string, len(files))
+	for _, file := range files {
+		byID[file.ID] = file.GroupName
+	}
+	if byID[first.ID] != "新组" || byID[second.ID] != "新组" || byID[kept.ID] != "保留组" {
+		t.Fatalf("重命名后分组 = %+v，想要 first/second 在新组", byID)
+	}
+
+	// 目标分组已存在：409，且不合并。
+	if err := instance.RenameGroup("新组", "保留组"); err == nil {
+		t.Fatal("目标分组已存在应当报错")
+	} else {
+		assertBusinessError(t, err, 409, "group.exists")
+	}
+	// 源分组不存在：404。
+	if err := instance.RenameGroup("不存在", "任意"); err == nil {
+		t.Fatal("源分组不存在应当报错")
+	} else {
+		assertBusinessError(t, err, 404, "group.not-found")
+	}
+	// 空名 / 超长 / 控制字符都按非法分组名处理。
+	for name, pair := range map[string][2]string{
+		"旧名为空":   {"", "新组"},
+		"新名为空":   {"新组", ""},
+		"旧名超长":   {strings.Repeat("a", core.MaxGroupNameBytes+1), "新组"},
+		"新名控制字符": {"新组", "a\nb"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertBusinessError(t, instance.RenameGroup(pair[0], pair[1]), 400, "group.invalid")
 		})
 	}
 }

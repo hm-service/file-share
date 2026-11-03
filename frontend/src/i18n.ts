@@ -76,6 +76,7 @@ export type MessageKey =
   | "action.download-group"
   | "action.refresh"
   | "action.rename"
+  | "action.rename-group"
   | "action.copy-link"
   | "action.copy-link-private"
   | "action.copied"
@@ -88,6 +89,7 @@ export type MessageKey =
   | "badge.public"
   | "file.sha256"
   | "group.new-prompt"
+  | "group.rename-prompt"
   | "rename.prompt"
   | "confirm.delete"
   | "meta.unknown-time"
@@ -154,6 +156,7 @@ const messages: Record<MessageKey, Message> = {
   "action.download": { zh: "下载", en: "Download" },
   "action.download-group": { zh: "全部下载", en: "Download all" },
   "action.rename": { zh: "重命名", en: "Rename" },
+  "action.rename-group": { zh: "重命名分组", en: "Rename group" },
   "action.refresh": { zh: "刷新列表", en: "Refresh" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
   "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
@@ -167,6 +170,7 @@ const messages: Record<MessageKey, Message> = {
   "badge.public": { zh: "公开", en: "Public" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
   "group.new-prompt": { zh: "输入分组名", en: "Enter a group name" },
+  "group.rename-prompt": { zh: "输入新的分组名", en: "Enter a new group name" },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },

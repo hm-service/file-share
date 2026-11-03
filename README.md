@@ -23,7 +23,7 @@
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
 - **上传与拖放**：点击上传或把文件拖到内容区任意位置；右下角滑出上传坞显示指纹计算 / 预检 / 上传进度与实时速度，支持取消与重试，完成后自动消失；每完成一个文件就增量刷新列表。单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
 - **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻收藏、下载、重命名、复制直链、公开/私有、移动到分组、删除，并显示文件的 SHA-256。
-- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换），分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件）；行内菜单可移动到分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图固定按上传时间倒序平铺。
+- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换），分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件），单分组视图标题旁可重命名分组（批量改组名，目标分组已存在时拒绝，不做隐式合并）；行内菜单可移动到分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图固定按上传时间倒序平铺。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为侧栏 + 内容区 + 右下角浮动上传坞；≤900px 收成顶栏 + 标签页 + 贴底上传面板，文件操作按钮常显并适配安全区。
@@ -101,6 +101,7 @@ podman kube play k8s.file-share.yaml
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |
 | `POST` | `/api/files/{id}/public` | 切换公开 |
 | `PATCH` | `/api/files/{id}` | 重命名 / 设置分组（`filename`、`group_name`，至少给一个） |
+| `POST` | `/api/groups/rename` | 批量重命名分组（`name`、`new_name`） |
 | `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载（curl / 程序用） |
 | `GET` | `/api/files/{id}/download-ticket` | 换 60 秒有效的浏览器下载地址 |
@@ -169,6 +170,15 @@ curl -s -X PATCH -H "Authorization: Bearer $SESSION" -H 'Content-Type: applicati
 ```bash
 curl -s -X PATCH -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
   -d '{"filename":"新名字.pdf"}' http://127.0.0.1:8080/api/files/3f2c…
+```
+
+**重命名分组**：`POST /api/groups/rename`，JSON `{"name":"旧组","new_name":"新组"}`。
+组内记录的 `sort_order` 不变；目标分组已存在时返回 409（不做隐式合并），源分组不存在返回 404，
+空名 / 超长 / 控制字符返回 400。成功返回 `204`。
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
+  -d '{"name":"旧组","new_name":"新组"}' http://127.0.0.1:8080/api/groups/rename
 ```
 
 **拖拽排序**：`PUT /api/files/order`，按新顺序提交该段文件（前端用 0..n-1 编号）：

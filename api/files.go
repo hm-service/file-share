@@ -177,6 +177,22 @@ func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, record)
 }
 
+// handleRenameGroup 批量改写一个分组的名字；组内顺序不变，成功回 204。
+func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name    string `json:"name"`
+		NewName string `json:"new_name"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if err := s.App.RenameGroup(payload.Name, payload.NewName); err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleSetOrder 批量重写列表顺序，成功回 204（无响应体）。
 func (s *Server) handleSetOrder(w http.ResponseWriter, r *http.Request) {
 	var payload struct {

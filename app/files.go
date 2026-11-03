@@ -83,6 +83,29 @@ func (a *App) UpdateFile(id string, filename, rawGroupName *string) (*db.File, e
 	return record, nil
 }
 
+// RenameGroup 批量改写一个分组的名字，组内顺序不变。
+// 目标分组已存在时拒绝（不做隐式合并）；源分组不存在按 404 返回。
+func (a *App) RenameGroup(rawName, rawNewName string) error {
+	name, ok := core.NormalizeGroupName(rawName)
+	if !ok || name == "" {
+		return core.Fail(400, "group.invalid")
+	}
+	newName, ok := core.NormalizeGroupName(rawNewName)
+	if !ok || newName == "" {
+		return core.Fail(400, "group.invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, err := a.Store.RenameGroup(name, newName)
+	switch {
+	case errors.Is(err, db.ErrGroupExists):
+		return core.Fail(409, "group.exists")
+	case errors.Is(err, db.ErrNotFound):
+		return core.Fail(404, "group.not-found")
+	}
+	return storeFailure(err, "store.rename")
+}
+
 // IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
 // blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
 func (a *App) IssueFileDownloadTicket(id string) (string, error) {

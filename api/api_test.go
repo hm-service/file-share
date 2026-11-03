@@ -70,6 +70,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/public"},
 		{http.MethodGet, "/api/files/abc/download"},
 		{http.MethodGet, "/api/files/abc/download-ticket"},
+		{http.MethodPost, "/api/groups/rename"},
 		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
 		{http.MethodPut, "/api/files/order"},
@@ -1385,6 +1386,96 @@ func TestFileDownloadTicket(t *testing.T) {
 		recorder = testenv.Do(handler, http.MethodPost, "/d?t=x", "")
 		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
 			t.Errorf("POST /d = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+		}
+	})
+}
+
+// POST /api/groups/rename：批量改写分组名，成功 204；冲突 409、源分组不存在 404。
+func TestRenameGroupRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	kept := testenv.SeedUpload(t, instance, "kept.txt", []byte("kept"))
+	for _, body := range []struct {
+		id    string
+		group string
+	}{
+		{first.ID, "旧组"},
+		{second.ID, "旧组"},
+		{kept.ID, "保留组"},
+	} {
+		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+body.id,
+			map[string]any{"group_name": body.group}, token)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+		map[string]any{"name": " 旧组 ", "new_name": " 新组 "}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 0 {
+		t.Errorf("204 不该有响应体: %q", recorder.Body.String())
+	}
+	list := testenv.Decode(t, testenv.Do(handler, http.MethodGet, "/api/files", token))
+	groups := map[string]string{}
+	for _, item := range list["files"].([]any) {
+		file := item.(map[string]any)
+		groups[file["id"].(string)] = file["group_name"].(string)
+	}
+	if groups[first.ID] != "新组" || groups[second.ID] != "新组" || groups[kept.ID] != "保留组" {
+		t.Fatalf("重命名后分组 = %+v", groups)
+	}
+
+	t.Run("目标分组已存在", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+			map[string]any{"name": "新组", "new_name": "保留组"}, token)
+		assertJSONError(t, recorder, http.StatusConflict, "分组名已存在")
+	})
+
+	t.Run("源分组不存在", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+			map[string]any{"name": "不存在", "new_name": "任意"}, token)
+		assertJSONError(t, recorder, http.StatusNotFound, "分组不存在")
+	})
+
+	t.Run("非法分组名", func(t *testing.T) {
+		for name, payload := range map[string]map[string]any{
+			"旧名为空": {"name": "", "new_name": "新组"},
+			"新名为空": {"name": "新组", "new_name": ""},
+			"超长":   {"name": "新组", "new_name": strings.Repeat("a", core.MaxGroupNameBytes+1)},
+		} {
+			t.Run(name, func(t *testing.T) {
+				recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename", payload, token)
+				assertJSONError(t, recorder, http.StatusBadRequest, "分组名无效")
+			})
+		}
+	})
+
+	t.Run("错误文案走 Accept-Language", func(t *testing.T) {
+		// DoJSON 不带自定义头，这里用原始请求补 Accept-Language。
+		recorder := testenv.DoRequest(handler, http.MethodPost, "/api/groups/rename",
+			bytes.NewReader([]byte(`{"name":"新组","new_name":"保留组"}`)), "application/json", token,
+			map[string]string{"Accept-Language": "en"})
+		assertJSONError(t, recorder, http.StatusConflict, "A group with this name already exists")
+	})
+
+	t.Run("未登录", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+			map[string]any{"name": "新组", "new_name": "另一个"}, "")
+		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
+	})
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodGet, "/api/groups/rename", token)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("状态码 = %d，想要 405", recorder.Code)
+		}
+		if got := recorder.Header().Get("Allow"); got != "POST" {
+			t.Errorf("Allow = %q，想要 POST", got)
 		}
 	})
 }

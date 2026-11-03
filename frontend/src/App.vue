@@ -20,6 +20,7 @@ import {
   downloadFile,
   listFiles,
   renameFile,
+  renameGroup,
   reorderFiles,
   toggleFavorite,
   togglePublic,
@@ -295,6 +296,23 @@ async function onDelete(file: FileItem): Promise<void> {
   }
 }
 
+/** 重命名当前分组：批量改写组内文件的 group_name，成功后留在新分组视图。 */
+async function onRenameGroup(): Promise<void> {
+  const groupName = view.value.group;
+  if (!groupName) return;
+  const input = window.prompt(t("group.rename-prompt"), groupName);
+  if (input === null) return;
+  const newName = input.trim();
+  if (!newName || newName === groupName) return;
+  try {
+    await renameGroup(groupName, newName);
+    view.value = { kind: "group", group: newName };
+    await refresh();
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
 /** 移动到分组（空串 = 未分组；新分组名会随着文件出现自动出现在左栏）。 */
 async function onMoveGroup(file: FileItem, groupName: string): Promise<void> {
   if (file.group_name === groupName) return;
@@ -561,7 +579,19 @@ onBeforeUnmount(() => {
 
       <header class="page-head">
         <div class="page-titles">
-          <h1 class="page-title">{{ pageTitle }}</h1>
+          <div class="page-title-line">
+            <h1 class="page-title">{{ pageTitle }}</h1>
+            <button
+              v-if="isGroupView"
+              type="button"
+              class="title-action"
+              :title="t('action.rename-group')"
+              :aria-label="t('action.rename-group')"
+              @click="onRenameGroup"
+            >
+              <span v-html="ICONS.pencil"></span>
+            </button>
+          </div>
           <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
         </div>
         <div class="page-actions">

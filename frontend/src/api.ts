@@ -221,6 +221,15 @@ export function renameFile(id: string, filename: string): Promise<FileItem> {
   });
 }
 
+/** POST /api/groups/rename：批量把 oldName 分组下的文件改名为 newName（成功 204）。 */
+export function renameGroup(name: string, newName: string): Promise<void> {
+  return request<void>("/api/groups/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, new_name: newName }),
+  });
+}
+
 /** PUT /api/files/order：拖拽后按段内新顺序提交（0..n-1），成功 204。 */
 export function reorderFiles(items: FileOrderItem[]): Promise<void> {
   return request<void>("/api/files/order", {

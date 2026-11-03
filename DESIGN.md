@@ -108,7 +108,9 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
   单行省略，文本可选中复制）；搜索框旁有独立刷新按钮，手动与自动刷新按请求序号取最新结果。
 - 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
   也可以直接把文件拖到侧栏分组标签 / 移动端 chips 上（落点虚线高亮，松手即改分组）；
-  侧栏 / 移动端 chips 同时用于按分组过滤；不提供空分组、分组重命名/删除与跨组拖拽。
+  侧栏 / 移动端 chips 同时用于按分组过滤；单分组视图标题旁可重命名分组（批量改写组内
+  `group_name`，保持组内顺序；目标分组已存在时拒绝，不做隐式合并）；不提供空分组、
+  分组删除与跨组拖拽。
 - 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态换 60 秒票据、逐个触发 `/d?t=…` 下载，
   每个文件是浏览器里独立的一次下载（不打包成 zip）；浏览器可能询问是否允许下载多个文件。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
@@ -141,6 +143,7 @@ CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）；命中则直接建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
 | POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256；成功 `{"id","sha256"}`；超限 413 |
 | PATCH | `/api/files/{id}` | 重命名 / 设置分组：`{"filename","group_name"}`（至少一个；分组名 trim 后 ≤64 字节，空串=未分组，改分组会移到列表末尾）；成功返回完整文件；非法 400，不存在 404 |
+| POST | `/api/groups/rename` | 批量重命名分组：`{"name","new_name"}`；组内 `sort_order` 不变；成功 204；目标分组已存在 409，源分组不存在 404，非法名 400 |
 | PUT | `/api/files/order` | 批量排序：`{"items":[{"id","sort_order"}]}`（1..2000 项，id 不重复，0..1e9）；成功 204；任一 id 不存在则整批回滚 404 |
 | POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |
 | POST | `/api/files/{id}/public` | 切换公开，返回 `{"is_public":bool}` |

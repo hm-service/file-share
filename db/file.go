@@ -10,6 +10,9 @@ import (
 // ErrNotFound 表示记录不存在；调用方据此回 404，而不是 500。
 var ErrNotFound = errors.New("file not found")
 
+// ErrGroupExists 表示目标分组名已经被别的文件占用：重命名只改一个组的名字，不做隐式合并。
+var ErrGroupExists = errors.New("group already exists")
+
 // File 是 file 表的一行。
 type File struct {
 	ID         string `json:"id"`
@@ -252,6 +255,45 @@ func (s *Store) DeleteFile(id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// RenameGroup 把 oldName 分组下的全部记录改名为 newName，保持各记录的 sort_order 不变
+// （组内顺序不变）。源分组不存在返回 ErrNotFound，目标分组已被占用返回 ErrGroupExists。
+func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var conflicts int
+	if err := tx.QueryRow(
+		"SELECT COUNT(*) FROM file WHERE group_name = ? AND group_name <> ?",
+		newName, oldName,
+	).Scan(&conflicts); err != nil {
+		return 0, err
+	}
+	if conflicts > 0 {
+		return 0, ErrGroupExists
+	}
+
+	result, err := tx.Exec("UPDATE file SET group_name = ? WHERE group_name = ?", newName, oldName)
+	if err != nil {
+		return 0, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if changed == 0 {
+		return 0, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return changed, nil
 }
 
 // CountBySHA 数某个 blob 还有多少条记录引用它，删除记录后用来决定 blob 是否还要保留。

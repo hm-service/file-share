@@ -344,3 +344,57 @@ func TestDeleteFileAndCountBySHA(t *testing.T) {
 		t.Errorf("再删一次应当返回 ErrNotFound，得到 %v", err)
 	}
 }
+
+// 重命名分组批量改写组内记录，保持各自 sort_order；目标分组已存在时拒绝合并且不改任何记录。
+func TestRenameGroup(t *testing.T) {
+	store := testStore(t)
+	for _, item := range []struct {
+		id    string
+		group string
+	}{
+		{"aa", "旧组"},
+		{"bb", "旧组"},
+		{"cc", "保留组"},
+	} {
+		file := sampleFile(item.id, "sha-"+item.id, 100)
+		file.GroupName = item.group
+		if err := store.InsertFile(file); err != nil {
+			t.Fatalf("InsertFile() 报错: %v", err)
+		}
+	}
+	// 组内第二位的记录单独排到最前，验证重命名不动 sort_order。
+	if err := store.SetOrder([]core.OrderItem{{ID: "bb", SortOrder: 0}}); err != nil {
+		t.Fatalf("SetOrder() 报错: %v", err)
+	}
+
+	changed, err := store.RenameGroup("旧组", "新组")
+	if err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if changed != 2 {
+		t.Errorf("重命名条数 = %d，想要 2", changed)
+	}
+	files, err := store.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	for _, file := range files {
+		if file.GroupName != "新组" && file.GroupName != "保留组" {
+			t.Errorf("%s 的分组 = %q，想要新组或保留组", file.ID, file.GroupName)
+		}
+	}
+	if files[0].ID != "bb" || files[1].ID != "aa" || files[2].ID != "cc" {
+		t.Errorf("重命名后列表顺序 = [%s %s %s]，想要 [bb aa cc]", files[0].ID, files[1].ID, files[2].ID)
+	}
+
+	if _, err := store.RenameGroup("新组", "保留组"); !errors.Is(err, ErrGroupExists) {
+		t.Errorf("目标分组已存在应当返回 ErrGroupExists，得到 %v", err)
+	}
+	if _, err := store.RenameGroup("不存在", "任意"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("源分组不存在应当返回 ErrNotFound，得到 %v", err)
+	}
+	// 改成同名是幂等的：仍然算重命名成功，不改动顺序。
+	if changed, err := store.RenameGroup("新组", "新组"); err != nil || changed != 2 {
+		t.Errorf("同名重命名 = (%d, %v)，想要 2 条成功", changed, err)
+	}
+}
