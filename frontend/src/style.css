@@ -434,6 +434,48 @@ ul {
   height: 16px;
 }
 
+/* 手动刷新：上传自动刷新之外的独立入口，刷新中图标旋转 */
+.refresh-btn {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-3);
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.refresh-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.refresh-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.refresh-btn.spinning svg {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .search {
   display: flex;
   align-items: center;
@@ -695,6 +737,33 @@ ul {
   color: var(--ink-3);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 文件指纹：等宽字体、单行省略；完整值放在 title 里，文本可选中复制 */
+.file-hash {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 1px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.file-hash-label {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.file-hash-value {
+  overflow: hidden;
+  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }
 
 .file-actions {

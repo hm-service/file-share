@@ -218,6 +218,10 @@ onBeforeUnmount(() => {
         <span v-if="file.is_public" class="badge badge-public">{{ t("badge.public") }}</span>
       </div>
       <p class="file-meta">{{ formatTime(file.created_at) }} · {{ formatSize(file.size) }}</p>
+      <p class="file-hash" :title="file.sha256">
+        <span class="file-hash-label">{{ t("file.sha256") }}</span>
+        <span class="file-hash-value">{{ file.sha256 }}</span>
+      </p>
     </div>
 
     <div class="file-actions">

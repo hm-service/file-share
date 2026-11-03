@@ -16,6 +16,12 @@ export function formatSize(bytes: number): string {
   return `${Number.parseFloat(value.toFixed(2))} ${SIZE_UNITS[unit]}`;
 }
 
+/** 字节/秒 → "1.18 MB/s"；0 或非法值 → 空串（不显示速度）。 */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "";
+  return `${formatSize(bytesPerSecond)}/s`;
+}
+
 /** unix 秒 → "MM-DD HH:mm"（本地时区）。 */
 export function formatTime(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return t("meta.unknown-time");

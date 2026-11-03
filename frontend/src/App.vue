@@ -32,6 +32,8 @@ import type { FileItem } from "@/types";
 
 const files = ref<FileItem[]>([]);
 const loaded = ref(false);
+const refreshing = ref(false);
+let refreshSeq = 0;
 const loadError = ref("");
 const actionError = ref("");
 let actionErrorTimer = 0;
@@ -199,17 +201,29 @@ function showActionError(error: unknown): void {
   }, 5000);
 }
 
-/** 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。 */
+/**
+ * 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。
+ *
+ * 上传每完成一个文件就会触发一次刷新，手动刷新按钮也可能和它们撞在一起：
+ * 用递增序号只采用最后一次请求的结果，避免旧响应后到把新列表覆盖回去。
+ */
 async function refresh(): Promise<void> {
+  const seq = ++refreshSeq;
+  refreshing.value = true;
   try {
-    files.value = await listFiles();
+    const list = await listFiles();
+    if (seq !== refreshSeq) return;
+    files.value = list;
     loadError.value = "";
     validateView();
   } catch (error) {
-    if (isUnauthorized(error)) return;
+    if (seq !== refreshSeq || isUnauthorized(error)) return;
     loadError.value = t("error.load");
   } finally {
-    loaded.value = true;
+    if (seq === refreshSeq) {
+      refreshing.value = false;
+      loaded.value = true;
+    }
   }
 }
 
@@ -572,6 +586,17 @@ onBeforeUnmount(() => {
               :aria-label="t('nav.search-placeholder')"
             />
           </label>
+          <button
+            type="button"
+            class="refresh-btn"
+            :class="{ spinning: refreshing }"
+            :title="t('action.refresh')"
+            :aria-label="t('action.refresh')"
+            :disabled="refreshing"
+            @click="refresh"
+          >
+            <span v-html="ICONS.refresh"></span>
+          </button>
         </div>
       </header>
 

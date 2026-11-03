@@ -62,6 +62,7 @@ export type MessageKey =
   | "upload.status.hashing"
   | "upload.status.checking"
   | "upload.status.uploading"
+  | "upload.status.uploading-speed"
   | "upload.status.instant"
   | "upload.status.done"
   | "upload.status.failed"
@@ -73,6 +74,7 @@ export type MessageKey =
   | "action.unfavorite"
   | "action.download"
   | "action.download-group"
+  | "action.refresh"
   | "action.rename"
   | "action.copy-link"
   | "action.copy-link-private"
@@ -84,6 +86,7 @@ export type MessageKey =
   | "action.new-group"
   | "action.logout"
   | "badge.public"
+  | "file.sha256"
   | "group.new-prompt"
   | "rename.prompt"
   | "confirm.delete"
@@ -135,6 +138,10 @@ const messages: Record<MessageKey, Message> = {
     zh: "{percent}% · {loaded} / {total}",
     en: "{percent}% · {loaded} / {total}",
   },
+  "upload.status.uploading-speed": {
+    zh: "{percent}% · {loaded} / {total} · {speed}",
+    en: "{percent}% · {loaded} / {total} · {speed}",
+  },
   "upload.status.instant": { zh: "秒传成功", en: "Instant upload" },
   "upload.status.done": { zh: "上传完成", en: "Uploaded" },
   "upload.status.failed": { zh: "上传失败", en: "Upload failed" },
@@ -147,6 +154,7 @@ const messages: Record<MessageKey, Message> = {
   "action.download": { zh: "下载", en: "Download" },
   "action.download-group": { zh: "全部下载", en: "Download all" },
   "action.rename": { zh: "重命名", en: "Rename" },
+  "action.refresh": { zh: "刷新列表", en: "Refresh" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
   "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
   "action.copied": { zh: "已复制", en: "Copied" },
@@ -157,6 +165,7 @@ const messages: Record<MessageKey, Message> = {
   "action.new-group": { zh: "新建分组…", en: "New group…" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
+  "file.sha256": { zh: "SHA-256", en: "SHA-256" },
   "group.new-prompt": { zh: "输入分组名", en: "Enter a group name" },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },

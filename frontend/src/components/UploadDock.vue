@@ -19,7 +19,7 @@ import { computed, onBeforeUnmount, ref } from "vue";
 
 import { isAbortError } from "@/abort";
 import { ApiError, checkFile, uploadFile } from "@/api";
-import { formatSize } from "@/format";
+import { formatSize, formatSpeed } from "@/format";
 import { hashFile } from "@/hashFile";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
@@ -49,6 +49,10 @@ interface QueueItem {
   percent: number;
   /** 已发送字节数（按 server 的 body 大小估算，用于上传中的 loaded）。 */
   loaded: number;
+  /** 上传速度（字节/秒）：从本轮开始到当前时刻的平均值；0 表示还没算出。 */
+  speed: number;
+  /** 本轮上传开始的 performance.now()，用来算平均速度。 */
+  startedAt: number;
   /** 失败原因：优先用后端本地化 detail。 */
   error: string;
   /** 本轮处理的取消句柄；重试会新建一个。 */
@@ -83,6 +87,8 @@ function addFiles(files: FileList | File[] | null | undefined): void {
       progress: 0,
       percent: 0,
       loaded: 0,
+      speed: 0,
+      startedAt: 0,
       error: "",
       controller: null,
     });
@@ -143,6 +149,7 @@ async function processItem(item: QueueItem): Promise<void> {
       item.status = "instant";
       item.progress = 100;
       scheduleRemove(item.id);
+      emit("uploaded");
       return;
     }
 
@@ -150,6 +157,8 @@ async function processItem(item: QueueItem): Promise<void> {
     item.percent = 0;
     item.progress = 10;
     item.loaded = 0;
+    item.speed = 0;
+    item.startedAt = performance.now();
     await uploadFile(
       file,
       sha256,
@@ -157,12 +166,16 @@ async function processItem(item: QueueItem): Promise<void> {
         item.percent = percent;
         item.loaded = Math.round((item.size * percent) / 100);
         item.progress = Math.round(10 + percent * 0.9);
+        // 从本轮开始算平均速度；太短的传输（<200ms）不展示，免得跳出一个无意义的数字。
+        const seconds = (performance.now() - item.startedAt) / 1000;
+        if (seconds >= 0.2 && item.loaded > 0) item.speed = item.loaded / seconds;
       },
       controller.signal,
     );
     item.status = "done";
     item.progress = 100;
     scheduleRemove(item.id);
+    emit("uploaded");
   } catch (error) {
     // 取消不是失败：signal 已 abort 或异常本身是 AbortError 都记成 cancelled
     if (controller.signal.aborted || isAbortError(error)) {
@@ -177,22 +190,19 @@ async function processItem(item: QueueItem): Promise<void> {
   }
 }
 
-/** 串行调度：队列里没有 pending 就退出，跑空后刷新一次列表。 */
+/** 串行调度：队列里没有 pending 就退出；每个文件成功落库后各自通知父组件刷新列表。 */
 async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
-  let changed = false;
   try {
     for (;;) {
       const item = queue.value.find((entry) => entry.status === "pending");
       if (!item) break;
       await processItem(item);
-      changed = true;
     }
   } finally {
     pumping = false;
   }
-  if (changed) emit("uploaded");
 }
 
 function isProcessing(item: QueueItem): boolean {
@@ -229,6 +239,8 @@ function retryItem(id: string): void {
   item.progress = 0;
   item.percent = 0;
   item.loaded = 0;
+  item.speed = 0;
+  item.startedAt = 0;
   item.error = "";
   item.controller = null;
   void pump();
@@ -248,12 +260,19 @@ function statusText(item: QueueItem): string {
       return t("upload.status.hashing", { percent: item.percent });
     case "checking":
       return t("upload.status.checking");
-    case "uploading":
-      return t("upload.status.uploading", {
-        percent: item.percent,
-        loaded: formatSize(item.loaded),
-        total: formatSize(item.size),
-      });
+    case "uploading": {
+      const loaded = formatSize(item.loaded);
+      const total = formatSize(item.size);
+      if (item.speed > 0) {
+        return t("upload.status.uploading-speed", {
+          percent: item.percent,
+          loaded,
+          total,
+          speed: formatSpeed(item.speed),
+        });
+      }
+      return t("upload.status.uploading", { percent: item.percent, loaded, total });
+    }
     case "instant":
       return t("upload.status.instant");
     case "done":
