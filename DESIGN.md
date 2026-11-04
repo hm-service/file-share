@@ -71,19 +71,20 @@ CREATE TABLE IF NOT EXISTS file (
 );
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
-CREATE TABLE IF NOT EXISTS group_order (
-  name       TEXT    PRIMARY KEY,          -- 当前有文件的分组名，空分组不落库
+CREATE TABLE IF NOT EXISTS groups (
+  name       TEXT    PRIMARY KEY,          -- 分组名（空分组也保留，可手动新建）
   sort_order INTEGER NOT NULL              -- 分组展示顺序，升序，越小越靠前
 );
 ```
 
 - 单库文件、单连接（`SetMaxOpenConns(1)`），无外键；一致性由代码保证。
-- `PRAGMA user_version = 3` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
-  v2 → v3 建 `group_order` 并按分组名补初始顺序），新库直接建 v3；更高版本 fail-fast。
+- `PRAGMA user_version = 4` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
+  v2 → v3 建分组顺序表并按分组名补初始顺序，v3 → v4 把 `group_order` 升级为分组注册表 `groups`），
+  新库直接建 v4；更高版本 fail-fast。
 - 列表排序：`ORDER BY sort_order ASC, created_at DESC, id ASC`；上传/秒传插入时 `sort_order = MAX+1`。
 - 分组是文件上的字符串字段（一级、无分组表）；分组列表由文件集合现算，空串表示未分组。
-  分组展示顺序单独存在 `group_order`（只保留有文件的分组：新分组追加到末尾，改名保持位置，
-  最后一个文件被移走 / 删除时清理对应行）。
+  分组本身与展示顺序存在 `groups` 表（空分组也是合法分组：新分组追加到末尾，改名保持位置，
+  删掉组内最后一个文件不会删除分组）。
 - 收藏与公开状态是全局的（本服务只有一个凭据身份）。
 - 删除记录时，若同一 `sha256` 已无其他记录引用，则删除物理文件。
 - **数据升级策略**：结构变更在启动时一次性迁移（不做运行期兼容分支）；检测到更旧的 Python 版本数据
@@ -104,7 +105,8 @@ CREATE TABLE IF NOT EXISTS group_order (
 - 未登录访问主应用会被重定向到 `/auth`；接口返回 401 时前端清除会话并跳转。
 - 登录页桌面端是「品牌介绍 + 登录卡」分栏，窄屏收成品牌条 + 登录卡。
 - 上传队列以浮动上传坞呈现（桌面右下角、窄屏贴底），上传中显示实时速度，支持取消（中断请求，状态记为已取消）
-  与重试（重新排队）；每完成一个文件就通知主界面增量刷新列表。内容区整块都是拖放目标，
+  与重试（重新排队）；每完成一个文件就通知主界面增量刷新列表。入队时记下当前所在的分组视图，
+  上传成功后把记录移动进该分组（在「全部 / 收藏 / 未分组」上传则保持未分组）。内容区整块都是拖放目标，
   拖入文件时显示覆盖层提示，松开即入队。
 - 「复制直链」只在文件公开时可用，复制结果为 `<origin>/s/<file_id>`。
 - 「全部」视图平铺展示、固定按上传时间倒序（同一秒按 id 稳定排序），不参与拖拽；
@@ -115,10 +117,11 @@ CREATE TABLE IF NOT EXISTS group_order (
   单行省略，文本可选中复制）；搜索框旁有独立刷新按钮，手动与自动刷新按请求序号取最新结果。
 - 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
   也可以直接把文件拖到侧栏分组标签 / 移动端 chips 上（落点虚线高亮，松手即改分组）；
-  侧栏 / 移动端 chips 同时用于按分组过滤；分组本身可直接拖拽排序（顺序存 `group_order`，
-  松手提交 `PUT /api/groups/order`，失败回滚到服务端顺序）；单分组视图标题旁可重命名分组
-  （批量改写组内 `group_name`，保持组内顺序；目标分组已存在时拒绝，不做隐式合并）；
-  不提供空分组、分组删除与跨组拖拽。
+  侧栏 / 移动端 chips 同时用于按分组过滤；分组本身可直接拖拽排序（顺序存 `groups`，
+  松手提交 `PUT /api/groups/order`，失败回滚到服务端顺序）；侧栏与 chips 都能手动新建空分组，
+  单分组视图标题旁可重命名分组（空分组也可，批量改写组内 `group_name`，保持组内顺序；
+  目标分组已存在时拒绝，不做隐式合并）；在分组视图里上传的文件会直接归入该分组。
+  不提供分组删除与跨组拖拽。
 - 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态换 60 秒票据、逐个触发 `/d?t=…` 下载，
   每个文件是浏览器里独立的一次下载（不打包成 zip）；浏览器可能询问是否允许下载多个文件。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
@@ -147,11 +150,12 @@ CREATE TABLE IF NOT EXISTS group_order (
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/files` | 列表：`{"files":[{"id","filename","sha256","size","is_favorite","is_public","group_name","sort_order","created_at"}],"groups":["分组名",…]}`；文件按 `sort_order` 升序、创建时间倒序，`groups` 按分组展示顺序排列 |
+| GET | `/api/files` | 列表：`{"files":[{"id","filename","sha256","size","is_favorite","is_public","group_name","sort_order","created_at"}],"groups":["分组名",…]}`；文件按 `sort_order` 升序、创建时间倒序，`groups` 含空分组、按分组展示顺序排列 |
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）；命中则直接建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
 | POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256；成功 `{"id","sha256"}`；超限 413 |
 | PATCH | `/api/files/{id}` | 重命名 / 设置分组：`{"filename","group_name"}`（至少一个；分组名 trim 后 ≤64 字节，空串=未分组，改分组会移到列表末尾）；成功返回完整文件；非法 400，不存在 404 |
-| POST | `/api/groups/rename` | 批量重命名分组：`{"name","new_name"}`；组内 `sort_order` 不变；成功 204；目标分组已存在 409，源分组不存在 404，非法名 400 |
+| POST | `/api/groups` | 手动新建空分组：`{"name"}`；成功 201 `{"name"}`；同名 409，非法名 400 |
+| POST | `/api/groups/rename` | 批量重命名分组（空分组也可）：`{"name","new_name"}`；组内 `sort_order` 不变；成功 204；目标分组已存在 409，源分组不存在 404，非法名 400 |
 | PUT | `/api/groups/order` | 保存分组顺序：`{"names":["…"]}` 必须覆盖当前全部分组；成功 204；集合对不上 409，重复 / 空名 400 |
 | PUT | `/api/files/order` | 批量排序：`{"items":[{"id","sort_order"}]}`（1..2000 项，id 不重复，0..1e9）；成功 204；任一 id 不存在则整批回滚 404 |
 | POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |

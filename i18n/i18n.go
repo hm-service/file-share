@@ -51,6 +51,7 @@ var catalog = map[string]entry{
 	"group.changed":            {"分组已变化，请刷新后重试", "Groups changed; refresh and try again"},
 	"store.rename":             {"重命名分组失败", "Failed to rename the group"},
 	"store.groups":             {"读取分组列表失败", "Failed to list groups"},
+	"store.create":             {"新建分组失败", "Failed to create the group"},
 	"order.invalid":            {"排序数据无效", "Invalid ordering data"},
 	"internal":                 {"服务器内部错误", "Internal server error"},
 	"not-found":                {"资源不存在", "Not found"},

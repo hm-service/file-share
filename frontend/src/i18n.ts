@@ -54,6 +54,7 @@ export type MessageKey =
   | "upload.hint"
   | "upload.hint-mobile"
   | "upload.drop-overlay"
+  | "upload.group-hint"
   | "upload.queue-title"
   | "upload.dock-collapse"
   | "upload.dock-expand"
@@ -129,6 +130,7 @@ const messages: Record<MessageKey, Message> = {
   "upload.hint": { zh: "也可以把文件拖到右侧区域", en: "or drag files to this side" },
   "upload.hint-mobile": { zh: "点击上方按钮选择文件", en: "Tap the upload button above" },
   "upload.drop-overlay": { zh: "松开即可上传", en: "Drop to upload" },
+  "upload.group-hint": { zh: "新上传的文件会直接归入当前分组", en: "New uploads go into this group" },
   "upload.queue-title": { zh: "上传队列", en: "Upload queue" },
   "upload.dock-collapse": { zh: "收起", en: "Collapse" },
   "upload.dock-expand": { zh: "展开", en: "Expand" },

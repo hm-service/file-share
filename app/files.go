@@ -31,6 +31,24 @@ func (a *App) ListGroups() ([]string, error) {
 	return groups, nil
 }
 
+// CreateGroup 手动新建一个空分组，返回规范化后的分组名；同名分组已存在返回 409。
+func (a *App) CreateGroup(rawName string) (string, error) {
+	name, ok := core.NormalizeGroupName(rawName)
+	if !ok || name == "" {
+		return "", core.Fail(400, "group.invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, err := a.Store.CreateGroup(name)
+	switch {
+	case errors.Is(err, db.ErrGroupExists):
+		return "", core.Fail(409, "group.exists")
+	case err != nil:
+		return "", storeFailure(err, "store.create")
+	}
+	return name, nil
+}
+
 // SetGroupOrder 按拖拽后的顺序重写分组顺序；提交的名字必须与当前分组集合完全一致。
 func (a *App) SetGroupOrder(names []string) error {
 	if len(names) > core.MaxOrderItems {

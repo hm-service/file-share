@@ -51,6 +51,7 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodPost, "/api/files/{file_id}/public", server.handlePublic, true},
 		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
 		{http.MethodGet, "/api/files/{file_id}/download-ticket", server.handleFileDownloadTicket, true},
+		{http.MethodPost, "/api/groups", server.handleCreateGroup, true},
 		{http.MethodPost, "/api/groups/rename", server.handleRenameGroup, true},
 		{http.MethodPut, "/api/groups/order", server.handleSetGroupOrder, true},
 		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true},

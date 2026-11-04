@@ -18,7 +18,7 @@ import (
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
 // 旧版本会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -35,9 +35,9 @@ CREATE TABLE IF NOT EXISTS file (
 
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
-CREATE TABLE IF NOT EXISTS group_order (
-    name       TEXT    PRIMARY KEY,   -- 当前有文件的分组名（空分组不落库）
-    sort_order INTEGER NOT NULL       -- 升序，越小越靠前
+CREATE TABLE IF NOT EXISTS groups (
+    name       TEXT    PRIMARY KEY,   -- 分组名（空分组也保留，可手动新建）
+    sort_order INTEGER NOT NULL       -- 分组展示顺序，升序，越小越靠前
 );
 `
 
@@ -91,20 +91,36 @@ func Open(path string) (*Store, error) {
 		}
 		switch version {
 		case schemaVersion:
+		case 3:
+			if err := store.migrateV3ToV4(); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
+			}
+		case 2:
+			if err := store.migrateV2ToV3(); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("migrate database v2 to v3: %w", err)
+			}
+			if err := store.migrateV3ToV4(); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
+			}
 		case 1:
 			if err := store.migrateV1ToV2(); err != nil {
 				handle.Close()
 				return nil, fmt.Errorf("migrate database v1 to v2: %w", err)
 			}
-			fallthrough
-		case 2:
 			if err := store.migrateV2ToV3(); err != nil {
 				handle.Close()
-				return nil, fmt.Errorf("migrate database to v%d: %w", schemaVersion, err)
+				return nil, fmt.Errorf("migrate database v2 to v3: %w", err)
+			}
+			if err := store.migrateV3ToV4(); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
 			}
 		default:
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2 to migrate): remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -195,6 +211,32 @@ func (s *Store) migrateV2ToV3() error {
 		if _, err := tx.Exec("INSERT INTO group_order (name, sort_order) VALUES (?, ?)", name, i); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 3"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV3ToV4 把只保存顺序的 group_order 升级成分组注册表 groups：
+// 空分组从此也能存在，改名 / 排序都以 groups 为准。
+func (s *Store) migrateV3ToV4() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS groups (
+		name       TEXT    PRIMARY KEY,
+		sort_order INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("INSERT INTO groups (name, sort_order) SELECT name, sort_order FROM group_order"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DROP TABLE group_order"); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return err

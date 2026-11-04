@@ -314,6 +314,19 @@ ul {
   flex: 0 0 auto;
 }
 
+.nav-new {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.nav-item-new {
+  color: var(--ink-3);
+}
+
+.nav-item-new:hover {
+  color: var(--accent-strong);
+}
+
 /* 分组拖拽：整项可拖；ghost 半透明，chosen 高亮 */
 .nav-item-group[data-group],
 .chip[data-group] {
@@ -1748,6 +1761,19 @@ ul {
 
   .chip-ungrouped {
     flex: 0 0 auto;
+  }
+
+  /* 新建分组：虚线边框的窄按钮，排在分组 chips 之后 */
+  .chip-new {
+    flex: 0 0 auto;
+    padding: 6px 9px;
+    border-style: dashed;
+    color: var(--ink-3);
+  }
+
+  .chip-new:hover {
+    border-color: var(--accent);
+    color: var(--accent-strong);
   }
 
   .chip {

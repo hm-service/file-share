@@ -17,6 +17,7 @@ import LocaleSwitch from "@/components/LocaleSwitch.vue";
 import UploadDock from "@/components/UploadDock.vue";
 import {
   ApiError,
+  createGroup,
   deleteFile,
   downloadFile,
   listFiles,
@@ -349,6 +350,26 @@ async function onDelete(file: FileItem): Promise<void> {
   }
 }
 
+/** 当前分组视图内的上传目标；在其它视图上传仍然等同于未分组。 */
+const currentUploadGroup = computed(() => {
+  return view.value.kind === "group" ? view.value.group ?? "" : "";
+});
+
+/** 手动新建空分组：创建后直接进入该分组，方便马上往里传文件。 */
+async function onCreateGroup(): Promise<void> {
+  const input = window.prompt(t("group.new-prompt"));
+  if (input === null) return;
+  const name = input.trim();
+  if (!name) return;
+  try {
+    const created = await createGroup(name);
+    await refresh();
+    view.value = { kind: "group", group: created.name };
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
 /** 重命名当前分组：批量改写组内文件的 group_name，成功后留在新分组视图。 */
 async function onRenameGroup(): Promise<void> {
   const groupName = view.value.group;
@@ -590,6 +611,12 @@ onBeforeUnmount(() => {
           <span class="nav-count">{{ ungroupedCount }}</span>
         </button>
       </div>
+      <div class="nav nav-new">
+        <button type="button" class="nav-item nav-item-new" @click="onCreateGroup">
+          <span class="nav-icon" v-html="ICONS.plus"></span>
+          <span class="nav-label">{{ t("action.new-group") }}</span>
+        </button>
+      </div>
 
       <div class="sidebar-foot">
         <LocaleSwitch />
@@ -740,6 +767,15 @@ onBeforeUnmount(() => {
             <span class="chip-icon" v-html="ICONS.folder"></span>
             <span class="chip-label">{{ group }}</span>
           </button>
+          <button
+            type="button"
+            class="chip chip-new"
+            :title="t('action.new-group')"
+            :aria-label="t('action.new-group')"
+            @click="onCreateGroup"
+          >
+            <span class="chip-icon" v-html="ICONS.plus"></span>
+          </button>
         </div>
         <button
           v-if="ungroupedCount > 0"
@@ -784,11 +820,12 @@ onBeforeUnmount(() => {
         <div v-else class="empty">
           <span class="empty-icon" v-html="emptyIcon"></span>
           <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
-          <template v-if="loaded && !query.trim() && (isAll || isFavorites)">
+          <template v-if="loaded && !query.trim() && (isAll || isFavorites || isGroupView)">
             <p v-if="isAll" class="empty-text">
               <span class="desktop-only">{{ t("upload.hint") }}</span>
               <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
             </p>
+            <p v-else-if="isGroupView" class="empty-text">{{ t("upload.group-hint") }}</p>
             <button type="button" class="upload-secondary" @click="pickFiles">
               <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
               {{ t("upload.button") }}
@@ -803,6 +840,6 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <UploadDock ref="uploadDock" @uploaded="refresh" />
+    <UploadDock ref="uploadDock" :target-group="currentUploadGroup" @uploaded="refresh" />
   </div>
 </template>

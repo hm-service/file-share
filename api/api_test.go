@@ -70,6 +70,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/public"},
 		{http.MethodGet, "/api/files/abc/download"},
 		{http.MethodGet, "/api/files/abc/download-ticket"},
+		{http.MethodPost, "/api/groups"},
 		{http.MethodPost, "/api/groups/rename"},
 		{http.MethodPut, "/api/groups/order"},
 		{http.MethodPatch, "/api/files/abc"},
@@ -1563,6 +1564,74 @@ func TestGroupOrderRoute(t *testing.T) {
 		}
 		if got := recorder.Header().Get("Allow"); got != "PUT" {
 			t.Errorf("Allow = %q，想要 PUT", got)
+		}
+	})
+}
+
+// POST /api/groups：手动新建空分组，成功 201；同名 409、非法名 400。
+func TestCreateGroupRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+		map[string]any{"name": "  新组  "}, token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Name string `json:"name"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	if payload.Name != "新组" {
+		t.Errorf("name = %q，想要 trim 后的「新组」", payload.Name)
+	}
+	var list struct {
+		Groups []string `json:"groups"`
+	}
+	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &list)
+	if len(list.Groups) != 1 || list.Groups[0] != "新组" {
+		t.Errorf("空分组也应当出现在 groups 里，得到 %v", list.Groups)
+	}
+
+	// 空分组可以改名。
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+		map[string]any{"name": "新组", "new_name": "改名空组"}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("改名空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+
+	t.Run("同名冲突", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+			map[string]any{"name": "改名空组"}, token)
+		assertJSONError(t, recorder, http.StatusConflict, "分组名已存在")
+	})
+
+	t.Run("非法名", func(t *testing.T) {
+		for name, raw := range map[string]string{
+			"空名": "",
+			"超长": strings.Repeat("a", core.MaxGroupNameBytes+1),
+		} {
+			t.Run(name, func(t *testing.T) {
+				recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+					map[string]any{"name": raw}, token)
+				assertJSONError(t, recorder, http.StatusBadRequest, "分组名无效")
+			})
+		}
+	})
+
+	t.Run("未登录", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+			map[string]any{"name": "随便"}, "")
+		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
+	})
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodGet, "/api/groups", token)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("状态码 = %d，想要 405", recorder.Code)
+		}
+		if got := recorder.Header().Get("Allow"); got != "POST" {
+			t.Errorf("Allow = %q，想要 POST", got)
 		}
 	})
 }

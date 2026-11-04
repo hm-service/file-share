@@ -675,3 +675,48 @@ func TestGroupOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateGroup(t *testing.T) {
+	instance := testenv.New(t)
+	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
+		t.Fatalf("初始分组 = %v, %v，想要空", groups, err)
+	}
+	name, err := instance.CreateGroup("  空组  ")
+	if err != nil {
+		t.Fatalf("CreateGroup() 报错: %v", err)
+	}
+	if name != "空组" {
+		t.Errorf("CreateGroup() = %q，想要 trim 后的「空组」", name)
+	}
+	if groups, err := instance.ListGroups(); err != nil || len(groups) != 1 || groups[0] != "空组" {
+		t.Fatalf("ListGroups() = %v, %v，想要 [空组]", groups, err)
+	}
+
+	// 空分组也能改名、参与排序。
+	if err := instance.RenameGroup("空组", "改名空组"); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if groups, err := instance.ListGroups(); err != nil || groups[0] != "改名空组" {
+		t.Fatalf("改名后 ListGroups() = %v, %v", groups, err)
+	}
+	if err := instance.SetGroupOrder([]string{"改名空组"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+
+	// 同名 / 非法名。
+	if _, err := instance.CreateGroup("改名空组"); err == nil {
+		t.Fatal("同名分组应当报错")
+	} else {
+		assertBusinessError(t, err, 409, "group.exists")
+	}
+	for name, raw := range map[string]string{
+		"空名":   "",
+		"超长":   strings.Repeat("a", core.MaxGroupNameBytes+1),
+		"控制字符": "a\nb",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := instance.CreateGroup(raw)
+			assertBusinessError(t, err, 400, "group.invalid")
+		})
+	}
+}

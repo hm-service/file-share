@@ -449,29 +449,50 @@ func TestGroupOrderLifecycle(t *testing.T) {
 		t.Fatalf("改名后 Groups() = %v, %v，想要 [新二组 一组]", groups, err)
 	}
 
-	// 一组最后一个文件搬去别的组：一组消失，顺序行被清理。
+	// 搬走最后一个文件：分组保留，顺序不变（空分组是合法状态）。
 	if _, err := store.UpdateFile("aa", nil, textPtr("新二组")); err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 1 || groups[0] != "新二组" {
-		t.Fatalf("搬走最后文件后 Groups() = %v, %v，想要 [新二组]", groups, err)
+	if groups, err := store.Groups(); err != nil || len(groups) != 2 || groups[0] != "新二组" || groups[1] != "一组" {
+		t.Fatalf("搬走最后文件后 Groups() = %v, %v，想要 [新二组 一组]", groups, err)
 	}
 
-	// 删掉组内最后一个文件：分组与顺序行一起消失。
+	// 文件全部删光，分组仍然保留。
 	if err := store.DeleteFile("aa"); err != nil {
 		t.Fatalf("DeleteFile() 报错: %v", err)
 	}
 	if err := store.DeleteFile("bb"); err != nil {
 		t.Fatalf("DeleteFile() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 0 {
-		t.Fatalf("删空后 Groups() = %v, %v，想要空", groups, err)
+	if groups, err := store.Groups(); err != nil || len(groups) != 2 {
+		t.Fatalf("删空文件后 Groups() = %v, %v，想要两个空分组", groups, err)
 	}
-	var rows int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM group_order").Scan(&rows); err != nil {
-		t.Fatalf("查询 group_order 失败: %v", err)
+
+	// 手动新建空分组：追加到末尾；同名冲突。
+	if order, err := store.CreateGroup("空组"); err != nil || order != 2 {
+		t.Fatalf("CreateGroup() = (%d, %v)，想要 sort_order 2", order, err)
 	}
-	if rows != 0 {
-		t.Errorf("删空后 group_order 还有 %d 行", rows)
+	if groups, err := store.Groups(); err != nil || len(groups) != 3 || groups[2] != "空组" {
+		t.Fatalf("新建后 Groups() = %v, %v，想要 [新二组 一组 空组]", groups, err)
+	}
+	if _, err := store.CreateGroup("空组"); !errors.Is(err, ErrGroupExists) {
+		t.Errorf("重复新建应当返回 ErrGroupExists，得到 %v", err)
+	}
+
+	// 空分组也参与排序与改名，位置保持。
+	if err := store.SetGroupOrder([]string{"空组", "一组", "新二组"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+	if _, err := store.RenameGroup("空组", "改名空组"); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || len(groups) != 3 || groups[0] != "改名空组" {
+		t.Fatalf("改名空分组后 Groups() = %v, %v，想要 [改名空组 一组 新二组]", groups, err)
+	}
+	if _, err := store.RenameGroup("改名空组", "一组"); !errors.Is(err, ErrGroupExists) {
+		t.Errorf("改成已存在的分组应当返回 ErrGroupExists，得到 %v", err)
+	}
+	if _, err := store.RenameGroup("不存在", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("改不存在的分组应当返回 ErrNotFound，得到 %v", err)
 	}
 }

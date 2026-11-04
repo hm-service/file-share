@@ -233,6 +233,15 @@ export function reorderGroups(names: string[]): Promise<void> {
   });
 }
 
+/** POST /api/groups：手动新建一个空分组，成功返回规范化后的分组名。 */
+export function createGroup(name: string): Promise<{ name: string }> {
+  return request<{ name: string }>("/api/groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
 /** POST /api/groups/rename：批量把 oldName 分组下的文件改名为 newName（成功 204）。 */
 export function renameGroup(name: string, newName: string): Promise<void> {
   return request<void>("/api/groups/rename", {

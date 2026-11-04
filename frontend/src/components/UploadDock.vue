@@ -18,11 +18,13 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 
 import { isAbortError } from "@/abort";
-import { ApiError, checkFile, uploadFile } from "@/api";
+import { ApiError, checkFile, updateFileGroup, uploadFile } from "@/api";
 import { formatSize, formatSpeed } from "@/format";
 import { hashFile } from "@/hashFile";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
+
+const props = defineProps<{ targetGroup?: string }>();
 
 const emit = defineEmits<{ uploaded: [] }>();
 
@@ -53,6 +55,8 @@ interface QueueItem {
   speed: number;
   /** 本轮上传开始的 performance.now()，用来算平均速度。 */
   startedAt: number;
+  /** 入队时所在的分组视图（空串 = 未分组）；上传成功后把记录移动到这里。 */
+  group: string;
   /** 失败原因：优先用后端本地化 detail。 */
   error: string;
   /** 本轮处理的取消句柄；重试会新建一个。 */
@@ -89,6 +93,7 @@ function addFiles(files: FileList | File[] | null | undefined): void {
       loaded: 0,
       speed: 0,
       startedAt: 0,
+      group: props.targetGroup ?? "",
       error: "",
       controller: null,
     });
@@ -146,6 +151,7 @@ async function processItem(item: QueueItem): Promise<void> {
     item.progress = 10;
     const check = await checkFile(sha256, item.name, controller.signal);
     if (check.exists) {
+      if (item.group && check.id) await updateFileGroup(check.id, item.group);
       item.status = "instant";
       item.progress = 100;
       scheduleRemove(item.id);
@@ -159,7 +165,7 @@ async function processItem(item: QueueItem): Promise<void> {
     item.loaded = 0;
     item.speed = 0;
     item.startedAt = performance.now();
-    await uploadFile(
+    const uploaded = await uploadFile(
       file,
       sha256,
       (percent) => {
@@ -172,6 +178,7 @@ async function processItem(item: QueueItem): Promise<void> {
       },
       controller.signal,
     );
+    if (item.group) await updateFileGroup(uploaded.id, item.group);
     item.status = "done";
     item.progress = 100;
     scheduleRemove(item.id);

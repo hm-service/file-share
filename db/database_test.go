@@ -55,13 +55,13 @@ func TestOpenFreshDatabase(t *testing.T) {
 	if newColumns != 2 {
 		t.Errorf("新库里 group_name / sort_order 两列只找到 %d 列", newColumns)
 	}
-	var hasGroupOrder int
+	var hasGroups int
 	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&hasGroupOrder); err != nil {
-		t.Fatalf("查询 group_order 表失败: %v", err)
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'groups'").Scan(&hasGroups); err != nil {
+		t.Fatalf("查询 groups 表失败: %v", err)
 	}
-	if hasGroupOrder != 1 {
-		t.Error("新库里应当有 group_order 表")
+	if hasGroups != 1 {
+		t.Error("新库里应当有 groups 表")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestOpenRejectsUnsupportedSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
 	}
-	if _, err := store.db.Exec("PRAGMA user_version = 4"); err != nil {
+	if _, err := store.db.Exec("PRAGMA user_version = 5"); err != nil {
 		t.Fatalf("改 schema 版本失败: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -186,13 +186,13 @@ func TestOpenMigratesV1Database(t *testing.T) {
 	if columns != 2 {
 		t.Fatalf("迁移后 group_name / sort_order 两列只找到 %d 列", columns)
 	}
-	var hasGroupOrder int
+	var hasGroups int
 	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&hasGroupOrder); err != nil {
-		t.Fatalf("查询 group_order 表失败: %v", err)
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'groups'").Scan(&hasGroups); err != nil {
+		t.Fatalf("查询 groups 表失败: %v", err)
 	}
-	if hasGroupOrder != 1 {
-		t.Fatal("迁移后应当有 group_order 表")
+	if hasGroups != 1 {
+		t.Fatal("迁移后应当有 groups 表")
 	}
 
 	files, err := store.ListFiles()
@@ -325,5 +325,70 @@ func TestReady(t *testing.T) {
 	}
 	if count != 0 {
 		t.Error("Ready() 结束后 __probe 表应当被删掉")
+	}
+}
+
+// createV3Database 造一个 v3 库：file + group_order + user_version = 3，验证 v3 → v4 迁移。
+func createV3Database(t *testing.T, path string) {
+	t.Helper()
+	handle, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("打开 v3 库失败: %v", err)
+	}
+	defer handle.Close()
+	statements := []string{
+		`CREATE TABLE file (
+			id          TEXT    PRIMARY KEY,
+			filename    TEXT    NOT NULL,
+			sha256      TEXT    NOT NULL,
+			size        INTEGER NOT NULL,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			is_public   INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL,
+			group_name  TEXT    NOT NULL DEFAULT '',
+			sort_order  INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX file_sha256_idx ON file (sha256)`,
+		`CREATE TABLE group_order (name TEXT PRIMARY KEY, sort_order INTEGER NOT NULL)`,
+		`INSERT INTO file (id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order)
+		 VALUES ('one', 'one.txt', 'sha-one', 1, 0, 0, 100, '乙组', 0)`,
+		`INSERT INTO group_order (name, sort_order) VALUES ('甲组', 1)`,
+		`INSERT INTO group_order (name, sort_order) VALUES ('乙组', 0)`,
+		`PRAGMA user_version = 3`,
+	}
+	for _, statement := range statements {
+		if _, err := handle.Exec(statement); err != nil {
+			t.Fatalf("准备 v3 库失败: %v", err)
+		}
+	}
+}
+
+// v3 → v4：group_order 升级为分组注册表 groups，空分组（甲组）也保留。
+func TestOpenMigratesV3Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file-share.db")
+	createV3Database(t, path)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() 迁移报错: %v", err)
+	}
+	defer store.Close()
+	if version, err := store.schemaVersion(); err != nil || version != schemaVersion {
+		t.Fatalf("迁移后 schema 版本 = %d, %v，想要 %d", version, err, schemaVersion)
+	}
+	var oldTable int
+	if err := store.db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&oldTable); err != nil {
+		t.Fatalf("查询 group_order 表失败: %v", err)
+	}
+	if oldTable != 0 {
+		t.Error("v4 迁移后不应再有 group_order 表")
+	}
+	groups, err := store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != "乙组" || groups[1] != "甲组" {
+		t.Fatalf("迁移后的分组 = %v，想要 [乙组 甲组]", groups)
 	}
 }

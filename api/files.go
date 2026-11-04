@@ -198,6 +198,22 @@ func (s *Server) handleSetGroupOrder(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleCreateGroup 手动新建一个空分组；成功 201 并返回规范化后的分组名。
+func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	name, err := s.App.CreateGroup(payload.Name)
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusCreated, map[string]any{"name": name})
+}
+
 // handleRenameGroup 批量改写一个分组的名字；组内顺序不变，成功回 204。
 func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
 	var payload struct {

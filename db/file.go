@@ -113,6 +113,10 @@ func (s *Store) InsertFile(file File) error {
 		file.CreatedAt, file.GroupName, file.SortOrder); err != nil {
 		return err
 	}
+	// 直接写入带分组的记录（迁移 / 测试）时也保证分组在 groups 表里有登记。
+	if err := ensureGroup(tx, file.GroupName); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -172,11 +176,8 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 	if changed == 0 {
 		return nil, ErrNotFound
 	}
-	if groupName != nil && *groupName != oldGroup {
-		if err := ensureGroupOrder(tx, *groupName); err != nil {
-			return nil, err
-		}
-		if err := cleanupGroupOrder(tx, oldGroup); err != nil {
+	if groupName != nil {
+		if err := ensureGroup(tx, *groupName); err != nil {
 			return nil, err
 		}
 	}
@@ -258,34 +259,26 @@ func (s *Store) toggle(id, column string) (bool, error) {
 }
 
 // DeleteFile 删除一条记录；不存在返回 ErrNotFound。blob 的引用计数由调用方决定怎么处理。
-// 如果删掉的是某个分组的最后一个文件，同时清掉该分组的顺序行。
+// 分组是独立注册的，删掉组内最后一个文件不会连带删除分组。
 func (s *Store) DeleteFile(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	result, err := s.db.Exec("DELETE FROM file WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	var group string
-	if err := tx.QueryRow("SELECT group_name FROM file WHERE id = ?", id).Scan(&group); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+	changed, err := result.RowsAffected()
+	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec("DELETE FROM file WHERE id = ?", id); err != nil {
-		return err
+	if changed == 0 {
+		return ErrNotFound
 	}
-	if err := cleanupGroupOrder(tx, group); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
-// RenameGroup 把 oldName 分组下的全部记录改名为 newName，保持各记录的 sort_order 不变
-// （组内顺序不变）。源分组不存在返回 ErrNotFound，目标分组已被占用返回 ErrGroupExists。
+// RenameGroup 把分组与组内记录一起改名，组内 sort_order 不变；空分组也能改。
+// 源分组不存在返回 ErrNotFound，目标分组已存在返回 ErrGroupExists（不做隐式合并）。
 func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,15 +288,24 @@ func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	}
 	defer tx.Rollback()
 
-	var conflicts int
-	if err := tx.QueryRow(
-		"SELECT COUNT(*) FROM file WHERE group_name = ? AND group_name <> ?",
-		newName, oldName,
-	).Scan(&conflicts); err != nil {
+	var exists int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", oldName).Scan(&exists); err != nil {
 		return 0, err
 	}
-	if conflicts > 0 {
-		return 0, ErrGroupExists
+	if exists == 0 {
+		return 0, ErrNotFound
+	}
+	if oldName != newName {
+		var conflicts int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", newName).Scan(&conflicts); err != nil {
+			return 0, err
+		}
+		if conflicts > 0 {
+			return 0, ErrGroupExists
+		}
+		if _, err := tx.Exec("UPDATE groups SET name = ? WHERE name = ?", newName, oldName); err != nil {
+			return 0, err
+		}
 	}
 
 	result, err := tx.Exec("UPDATE file SET group_name = ? WHERE group_name = ?", newName, oldName)
@@ -314,40 +316,17 @@ func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if changed == 0 {
-		return 0, ErrNotFound
-	}
-	if oldName != newName {
-		result, err := tx.Exec("UPDATE OR REPLACE group_order SET name = ? WHERE name = ?", newName, oldName)
-		if err != nil {
-			return 0, err
-		}
-		orderChanged, err := result.RowsAffected()
-		if err != nil {
-			return 0, err
-		}
-		if orderChanged == 0 {
-			// 旧分组没有顺序行（理论上不会发生）：给新名字补一条到末尾。
-			if err := ensureGroupOrder(tx, newName); err != nil {
-				return 0, err
-			}
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return changed, nil
 }
 
-// Groups 返回当前有文件的分组名，按 group_order 升序；没有顺序行的分组排在最后（理论上不会出现）。
+// Groups 返回全部分组名（含空分组），按 sort_order 升序、名称兜底。
 func (s *Store) Groups() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
-		SELECT f.name
-		FROM (SELECT DISTINCT group_name AS name FROM file WHERE group_name <> '') AS f
-		LEFT JOIN group_order AS g ON g.name = f.name
-		ORDER BY COALESCE(g.sort_order, 9223372036854775807) ASC, f.name ASC`)
+	rows, err := s.db.Query("SELECT name FROM groups ORDER BY sort_order ASC, name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +342,36 @@ func (s *Store) Groups() ([]string, error) {
 	return names, rows.Err()
 }
 
+// CreateGroup 新建一个空分组，追加到末尾；同名分组已存在返回 ErrGroupExists。
+func (s *Store) CreateGroup(name string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", name).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists > 0 {
+		return 0, ErrGroupExists
+	}
+	var next int64
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").Scan(&next); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec("INSERT INTO groups (name, sort_order) VALUES (?, ?)", name, next); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
 // SetGroupOrder 按给定顺序重写全部分组的 sort_order。names 必须与当前实际分组集合完全一致，
 // 否则返回 ErrGroupOrderMismatch 且一条都不改。
 func (s *Store) SetGroupOrder(names []string) error {
@@ -374,7 +383,7 @@ func (s *Store) SetGroupOrder(names []string) error {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query("SELECT DISTINCT group_name FROM file WHERE group_name <> ''")
+	rows, err := tx.Query("SELECT name FROM groups")
 	if err != nil {
 		return err
 	}
@@ -409,7 +418,7 @@ func (s *Store) SetGroupOrder(names []string) error {
 
 	for i, name := range names {
 		if _, err := tx.Exec(
-			"INSERT INTO group_order (name, sort_order) VALUES (?, ?) "+
+			"INSERT INTO groups (name, sort_order) VALUES (?, ?) "+
 				"ON CONFLICT(name) DO UPDATE SET sort_order = excluded.sort_order",
 			name, i,
 		); err != nil {
@@ -419,35 +428,23 @@ func (s *Store) SetGroupOrder(names []string) error {
 	return tx.Commit()
 }
 
-// ensureGroupOrder 保证有文件的分组在 group_order 里有一行；新分组排在最后。
-func ensureGroupOrder(tx *sql.Tx, name string) error {
+// ensureGroup 保证分组存在于 groups 表；没有就追加到末尾。空串（未分组）不落库。
+func ensureGroup(tx *sql.Tx, name string) error {
 	if name == "" {
 		return nil
 	}
 	var count int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM group_order WHERE name = ?", name).Scan(&count); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", name).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
 	}
 	var next int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM group_order").Scan(&next); err != nil {
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").Scan(&next); err != nil {
 		return err
 	}
-	_, err := tx.Exec("INSERT INTO group_order (name, sort_order) VALUES (?, ?)", name, next)
-	return err
-}
-
-// cleanupGroupOrder 在某个分组已经没有文件时删掉它的顺序行；空串（未分组）不是分组。
-func cleanupGroupOrder(tx *sql.Tx, name string) error {
-	if name == "" {
-		return nil
-	}
-	_, err := tx.Exec(
-		"DELETE FROM group_order WHERE name = ? AND NOT EXISTS (SELECT 1 FROM file WHERE group_name = ?)",
-		name, name,
-	)
+	_, err := tx.Exec("INSERT INTO groups (name, sort_order) VALUES (?, ?)", name, next)
 	return err
 }
 
