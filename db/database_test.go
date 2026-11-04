@@ -55,6 +55,14 @@ func TestOpenFreshDatabase(t *testing.T) {
 	if newColumns != 2 {
 		t.Errorf("新库里 group_name / sort_order 两列只找到 %d 列", newColumns)
 	}
+	var hasGroupOrder int
+	if err := store.db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&hasGroupOrder); err != nil {
+		t.Fatalf("查询 group_order 表失败: %v", err)
+	}
+	if hasGroupOrder != 1 {
+		t.Error("新库里应当有 group_order 表")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat 库文件失败: %v", err)
@@ -71,7 +79,7 @@ func TestOpenRejectsUnsupportedSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
 	}
-	if _, err := store.db.Exec("PRAGMA user_version = 3"); err != nil {
+	if _, err := store.db.Exec("PRAGMA user_version = 4"); err != nil {
 		t.Fatalf("改 schema 版本失败: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -178,6 +186,14 @@ func TestOpenMigratesV1Database(t *testing.T) {
 	if columns != 2 {
 		t.Fatalf("迁移后 group_name / sort_order 两列只找到 %d 列", columns)
 	}
+	var hasGroupOrder int
+	if err := store.db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&hasGroupOrder); err != nil {
+		t.Fatalf("查询 group_order 表失败: %v", err)
+	}
+	if hasGroupOrder != 1 {
+		t.Fatal("迁移后应当有 group_order 表")
+	}
 
 	files, err := store.ListFiles()
 	if err != nil {
@@ -216,6 +232,83 @@ func TestOpenMigratesV1Database(t *testing.T) {
 	}
 	if got, err := reopened.File("new-one"); err != nil || got.SortOrder != 1 {
 		t.Fatalf("再次打开后数据丢失: %+v, %v", got, err)
+	}
+}
+
+// createV2Database 造一个 v2 库（有分组但没有 group_order 表），用来验证 v2 → v3 迁移。
+func createV2Database(t *testing.T, path string) {
+	t.Helper()
+	handle, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("打开 v2 库失败: %v", err)
+	}
+	defer handle.Close()
+	statements := []string{
+		`CREATE TABLE file (
+			id          TEXT    PRIMARY KEY,
+			filename    TEXT    NOT NULL,
+			sha256      TEXT    NOT NULL,
+			size        INTEGER NOT NULL,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			is_public   INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL,
+			group_name  TEXT    NOT NULL DEFAULT '',
+			sort_order  INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX file_sha256_idx ON file (sha256)`,
+		`INSERT INTO file (id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order)
+		 VALUES ('two', 'two.txt', 'sha-two', 2, 0, 0, 200, 'b组', 0)`,
+		`INSERT INTO file (id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order)
+		 VALUES ('one', 'one.txt', 'sha-one', 1, 0, 0, 100, 'a组', 1)`,
+		`INSERT INTO file (id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order)
+		 VALUES ('none', 'none.txt', 'sha-none', 3, 0, 0, 300, '', 2)`,
+		`PRAGMA user_version = 2`,
+	}
+	for _, statement := range statements {
+		if _, err := handle.Exec(statement); err != nil {
+			t.Fatalf("准备 v2 库失败: %v", err)
+		}
+	}
+}
+
+// v2 → v3：建 group_order 表并按分组名给已有分组补初始顺序，数据与用户后续拖拽的顺序都保留。
+func TestOpenMigratesV2Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file-share.db")
+	createV2Database(t, path)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() 迁移报错: %v", err)
+	}
+	if version, err := store.schemaVersion(); err != nil || version != schemaVersion {
+		t.Fatalf("迁移后 schema 版本 = %d, %v，想要 %d", version, err, schemaVersion)
+	}
+	groups, err := store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != "a组" || groups[1] != "b组" {
+		t.Fatalf("迁移后的分组顺序 = %v，想要 [a组 b组]", groups)
+	}
+	// 用户拖拽后的顺序要能持久化。
+	if err := store.SetGroupOrder([]string{"b组", "a组"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() 报错: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("第二次 Open() 报错: %v", err)
+	}
+	defer reopened.Close()
+	groups, err = reopened.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	if len(groups) != 2 || groups[0] != "b组" || groups[1] != "a组" {
+		t.Fatalf("重开后分组顺序 = %v，想要 [b组 a组]", groups)
 	}
 }
 

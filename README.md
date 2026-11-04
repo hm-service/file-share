@@ -23,7 +23,7 @@
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
 - **上传与拖放**：点击上传或把文件拖到内容区任意位置；右下角滑出上传坞显示指纹计算 / 预检 / 上传进度与实时速度，支持取消与重试，完成后自动消失；每完成一个文件就增量刷新列表。单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
 - **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻收藏、下载、重命名、复制直链、公开/私有、移动到分组、删除，并显示文件的 SHA-256。
-- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换），分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件），单分组视图标题旁可重命名分组（批量改组名，目标分组已存在时拒绝，不做隐式合并）；行内菜单可移动到分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图固定按上传时间倒序平铺。
+- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换，分组本身可直接拖拽排序），分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件），单分组视图标题旁可重命名分组（批量改组名，目标分组已存在时拒绝，不做隐式合并）；行内菜单可移动到分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图固定按上传时间倒序平铺。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为侧栏 + 内容区 + 右下角浮动上传坞；≤900px 收成顶栏 + 标签页 + 贴底上传面板，文件操作按钮常显并适配安全区。
@@ -95,13 +95,14 @@ podman kube play k8s.file-share.yaml
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/auth` | 用 `AUTH_TOKEN` 换会话 |
-| `GET` | `/api/files` | 文件列表 |
+| `GET` | `/api/files` | 文件列表与分组顺序 |
 | `POST` | `/api/check_file` | 秒传预检 |
 | `POST` | `/api/upload` | 上传（流式校验 SHA-256） |
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |
 | `POST` | `/api/files/{id}/public` | 切换公开 |
 | `PATCH` | `/api/files/{id}` | 重命名 / 设置分组（`filename`、`group_name`，至少给一个） |
 | `POST` | `/api/groups/rename` | 批量重命名分组（`name`、`new_name`） |
+| `PUT` | `/api/groups/order` | 保存拖拽后的分组顺序（`names`） |
 | `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载（curl / 程序用） |
 | `GET` | `/api/files/{id}/download-ticket` | 换 60 秒有效的浏览器下载地址 |
@@ -181,6 +182,15 @@ curl -s -X POST -H "Authorization: Bearer $SESSION" -H 'Content-Type: applicatio
   -d '{"name":"旧组","new_name":"新组"}' http://127.0.0.1:8080/api/groups/rename
 ```
 
+**分组排序**：`PUT /api/groups/order`，JSON `{"names":["二组","一组"]}`。
+`names` 必须与当前实际分组集合完全一致（有文件的分组）；成功返回 `204`，
+集合对不上返回 409（提示刷新后重试），重复 / 空名 / 空白名返回 400。
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
+  -d '{"names":["二组","一组"]}' http://127.0.0.1:8080/api/groups/order
+```
+
 **拖拽排序**：`PUT /api/files/order`，按新顺序提交该段文件（前端用 0..n-1 编号）：
 
 ```json
@@ -208,9 +218,10 @@ DATA_DIR/
   files/<sha256>         内容寻址的物理文件
 ```
 
-当前 schema 为 `user_version = 2`（v2 起新增 `group_name` / `sort_order`）。启动时会把 v1 旧库在事务内一次性迁移到 v2
-（两条 `ALTER TABLE`，旧文件默认未分组、顺序不变）；更高版本会拒绝启动。
-检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。升级前先备份 `DATA_DIR`。
+当前 schema 为 `user_version = 3`（v2 新增 `group_name` / `sort_order`，v3 新增 `group_order` 分组顺序表）。
+启动时旧库在事务内逐级迁移（v1 → v2 → v3）：v2 的旧文件默认未分组、顺序不变；v3 给已有分组按名称补一份初始顺序。
+更高版本会拒绝启动。检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。
+升级前先备份 `DATA_DIR`。
 
 ## 目录结构
 

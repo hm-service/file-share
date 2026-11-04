@@ -10,6 +10,7 @@
  * 收藏 / 单分组 / 未分组视图按 sort_order 排，可拖拽调整顺序（PUT /api/files/order）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import Sortable from "sortablejs";
 
 import FileList from "@/components/FileList.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
@@ -22,6 +23,7 @@ import {
   renameFile,
   renameGroup,
   reorderFiles,
+  reorderGroups,
   toggleFavorite,
   togglePublic,
   updateFileGroup,
@@ -46,19 +48,10 @@ const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 
-/* ---------- 分组派生 ---------- */
+/* ---------- 分组 ---------- */
 
-// 固定用中文排序规则：分组名含中文时按拼音（而不是浏览器 UI 语言的码点顺序），跨语言一致
-const collator = new Intl.Collator("zh-Hans", { numeric: true, sensitivity: "base" });
-
-/** 全部分组名，按名称排序（没有分组接口，分组就是文件里出现过的非空 group_name）。 */
-const groups = computed(() => {
-  const names = new Set<string>();
-  for (const file of files.value) {
-    if (file.group_name) names.add(file.group_name);
-  }
-  return [...names].sort(collator.compare);
-});
+/** 分组名列表，顺序由服务端 group_order 决定（拖动侧栏 / chips 可调整）。 */
+const groups = ref<string[]>([]);
 
 const groupCounts = computed(() => {
   const counts = new Map<string, number>();
@@ -164,6 +157,8 @@ function showFavorites(): void {
 }
 
 function showGroup(group: string): void {
+  // 拖拽排序松手后浏览器还会补一个 click，别让它顺手切换视图。
+  if (Date.now() < groupClickGuardUntil) return;
   view.value = { kind: "group", group };
 }
 
@@ -179,6 +174,63 @@ function validateView(): void {
   if (view.value.kind === "ungrouped" && ungroupedCount.value === 0) {
     view.value = { kind: "all" };
   }
+}
+
+/* ---------- 分组顺序拖拽 ---------- */
+
+const navGroupsEl = ref<HTMLElement | null>(null);
+const chipsGroupsEl = ref<HTMLElement | null>(null);
+let navGroupSortable: Sortable | null = null;
+let chipsGroupSortable: Sortable | null = null;
+/** 拖拽结束后的短暂刻度：用来吞掉松手时补发的 click。 */
+let groupClickGuardUntil = 0;
+
+/** 侧栏与移动端 chips 共用一份排序配置，返回时把新顺序交给服务端。 */
+function createGroupSortable(container: HTMLElement): Sortable {
+  return Sortable.create(container, {
+    animation: 150,
+    draggable: "[data-group]",
+    ghostClass: "group-drag-ghost",
+    chosenClass: "group-drag-chosen",
+    delay: 120,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 4,
+    onEnd: () => {
+      groupClickGuardUntil = Date.now() + 250;
+      const ordered = Array.from(container.querySelectorAll<HTMLElement>("[data-group]"))
+        .map((node) => node.dataset.group ?? "")
+        .filter((name) => name !== "");
+      if (ordered.length !== groups.value.length) return;
+      if (ordered.join("\n") === groups.value.join("\n")) return;
+      void applyGroupOrder(ordered);
+    },
+  });
+}
+
+async function applyGroupOrder(ordered: string[]): Promise<void> {
+  groups.value = ordered;
+  try {
+    await reorderGroups(ordered);
+  } catch (error) {
+    showActionError(error);
+    await refresh();
+  }
+}
+
+function mountGroupSortables(): void {
+  if (navGroupsEl.value && !navGroupSortable) {
+    navGroupSortable = createGroupSortable(navGroupsEl.value);
+  }
+  if (chipsGroupsEl.value && !chipsGroupSortable) {
+    chipsGroupSortable = createGroupSortable(chipsGroupsEl.value);
+  }
+}
+
+function destroyGroupSortables(): void {
+  navGroupSortable?.destroy();
+  navGroupSortable = null;
+  chipsGroupSortable?.destroy();
+  chipsGroupSortable = null;
 }
 
 /* ---------- 列表数据与操作 ---------- */
@@ -212,9 +264,10 @@ async function refresh(): Promise<void> {
   const seq = ++refreshSeq;
   refreshing.value = true;
   try {
-    const list = await listFiles();
+    const payload = await listFiles();
     if (seq !== refreshSeq) return;
-    files.value = list;
+    files.value = payload.files;
+    groups.value = payload.groups;
     loadError.value = "";
     validateView();
   } catch (error) {
@@ -445,6 +498,7 @@ onMounted(() => {
   document.addEventListener("dragover", swallowDrop);
   document.addEventListener("drop", swallowDrop);
   document.addEventListener("dragend", endFileDrag);
+  mountGroupSortables();
   void refresh();
 });
 
@@ -452,6 +506,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("dragover", swallowDrop);
   document.removeEventListener("drop", swallowDrop);
   document.removeEventListener("dragend", endFileDrag);
+  destroyGroupSortables();
   window.clearTimeout(actionErrorTimer);
 });
 </script>
@@ -496,12 +551,14 @@ onBeforeUnmount(() => {
       <div class="nav-sep"></div>
       <p class="nav-section-title">{{ t("nav.groups") }}</p>
 
-      <div class="nav nav-groups">
+      <!-- 分组可拖拽排序：未分组不是真实分组，放在排序容器外，固定排在最后 -->
+      <div ref="navGroupsEl" class="nav nav-groups">
         <button
           v-for="group in groups"
           :key="group"
           type="button"
           class="nav-item nav-item-group"
+          :data-group="group"
           :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
           :aria-current="isGroupActive(group) ? 'page' : undefined"
           @click="showGroup(group)"
@@ -514,8 +571,10 @@ onBeforeUnmount(() => {
           <span class="nav-label">{{ group }}</span>
           <span class="nav-count">{{ groupCounts.get(group) ?? 0 }}</span>
         </button>
+        <p v-if="!groups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
+      </div>
+      <div v-if="ungroupedCount > 0" class="nav nav-ungrouped">
         <button
-          v-if="ungroupedCount > 0"
           type="button"
           class="nav-item nav-item-group"
           :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
@@ -530,7 +589,6 @@ onBeforeUnmount(() => {
           <span class="nav-label">{{ t("nav.ungrouped") }}</span>
           <span class="nav-count">{{ ungroupedCount }}</span>
         </button>
-        <p v-if="!groups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
       </div>
 
       <div class="sidebar-foot">
@@ -656,34 +714,37 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- 窄屏分组 chips：横向滚动，含未分组，当前分组高亮 -->
+      <!-- 窄屏分组 chips：分组横向滚动、可拖拽排序；未分组固定在右侧 -->
       <div
-        v-if="groups.length || ungroupedCount > 0"
+        v-show="groups.length || ungroupedCount > 0"
         class="chips"
         role="tablist"
         :aria-label="t('nav.groups')"
       >
-        <button
-          v-for="group in groups"
-          :key="group"
-          type="button"
-          class="chip"
-          role="tab"
-          :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
-          :aria-selected="isGroupActive(group)"
-          @click="showGroup(group)"
-          @dragenter="onGroupDragEnter($event, group)"
-          @dragover="onGroupDragOver($event, group)"
-          @dragleave="onGroupDragLeave($event, group)"
-          @drop="onGroupDrop($event, group)"
-        >
-          <span class="chip-icon" v-html="ICONS.folder"></span>
-          <span class="chip-label">{{ group }}</span>
-        </button>
+        <div ref="chipsGroupsEl" class="chips-groups">
+          <button
+            v-for="group in groups"
+            :key="group"
+            type="button"
+            class="chip"
+            role="tab"
+            :data-group="group"
+            :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
+            :aria-selected="isGroupActive(group)"
+            @click="showGroup(group)"
+            @dragenter="onGroupDragEnter($event, group)"
+            @dragover="onGroupDragOver($event, group)"
+            @dragleave="onGroupDragLeave($event, group)"
+            @drop="onGroupDrop($event, group)"
+          >
+            <span class="chip-icon" v-html="ICONS.folder"></span>
+            <span class="chip-label">{{ group }}</span>
+          </button>
+        </div>
         <button
           v-if="ungroupedCount > 0"
           type="button"
-          class="chip"
+          class="chip chip-ungrouped"
           role="tab"
           :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
           :aria-selected="isUngrouped"

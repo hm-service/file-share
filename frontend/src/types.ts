@@ -24,6 +24,8 @@ export interface FileOrderItem {
 
 export interface FileListResponse {
   files: FileItem[];
+  /** 当前有文件的分组名；顺序就是侧栏 / 移动端 chips 的展示顺序。 */
+  groups: string[];
 }
 
 /** POST /api/files/{id}/download-ticket 与分组票据的响应：浏览器可直接导航的短期地址。 */

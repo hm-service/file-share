@@ -94,10 +94,13 @@ export function login(token: string): Promise<AuthResponse> {
   });
 }
 
-/** GET /api/files。 */
-export async function listFiles(): Promise<FileItem[]> {
+/** GET /api/files：文件列表 + 分组展示顺序。 */
+export async function listFiles(): Promise<FileListResponse> {
   const payload = await request<FileListResponse>("/api/files");
-  return Array.isArray(payload?.files) ? payload.files : [];
+  return {
+    files: Array.isArray(payload?.files) ? payload.files : [],
+    groups: Array.isArray(payload?.groups) ? payload.groups : [],
+  };
 }
 
 /** POST /api/check_file：服务端已有该 blob 时直接建记录（秒传）。 */
@@ -218,6 +221,15 @@ export function renameFile(id: string, filename: string): Promise<FileItem> {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename }),
+  });
+}
+
+/** PUT /api/groups/order：按拖拽后的顺序重写分组顺序（需覆盖当前全部分组，成功 204）。 */
+export function reorderGroups(names: string[]): Promise<void> {
+  return request<void>("/api/groups/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ names }),
   });
 }
 

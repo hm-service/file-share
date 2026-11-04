@@ -17,8 +17,8 @@ import (
 )
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
-// 只有 v1（分组/排序两列之前）会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
-const schemaVersion = 2
+// 旧版本会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
+const schemaVersion = 3
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS file (
 );
 
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
+
+CREATE TABLE IF NOT EXISTS group_order (
+    name       TEXT    PRIMARY KEY,   -- 当前有文件的分组名（空分组不落库）
+    sort_order INTEGER NOT NULL       -- 升序，越小越靠前
+);
 `
 
 // Store 包住 database/sql，并在多步写操作上加一把锁（SQLite 单写者，连接也只有一个）。
@@ -42,7 +47,7 @@ type Store struct {
 	mu sync.Mutex
 }
 
-// Open 打开（必要时创建）数据库。新库直接建当前 schema；已有的 v1 库就地迁移到当前版本；
+// Open 打开（必要时创建）数据库。新库直接建当前 schema；已有的旧库按版本逐步迁移到当前版本；
 // 其它版本对不上就报错，交给启动流程退出 —— 不存在其它兼容分支。
 func Open(path string) (*Store, error) {
 	_, statErr := os.Stat(path)
@@ -89,11 +94,17 @@ func Open(path string) (*Store, error) {
 		case 1:
 			if err := store.migrateV1ToV2(); err != nil {
 				handle.Close()
+				return nil, fmt.Errorf("migrate database v1 to v2: %w", err)
+			}
+			fallthrough
+		case 2:
+			if err := store.migrateV2ToV3(); err != nil {
+				handle.Close()
 				return nil, fmt.Errorf("migrate database to v%d: %w", schemaVersion, err)
 			}
 		default:
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d (or 1 to migrate): remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -141,6 +152,49 @@ func (s *Store) migrateV1ToV2() error {
 	}
 	if _, err := tx.Exec("ALTER TABLE file ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 2"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV2ToV3 建 group_order 表，并按分组名的字典序给已有分组补一份初始顺序。
+// 分组顺序此前只是前端现算的展示顺序，这里把它落库；之后用户拖拽的结果才不会被覆盖。
+func (s *Store) migrateV2ToV3() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS group_order (
+		name       TEXT    PRIMARY KEY,
+		sort_order INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	rows, err := tx.Query("SELECT DISTINCT group_name FROM file WHERE group_name <> '' ORDER BY group_name")
+	if err != nil {
+		return err
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for i, name := range names {
+		if _, err := tx.Exec("INSERT INTO group_order (name, sort_order) VALUES (?, ?)", name, i); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return err

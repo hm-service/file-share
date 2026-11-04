@@ -13,6 +13,9 @@ var ErrNotFound = errors.New("file not found")
 // ErrGroupExists 表示目标分组名已经被别的文件占用：重命名只改一个组的名字，不做隐式合并。
 var ErrGroupExists = errors.New("group already exists")
 
+// ErrGroupOrderMismatch 表示提交的分组顺序与当前实际分组对不上（分组被增删或改名了）。
+var ErrGroupOrderMismatch = errors.New("group order does not match current groups")
+
 // File 是 file 表的一行。
 type File struct {
 	ID         string `json:"id"`
@@ -131,7 +134,14 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 	defer tx.Rollback()
 
 	changed := int64(0)
+	oldGroup := ""
 	if groupName != nil {
+		if err := tx.QueryRow("SELECT group_name FROM file WHERE id = ?", id).Scan(&oldGroup); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
 		var next int64
 		if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&next); err != nil {
 			return nil, err
@@ -161,6 +171,14 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 	}
 	if changed == 0 {
 		return nil, ErrNotFound
+	}
+	if groupName != nil && *groupName != oldGroup {
+		if err := ensureGroupOrder(tx, *groupName); err != nil {
+			return nil, err
+		}
+		if err := cleanupGroupOrder(tx, oldGroup); err != nil {
+			return nil, err
+		}
 	}
 
 	file, err := scanFile(tx.QueryRow("SELECT "+fileColumns+" FROM file WHERE id = ?", id))
@@ -240,21 +258,30 @@ func (s *Store) toggle(id, column string) (bool, error) {
 }
 
 // DeleteFile 删除一条记录；不存在返回 ErrNotFound。blob 的引用计数由调用方决定怎么处理。
+// 如果删掉的是某个分组的最后一个文件，同时清掉该分组的顺序行。
 func (s *Store) DeleteFile(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.db.Exec("DELETE FROM file WHERE id = ?", id)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+
+	var group string
+	if err := tx.QueryRow("SELECT group_name FROM file WHERE id = ?", id).Scan(&group); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
 		return err
 	}
-	if changed == 0 {
-		return ErrNotFound
+	if _, err := tx.Exec("DELETE FROM file WHERE id = ?", id); err != nil {
+		return err
 	}
-	return nil
+	if err := cleanupGroupOrder(tx, group); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RenameGroup 把 oldName 分组下的全部记录改名为 newName，保持各记录的 sort_order 不变
@@ -290,10 +317,138 @@ func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	if changed == 0 {
 		return 0, ErrNotFound
 	}
+	if oldName != newName {
+		result, err := tx.Exec("UPDATE OR REPLACE group_order SET name = ? WHERE name = ?", newName, oldName)
+		if err != nil {
+			return 0, err
+		}
+		orderChanged, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if orderChanged == 0 {
+			// 旧分组没有顺序行（理论上不会发生）：给新名字补一条到末尾。
+			if err := ensureGroupOrder(tx, newName); err != nil {
+				return 0, err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return changed, nil
+}
+
+// Groups 返回当前有文件的分组名，按 group_order 升序；没有顺序行的分组排在最后（理论上不会出现）。
+func (s *Store) Groups() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT f.name
+		FROM (SELECT DISTINCT group_name AS name FROM file WHERE group_name <> '') AS f
+		LEFT JOIN group_order AS g ON g.name = f.name
+		ORDER BY COALESCE(g.sort_order, 9223372036854775807) ASC, f.name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// SetGroupOrder 按给定顺序重写全部分组的 sort_order。names 必须与当前实际分组集合完全一致，
+// 否则返回 ErrGroupOrderMismatch 且一条都不改。
+func (s *Store) SetGroupOrder(names []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query("SELECT DISTINCT group_name FROM file WHERE group_name <> ''")
+	if err != nil {
+		return err
+	}
+	current := make(map[string]struct{})
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		current[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	if len(current) != len(names) {
+		return ErrGroupOrderMismatch
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, ok := current[name]; !ok {
+			return ErrGroupOrderMismatch
+		}
+		if _, dup := seen[name]; dup {
+			return ErrGroupOrderMismatch
+		}
+		seen[name] = struct{}{}
+	}
+
+	for i, name := range names {
+		if _, err := tx.Exec(
+			"INSERT INTO group_order (name, sort_order) VALUES (?, ?) "+
+				"ON CONFLICT(name) DO UPDATE SET sort_order = excluded.sort_order",
+			name, i,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ensureGroupOrder 保证有文件的分组在 group_order 里有一行；新分组排在最后。
+func ensureGroupOrder(tx *sql.Tx, name string) error {
+	if name == "" {
+		return nil
+	}
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM group_order WHERE name = ?", name).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	var next int64
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM group_order").Scan(&next); err != nil {
+		return err
+	}
+	_, err := tx.Exec("INSERT INTO group_order (name, sort_order) VALUES (?, ?)", name, next)
+	return err
+}
+
+// cleanupGroupOrder 在某个分组已经没有文件时删掉它的顺序行；空串（未分组）不是分组。
+func cleanupGroupOrder(tx *sql.Tx, name string) error {
+	if name == "" {
+		return nil
+	}
+	_, err := tx.Exec(
+		"DELETE FROM group_order WHERE name = ? AND NOT EXISTS (SELECT 1 FROM file WHERE group_name = ?)",
+		name, name,
+	)
+	return err
 }
 
 // CountBySHA 数某个 blob 还有多少条记录引用它，删除记录后用来决定 blob 是否还要保留。

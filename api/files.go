@@ -14,14 +14,20 @@ import (
 	"file-share/httpx"
 )
 
-// handleListFiles 返回全部记录，按用户排定的顺序（sort_order）与创建时间排序。
+// handleListFiles 返回全部记录与当前分组顺序：文件按 sort_order 与创建时间排序，
+// groups 是分组名列表，顺序即侧栏 / 移动端 chips 的展示顺序。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	files, err := s.App.ListFiles()
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	httpx.Write(w, http.StatusOK, map[string]any{"files": files})
+	groups, err := s.App.ListGroups()
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"files": files, "groups": groups})
 }
 
 // handleCheckFile 是秒传预检：blob 已在服务器上就补一条记录并回 exists=true。
@@ -175,6 +181,21 @@ func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Write(w, http.StatusOK, record)
+}
+
+// handleSetGroupOrder 按拖拽后的顺序重写分组顺序；成功回 204。
+func (s *Server) handleSetGroupOrder(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Names []string `json:"names"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if err := s.App.SetGroupOrder(payload.Names); err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleRenameGroup 批量改写一个分组的名字；组内顺序不变，成功回 204。

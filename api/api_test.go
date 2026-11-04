@@ -71,6 +71,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodGet, "/api/files/abc/download"},
 		{http.MethodGet, "/api/files/abc/download-ticket"},
 		{http.MethodPost, "/api/groups/rename"},
+		{http.MethodPut, "/api/groups/order"},
 		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
 		{http.MethodPut, "/api/files/order"},
@@ -223,7 +224,8 @@ func TestListFiles(t *testing.T) {
 
 	recorder = testenv.Do(handler, http.MethodGet, "/api/files", token)
 	var payload struct {
-		Files []struct {
+		Groups []string `json:"groups"`
+		Files  []struct {
 			ID         string `json:"id"`
 			Filename   string `json:"filename"`
 			SHA256     string `json:"sha256"`
@@ -256,6 +258,9 @@ func TestListFiles(t *testing.T) {
 	}
 	if !payload.Files[1].IsPublic || !payload.Files[2].IsFavorite {
 		t.Error("收藏 / 公开标记没有映射出来")
+	}
+	if len(payload.Groups) != 0 {
+		t.Errorf("没有分组时 groups = %v，想要空数组", payload.Groups)
 	}
 }
 
@@ -1476,6 +1481,88 @@ func TestRenameGroupRoute(t *testing.T) {
 		}
 		if got := recorder.Header().Get("Allow"); got != "POST" {
 			t.Errorf("Allow = %q，想要 POST", got)
+		}
+	})
+}
+
+// PUT /api/groups/order：按给定顺序重写分组顺序；集合对不上 409、输入非法 400。
+func TestGroupOrderRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	for _, item := range []struct {
+		id    string
+		group string
+	}{
+		{first.ID, "一组"},
+		{second.ID, "二组"},
+	} {
+		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+item.id,
+			map[string]any{"group_name": item.group}, token)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	listGroups := func() []string {
+		t.Helper()
+		var payload struct {
+			Groups []string `json:"groups"`
+		}
+		testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &payload)
+		return payload.Groups
+	}
+	if groups := listGroups(); len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
+		t.Fatalf("初始 groups = %v，想要 [一组 二组]", groups)
+	}
+
+	recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
+		map[string]any{"names": []string{"二组", "一组"}}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	if groups := listGroups(); len(groups) != 2 || groups[0] != "二组" || groups[1] != "一组" {
+		t.Fatalf("重排后 groups = %v，想要 [二组 一组]", groups)
+	}
+
+	t.Run("集合对不上", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
+			map[string]any{"names": []string{"二组"}}, token)
+		assertJSONError(t, recorder, http.StatusConflict, "分组已变化，请刷新后重试")
+		// 失败时原顺序不变。
+		if groups := listGroups(); groups[0] != "二组" {
+			t.Errorf("失败后 groups = %v，顺序不该变", groups)
+		}
+	})
+
+	t.Run("输入非法", func(t *testing.T) {
+		for name, names := range map[string][]string{
+			"重复":  {"二组", "二组"},
+			"空名":  {"二组", ""},
+			"带空白": {" 二组", "一组"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
+					map[string]any{"names": names}, token)
+				assertJSONError(t, recorder, http.StatusBadRequest, "排序数据无效")
+			})
+		}
+	})
+
+	t.Run("未登录", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
+			map[string]any{"names": []string{"二组", "一组"}}, "")
+		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
+	})
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodGet, "/api/groups/order", token)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("状态码 = %d，想要 405", recorder.Code)
+		}
+		if got := recorder.Header().Get("Allow"); got != "PUT" {
+			t.Errorf("Allow = %q，想要 PUT", got)
 		}
 	})
 }

@@ -398,3 +398,80 @@ func TestRenameGroup(t *testing.T) {
 		t.Errorf("同名重命名 = (%d, %v)，想要 2 条成功", changed, err)
 	}
 }
+
+// 分组顺序跟随分组生命周期：新分组排到末尾，改名保持位置，最后一个文件搬走 / 删掉时清理顺序行。
+func TestGroupOrderLifecycle(t *testing.T) {
+	store := testStore(t)
+	for _, id := range []string{"aa", "bb"} {
+		if err := store.InsertFile(sampleFile(id, "sha-"+id, 100)); err != nil {
+			t.Fatalf("InsertFile() 报错: %v", err)
+		}
+	}
+
+	// 新分组按创建顺序追加到末尾。
+	if _, err := store.UpdateFile("aa", nil, textPtr("一组")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if _, err := store.UpdateFile("bb", nil, textPtr("二组")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
+		t.Fatalf("Groups() = %v, %v，想要 [一组 二组]", groups, err)
+	}
+
+	// 拖拽后的顺序落库。
+	if err := store.SetGroupOrder([]string{"二组", "一组"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || groups[0] != "二组" || groups[1] != "一组" {
+		t.Fatalf("重排后 Groups() = %v, %v，想要 [二组 一组]", groups, err)
+	}
+
+	// 提交的分组集合必须与现状完全一致。
+	for name, names := range map[string][]string{
+		"少一个": {"二组"},
+		"多一个": {"二组", "一组", "三组"},
+		"重复":  {"二组", "二组"},
+		"空列表": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := store.SetGroupOrder(names); !errors.Is(err, ErrGroupOrderMismatch) {
+				t.Errorf("SetGroupOrder(%v) = %v，想要 ErrGroupOrderMismatch", names, err)
+			}
+		})
+	}
+
+	// 改名保持顺序位置。
+	if _, err := store.RenameGroup("二组", "新二组"); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || groups[0] != "新二组" || groups[1] != "一组" {
+		t.Fatalf("改名后 Groups() = %v, %v，想要 [新二组 一组]", groups, err)
+	}
+
+	// 一组最后一个文件搬去别的组：一组消失，顺序行被清理。
+	if _, err := store.UpdateFile("aa", nil, textPtr("新二组")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || len(groups) != 1 || groups[0] != "新二组" {
+		t.Fatalf("搬走最后文件后 Groups() = %v, %v，想要 [新二组]", groups, err)
+	}
+
+	// 删掉组内最后一个文件：分组与顺序行一起消失。
+	if err := store.DeleteFile("aa"); err != nil {
+		t.Fatalf("DeleteFile() 报错: %v", err)
+	}
+	if err := store.DeleteFile("bb"); err != nil {
+		t.Fatalf("DeleteFile() 报错: %v", err)
+	}
+	if groups, err := store.Groups(); err != nil || len(groups) != 0 {
+		t.Fatalf("删空后 Groups() = %v, %v，想要空", groups, err)
+	}
+	var rows int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM group_order").Scan(&rows); err != nil {
+		t.Fatalf("查询 group_order 失败: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("删空后 group_order 还有 %d 行", rows)
+	}
+}

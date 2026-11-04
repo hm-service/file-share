@@ -23,8 +23,8 @@ const (
 const ReadyzConcurrency = 4
 
 // 请求体上限：JSON 接口 64 KiB、登录 4 KiB、秒传预检 1 MiB；上传另外在
-// MAX_FILE_SIZE 之上留 1 MiB 给 multipart 的头与字段；批量排序最多 2000 项，
-// 按每项 id + sort_order 算 64 KiB 装不下，单独放宽到 256 KiB。
+// MAX_FILE_SIZE 之上留 1 MiB 给 multipart 的头与字段；批量排序（文件 / 分组）最多 2000 项，
+// 按每项 id / name 估算 64 KiB 装不下，单独放宽到 256 KiB。
 const (
 	MaxJSONBodyBytes      = 64 << 10
 	MaxOrderBodyBytes     = 256 << 10
@@ -128,7 +128,7 @@ func bodyLimit(path string, maxFileSize int64) (int64, string, bool) {
 		return MaxCheckFileBodyBytes, "request.too-big", true
 	case "/api/auth":
 		return MaxAuthBodyBytes, "request.too-big", true
-	case "/api/files/order":
+	case "/api/files/order", "/api/groups/order":
 		return MaxOrderBodyBytes, "request.too-big", true
 	}
 	if strings.HasPrefix(path, "/api/") {

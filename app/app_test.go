@@ -625,3 +625,53 @@ func TestRenameGroup(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupOrder(t *testing.T) {
+	instance := testenv.New(t)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
+		t.Fatalf("初始分组 = %v, %v，想要空", groups, err)
+	}
+	for _, item := range []struct {
+		id    string
+		group string
+	}{
+		{first.ID, "一组"},
+		{second.ID, "二组"},
+	} {
+		if _, err := instance.UpdateFile(item.id, nil, stringPtr(item.group)); err != nil {
+			t.Fatalf("UpdateFile() 报错: %v", err)
+		}
+	}
+	if groups, err := instance.ListGroups(); err != nil || len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
+		t.Fatalf("ListGroups() = %v, %v，想要 [一组 二组]", groups, err)
+	}
+
+	if err := instance.SetGroupOrder([]string{"二组", "一组"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+	if groups, err := instance.ListGroups(); err != nil || groups[0] != "二组" || groups[1] != "一组" {
+		t.Fatalf("重排后 ListGroups() = %v, %v，想要 [二组 一组]", groups, err)
+	}
+
+	// 名字不合法 / 重复：400。
+	for name, names := range map[string][]string{
+		"空列表里的空名": {""},
+		"重复":      {"二组", "二组"},
+		"带空白":     {" 二组"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertBusinessError(t, instance.SetGroupOrder(names), 400, "order.invalid")
+		})
+	}
+	// 与当前分组集合对不上（少 / 多）：409，提示刷新后重试。
+	for name, names := range map[string][]string{
+		"少一个": {"二组"},
+		"多一个": {"二组", "一组", "三组"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertBusinessError(t, instance.SetGroupOrder(names), 409, "group.changed")
+		})
+	}
+}

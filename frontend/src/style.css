@@ -310,6 +310,28 @@ ul {
 .nav-item-group .nav-icon {
   opacity: 0.7;
 }
+.nav-ungrouped {
+  flex: 0 0 auto;
+}
+
+/* 分组拖拽：整项可拖；ghost 半透明，chosen 高亮 */
+.nav-item-group[data-group],
+.chip[data-group] {
+  cursor: grab;
+}
+
+.nav-item-group[data-group]:active,
+.chip[data-group]:active {
+  cursor: grabbing;
+}
+
+.group-drag-ghost {
+  opacity: 0.35;
+}
+
+.group-drag-chosen {
+  background: var(--accent-soft);
+}
 
 .nav-empty {
   padding: 4px 11px;
@@ -1702,18 +1724,30 @@ ul {
     background: rgb(255 255 255 / 0.22);
   }
 
-  /* 标签页之下的分组 chips：横向滚动，当前分组高亮 */
+  /* 标签页之下的分组 chips：分组横向滚动、可拖拽排序；未分组固定在右侧 */
   .chips {
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
     padding: 10px 16px 0;
+    overflow: hidden;
+  }
+
+  .chips-groups {
+    display: flex;
+    flex: 0 1 auto;
+    gap: 6px;
+    min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
   }
 
-  .chips::-webkit-scrollbar {
+  .chips-groups::-webkit-scrollbar {
     display: none;
+  }
+
+  .chip-ungrouped {
+    flex: 0 0 auto;
   }
 
   .chip {

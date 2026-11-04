@@ -21,6 +21,41 @@ func (a *App) ListFiles() ([]db.File, error) {
 	return files, nil
 }
 
+// ListGroups 返回当前分组的展示顺序；只有真正有文件的分组才会出现。
+func (a *App) ListGroups() ([]string, error) {
+	groups, err := a.Store.Groups()
+	if err != nil {
+		slog.Error("list groups failed", slog.Any("error", err))
+		return nil, core.Fail(500, "store.groups")
+	}
+	return groups, nil
+}
+
+// SetGroupOrder 按拖拽后的顺序重写分组顺序；提交的名字必须与当前分组集合完全一致。
+func (a *App) SetGroupOrder(names []string) error {
+	if len(names) > core.MaxOrderItems {
+		return core.Fail(400, "order.invalid")
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, raw := range names {
+		name, ok := core.NormalizeGroupName(raw)
+		if !ok || name == "" || name != raw {
+			return core.Fail(400, "order.invalid")
+		}
+		if _, dup := seen[name]; dup {
+			return core.Fail(400, "order.invalid")
+		}
+		seen[name] = struct{}{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	err := a.Store.SetGroupOrder(names)
+	if errors.Is(err, db.ErrGroupOrderMismatch) {
+		return core.Fail(409, "group.changed")
+	}
+	return storeFailure(err, "store.order")
+}
+
 // CheckFile 是秒传预检：blob 已在磁盘上就立刻补一条记录（新的记录默认既非收藏也非公开）。
 // 返回的记录只在 exists 为 true 时有效。
 func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool, err error) {
