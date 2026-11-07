@@ -101,12 +101,37 @@ func TestSiteServesBuiltFiles(t *testing.T) {
 	}
 }
 
+// 一级路径是前端视图路由：/<分组名> 与 /favorites、/ungrouped 都回同一个应用页面。
+// 分组名可能带非 ASCII 与空格，所以按转义后的路径也要能进来。
+func TestSiteServesViewRoutes(t *testing.T) {
+	handler := siteHandler(testSite())
+
+	for _, path := range []string{"/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := testenv.Do(handler, http.MethodGet, path, "")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("%s 状态码 = %d，想要 200", path, recorder.Code)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Errorf("%s Content-Type = %q", path, got)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("%s Cache-Control = %q，想要 no-store", path, got)
+			}
+			if !strings.Contains(recorder.Body.String(), "文件分享") {
+				t.Errorf("%s 响应体 = %q，不含应用页面", path, recorder.Body.String())
+			}
+		})
+	}
+}
+
 // 只认具体文件：目录不给列表，产物里的 *.html 不能绕过页面表直接访问，穿越也读不出东西。
+// 多段路径不是视图路由，未知的一律 404。
 func TestSiteHasNoDirectoryListing(t *testing.T) {
 	handler := siteHandler(testSite())
 
 	for _, path := range []string{"/assets/", "/assets/nested", "/assets/nested/", "/assets/nope.js",
-		"/index.html", "/auth.html", "/nope", "/nope/deep.js"} {
+		"/index.html", "/auth.html", "/nope/deep.js", "/a/b/"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusNotFound {
@@ -123,6 +148,24 @@ func TestSiteHasNoDirectoryListing(t *testing.T) {
 	recorder := testenv.Do(handler, http.MethodGet, "/assets/../../etc/passwd", "")
 	if recorder.Code == http.StatusOK && recorder.Body.Len() > 0 {
 		t.Fatalf("路径穿越回了个 200：%s", recorder.Body.String())
+	}
+}
+
+// 带尾斜杠的视图路径 301 到规范地址；产物目录（/assets/）不是视图，仍旧 404。
+func TestSiteRedirectsViewRouteTrailingSlash(t *testing.T) {
+	handler := siteHandler(testSite())
+
+	recorder := testenv.Do(handler, http.MethodGet, "/cso2/", "")
+	if recorder.Code != http.StatusMovedPermanently {
+		t.Fatalf("/cso2/ 状态码 = %d，想要 301", recorder.Code)
+	}
+	if got := recorder.Header().Get("Location"); got != "/cso2" {
+		t.Errorf("/cso2/ Location = %q，想要 /cso2", got)
+	}
+
+	assets := testenv.Do(handler, http.MethodGet, "/assets/", "")
+	if assets.Code != http.StatusNotFound {
+		t.Errorf("/assets/ 状态码 = %d，想要 404", assets.Code)
 	}
 }
 

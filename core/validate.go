@@ -55,8 +55,28 @@ func ValidFilename(name string) bool {
 	return true
 }
 
+// reservedGroupNames 是站点已经占用的一级路径。分组名会直接作为 /<分组名> 出现在地址栏，
+// 和这些路径重名会让链接指到别处（接口、登录页、静态资源），所以在命名时就拒绝。
+//
+// 名单要和 main.go 的路由、web.go 的页面表以及前端的视图路由保持一致。
+var reservedGroupNames = map[string]struct{}{
+	"api":         {},
+	"s":           {},
+	"d":           {},
+	"auth":        {},
+	"assets":      {},
+	"readyz":      {},
+	"livez":       {},
+	"favorites":   {},
+	"ungrouped":   {},
+	"favicon.svg": {},
+}
+
 // NormalizeGroupName 校验并规范化分组名：去掉首尾空白，空串表示未分组；
-// 规范化后不允许超过 64 字节或含控制字符。第二个返回值表示是否合法。
+// 规范化后不允许超过 64 字节、含控制字符或路径分隔符。第二个返回值表示是否合法。
+//
+// 分组名同时是页面路径的一段，所以 "." / ".."、以 .html 结尾（这些路径由页面表与产物文件
+// 占用）和 reservedGroupNames 里的名字都不能用。
 //
 // 先 trim 再判长度：客户端在输入框里多敲的空白不该被当成名字的一部分。
 func NormalizeGroupName(raw string) (string, bool) {
@@ -65,9 +85,15 @@ func NormalizeGroupName(raw string) (string, bool) {
 		return "", false
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || r == '/' {
 			return "", false
 		}
+	}
+	if name == "." || name == ".." || strings.HasSuffix(name, ".html") {
+		return "", false
+	}
+	if _, reserved := reservedGroupNames[name]; reserved {
+		return "", false
 	}
 	return name, true
 }

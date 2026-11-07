@@ -99,6 +99,19 @@ func TestNormalizeGroupName(t *testing.T) {
 		{name: "含 DEL", raw: "a\x7fb"},
 		{name: "中间带制表符", raw: "a\tb"},
 		{name: "首尾制表符被 trim 后合法", raw: "\tabc\t", want: "abc", ok: true},
+		{name: "含路径分隔符", raw: "a/b"},
+		{name: "单点", raw: "."},
+		{name: "双点", raw: ".."},
+		{name: "以 .html 结尾", raw: "a.html"},
+		{name: "页面表占用 auth", raw: "auth"},
+		{name: "接口前缀占用 api", raw: "api"},
+		{name: "下载前缀占用 d", raw: "d"},
+		{name: "静态资源占用 assets", raw: "assets"},
+		{name: "图标占用 favicon.svg", raw: "favicon.svg"},
+		{name: "前端视图占用 favorites", raw: "favorites"},
+		{name: "前端视图占用 ungrouped", raw: "ungrouped"},
+		{name: "含点但可路由", raw: "v1.2", want: "v1.2", ok: true},
+		{name: "含空格与井号", raw: "设计 #2", want: "设计 #2", ok: true},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {

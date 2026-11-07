@@ -5,9 +5,12 @@
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
  * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
  *
- * 一级分组没有独立接口：分组名与段内顺序都来自每条文件的 group_name / sort_order，
- * 所以左栏的分组列表由文件集合现算。「全部」视图不分段、固定按上传时间倒序，不参与拖拽；
- * 收藏 / 单分组 / 未分组视图按 sort_order 排，可拖拽调整顺序（PUT /api/files/order）。
+ * 视图与地址栏一一对应：`/`「全部」、`/favorites`「收藏」、`/ungrouped`「未分组」、
+ * `/<分组名>`「单个分组」（名字按 URL 转义）。切换视图用 pushState 进历史，
+ * 浏览器前进 / 后退与直接打开链接都通过 routes.ts 还原。
+ *
+ * 分组是服务端的独立记录（不再由文件集合现算），空分组也保留；「全部」视图按上传时间
+ * 倒序、按本地日期分段，其余视图按 sort_order 平铺，只有后者参与拖拽排序。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import Sortable from "sortablejs";
@@ -29,8 +32,10 @@ import {
   togglePublic,
   updateFileGroup,
 } from "@/api";
+import { formatDayHeading } from "@/format";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
+import { viewFromPath, viewPath, type View } from "@/routes";
 import { toLogin } from "@/session";
 import type { FileItem } from "@/types";
 
@@ -43,8 +48,7 @@ const actionError = ref("");
 let actionErrorTimer = 0;
 
 /** 当前视图：全部 / 收藏 / 单个分组 / 未分组。 */
-type ViewKind = "all" | "favorites" | "group" | "ungrouped";
-const view = ref<{ kind: ViewKind; group?: string }>({ kind: "all" });
+const view = ref<View>({ kind: "all" });
 const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
@@ -98,16 +102,45 @@ const timeOrderedFiles = computed(() => {
 /** 当前视图的可见文件：全部按时间倒序，其余按用户排定的 sort_order，再按关键词过滤。 */
 const visibleFiles = computed(() => {
   const base = (isAll.value ? timeOrderedFiles.value : sortedFiles.value).filter(matchesQuery);
-  switch (view.value.kind) {
+  const current = view.value;
+  switch (current.kind) {
     case "favorites":
       return base.filter((file) => file.is_favorite);
     case "group":
-      return base.filter((file) => file.group_name === view.value.group);
+      return base.filter((file) => file.group_name === current.group);
     case "ungrouped":
       return base.filter((file) => !file.group_name);
     default:
       return base;
   }
+});
+
+/** 列表分段：标题为空表示只有一段（收藏 / 分组 / 未分组视图不显示日期标题）。 */
+interface FileSection {
+  key: string;
+  title: string;
+  files: FileItem[];
+}
+
+/**
+ * 「全部」按本地日期分段，新的在上：列表已按上传时间倒序，同一天的文件天然相邻，
+ * 顺序扫一遍即可切段；其余视图返回单段，不显示标题。
+ */
+const visibleSections = computed<FileSection[]>(() => {
+  const list = visibleFiles.value;
+  if (!isAll.value) return [{ key: "all", title: "", files: list }];
+  const sections: FileSection[] = [];
+  let current: FileSection | null = null;
+  for (const file of list) {
+    const date = new Date(file.created_at * 1000);
+    const key = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+    if (!current || current.key !== key) {
+      current = { key, title: formatDayHeading(file.created_at), files: [] };
+      sections.push(current);
+    }
+    current.files.push(file);
+  }
+  return sections;
 });
 
 const pageTitle = computed(() => {
@@ -117,7 +150,7 @@ const pageTitle = computed(() => {
     case "ungrouped":
       return t("nav.ungrouped");
     case "group":
-      return view.value.group ?? "";
+      return view.value.group;
     default:
       return t("nav.all-files");
   }
@@ -149,31 +182,54 @@ const currentGroupCount = computed(() => {
   return groupCounts.value.get(view.value.group) ?? 0;
 });
 
+/**
+ * 切换视图并同步地址栏。点导航用 push（进历史）；回退 / 修正失效链接用 replace
+ * （不留下一个打开就跳走的条目）。
+ */
+function applyView(next: View, mode: "push" | "replace" = "push"): void {
+  view.value = next;
+  const path = viewPath(next);
+  if (location.pathname === path) return;
+  if (mode === "push") history.pushState(null, "", path);
+  else history.replaceState(null, "", path);
+}
+
+/** 按地址栏还原视图（首次加载与前进 / 后退都走这里）；解不开的路径回退到「全部」。 */
+function syncViewFromLocation(): void {
+  const next = viewFromPath(location.pathname);
+  if (!next) {
+    applyView({ kind: "all" }, "replace");
+    return;
+  }
+  view.value = next;
+  const canonical = viewPath(next);
+  if (location.pathname !== canonical) history.replaceState(null, "", canonical);
+}
+
 function showAll(): void {
-  view.value = { kind: "all" };
+  applyView({ kind: "all" });
 }
 
 function showFavorites(): void {
-  view.value = { kind: "favorites" };
+  applyView({ kind: "favorites" });
 }
 
 function showGroup(group: string): void {
   // 拖拽排序松手后浏览器还会补一个 click，别让它顺手切换视图。
   if (Date.now() < groupClickGuardUntil) return;
-  view.value = { kind: "group", group };
+  applyView({ kind: "group", group });
 }
 
 function showUngrouped(): void {
-  view.value = { kind: "ungrouped" };
+  applyView({ kind: "ungrouped" });
 }
 
-/** 文件被移走后当前分组可能消失：刷新后回退到「全部」，避免停在一个空视图。 */
+/** 分组 / 未分组视图失去存在依据时回退「全部」：同步地址栏，刷新后不会停在空视图。 */
 function validateView(): void {
-  if (view.value.kind === "group" && !groups.value.includes(view.value.group ?? "")) {
-    view.value = { kind: "all" };
-  }
-  if (view.value.kind === "ungrouped" && ungroupedCount.value === 0) {
-    view.value = { kind: "all" };
+  if (view.value.kind === "group" && !groups.value.includes(view.value.group)) {
+    applyView({ kind: "all" }, "replace");
+  } else if (view.value.kind === "ungrouped" && ungroupedCount.value === 0) {
+    applyView({ kind: "all" }, "replace");
   }
 }
 
@@ -314,7 +370,7 @@ async function onDownload(file: FileItem): Promise<void> {
  */
 async function onDownloadGroup(): Promise<void> {
   if (view.value.kind !== "group") return;
-  const groupName = view.value.group ?? "";
+  const groupName = view.value.group;
   const targets = sortedFiles.value.filter((file) => file.group_name === groupName);
   if (!targets.length) return;
   try {
@@ -352,7 +408,7 @@ async function onDelete(file: FileItem): Promise<void> {
 
 /** 当前分组视图内的上传目标；在其它视图上传仍然等同于未分组。 */
 const currentUploadGroup = computed(() => {
-  return view.value.kind === "group" ? view.value.group ?? "" : "";
+  return view.value.kind === "group" ? view.value.group : "";
 });
 
 /** 手动新建空分组：创建后直接进入该分组，方便马上往里传文件。 */
@@ -364,23 +420,23 @@ async function onCreateGroup(): Promise<void> {
   try {
     const created = await createGroup(name);
     await refresh();
-    view.value = { kind: "group", group: created.name };
+    applyView({ kind: "group", group: created.name });
   } catch (error) {
     showActionError(error);
   }
 }
 
-/** 重命名当前分组：批量改写组内文件的 group_name，成功后留在新分组视图。 */
+/** 重命名当前分组：批量改写组内文件的 group_name，成功后留在新分组视图（地址同步改名）。 */
 async function onRenameGroup(): Promise<void> {
+  if (view.value.kind !== "group") return;
   const groupName = view.value.group;
-  if (!groupName) return;
   const input = window.prompt(t("group.rename-prompt"), groupName);
   if (input === null) return;
   const newName = input.trim();
   if (!newName || newName === groupName) return;
   try {
     await renameGroup(groupName, newName);
-    view.value = { kind: "group", group: newName };
+    applyView({ kind: "group", group: newName }, "replace");
     await refresh();
   } catch (error) {
     showActionError(error);
@@ -519,6 +575,8 @@ onMounted(() => {
   document.addEventListener("dragover", swallowDrop);
   document.addEventListener("drop", swallowDrop);
   document.addEventListener("dragend", endFileDrag);
+  window.addEventListener("popstate", syncViewFromLocation);
+  syncViewFromLocation();
   mountGroupSortables();
   void refresh();
 });
@@ -527,6 +585,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("dragover", swallowDrop);
   document.removeEventListener("drop", swallowDrop);
   document.removeEventListener("dragend", endFileDrag);
+  window.removeEventListener("popstate", syncViewFromLocation);
   destroyGroupSortables();
   window.clearTimeout(actionErrorTimer);
 });
@@ -801,22 +860,26 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <!-- 全部视图按上传时间倒序平铺；收藏 / 分组 / 未分组按 sort_order 平铺 -->
-        <FileList
-          v-if="visibleFiles.length"
-          :files="visibleFiles"
-          :groups="groups"
-          :sortable="canSort"
-          @favorite="onFavorite"
-          @download="onDownload"
-          @rename="onRename"
-          @visibility="onVisibility"
-          @delete="onDelete"
-          @move-group="onMoveGroup"
-          @reorder="onReorder"
-          @drag-start="startFileDrag"
-          @drag-end="endFileDrag"
-        />
+        <!-- 全部视图按上传时间倒序、按本地日期分段；其余视图按 sort_order 平铺成一张卡片 -->
+        <div v-if="visibleFiles.length" class="file-sections">
+          <section v-for="section in visibleSections" :key="section.key" class="file-section">
+            <h2 v-if="section.title" class="file-section-title">{{ section.title }}</h2>
+            <FileList
+              :files="section.files"
+              :groups="groups"
+              :sortable="canSort"
+              @favorite="onFavorite"
+              @download="onDownload"
+              @rename="onRename"
+              @visibility="onVisibility"
+              @delete="onDelete"
+              @move-group="onMoveGroup"
+              @reorder="onReorder"
+              @drag-start="startFileDrag"
+              @drag-end="endFileDrag"
+            />
+          </section>
+        </div>
         <div v-else class="empty">
           <span class="empty-icon" v-html="emptyIcon"></span>
           <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>

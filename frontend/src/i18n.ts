@@ -93,6 +93,7 @@ export type MessageKey =
   | "group.rename-prompt"
   | "rename.prompt"
   | "confirm.delete"
+  | "date.group-heading"
   | "meta.unknown-time"
   | "lang.label"
   | "state.loading"
@@ -175,6 +176,7 @@ const messages: Record<MessageKey, Message> = {
   "group.rename-prompt": { zh: "输入新的分组名", en: "Enter a new group name" },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
+  "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },
   "state.loading": { zh: "加载中…", en: "Loading…" },

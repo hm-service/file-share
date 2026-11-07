@@ -35,6 +35,12 @@
   box-sizing: border-box;
 }
 
+/* 内联 SVG 默认按基线排，行盒下沿会额外留出 descender 的空白，控件里的图标因此偏上；
+   统一按块级排，尺寸与居中只由外层容器负责。 */
+svg {
+  display: block;
+}
+
 html,
 body,
 #app {
@@ -620,6 +626,21 @@ ul {
 }
 
 /* ================= 文件列表 ================= */
+
+/* 「全部」按日期分段：每段一个标题 + 一张卡片，段与段之间留出呼吸空间 */
+.file-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.file-section-title {
+  margin: 0 4px 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
 
 .list-card {
   overflow: hidden;

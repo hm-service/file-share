@@ -38,7 +38,7 @@ var pages = map[string]string{
 	"/auth": "auth.html",
 }
 
-// siteHandler 是站点外壳：两个页面 + 构建产物里的其余文件（/assets/*、favicon.svg）。
+// siteHandler 是站点外壳：页面 + 构建产物里的其余文件（/assets/*、favicon.svg） + 前端视图路由。
 // 接口、探针与公开下载都在 api 包里，由 main.go 按前缀挂到别的分支上 —— 这里只管
 // 「把一个构建产物当成网站发出去」这一件事。
 func siteHandler(files fs.FS) http.Handler {
@@ -54,9 +54,37 @@ func siteHandler(files fs.FS) http.Handler {
 			servePage(w, files, file)
 			return
 		}
-		serveSiteFile(w, r, files, strings.TrimPrefix(r.URL.Path, "/"))
+		// 先认产物里的具体文件：favicon.svg 这种名字也可能刚好是分组名，文件优先。
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if serveSiteFile(w, r, files, name) {
+			return
+		}
+		// 单段路径末尾多一个斜杠（/cso2/）重定向到规范地址；目录（/assets/）不走这里。
+		if trimmed, ok := strings.CutSuffix(r.URL.Path, "/"); ok && isViewRoute(trimmed) {
+			if _, err := fs.Stat(files, strings.TrimPrefix(trimmed, "/")); err != nil {
+				http.Redirect(w, r, trimmed, http.StatusMovedPermanently)
+				return
+			}
+		}
+		// 剩下的单段路径交给前端路由（/<分组名>、/favorites、/ungrouped）。
+		if isViewRoute(r.URL.Path) {
+			servePage(w, files, "index.html")
+			return
+		}
+		http.NotFound(w, r)
 	})
 	return mux
+}
+
+// isViewRoute 判断路径是不是前端视图路由：一个非空的路径段，且不指向产物里的页面文件。
+// 分组名由用户输入、直接作为这一段出现，所以这里只能按形状判断，不能枚举。
+// 多段路径（/assets/xxx、/a/b）与 *.html 仍然只认产物里的真实文件，未知的一律 404。
+func isViewRoute(path string) bool {
+	segment, found := strings.CutPrefix(path, "/")
+	if !found || segment == "" || strings.Contains(segment, "/") {
+		return false
+	}
+	return !strings.HasSuffix(segment, ".html")
 }
 
 // servePage 把页面写出去：页面一律 no-store，免得改完前端还看旧的。
@@ -74,27 +102,25 @@ func servePage(w http.ResponseWriter, files fs.FS, file string) {
 	w.Write(body)
 }
 
-// serveSiteFile 分发产物里的具体文件。
+// serveSiteFile 分发产物里的具体文件；名字不指向文件（目录、未知路径、*.html）时返回 false，
+// 由调用方决定是当视图路由还是 404。
 //
 // 不用 http.FileServerFS 就是为了不给目录列表：只认具体文件，目录（含 /assets/ 本身）
-// 一律 404，免得把内嵌文件的清单摊开给人看。
+// 一律不给，免得把内嵌文件的清单摊开给人看。
 //
 // 缓存分三档：页面走 servePage 的 no-store；带内容哈希的 /assets/* 一年 immutable；
 // 其余（favicon.svg 这种固定名字）每次回源确认。
-func serveSiteFile(w http.ResponseWriter, r *http.Request, files fs.FS, name string) {
+func serveSiteFile(w http.ResponseWriter, r *http.Request, files fs.FS, name string) bool {
 	if name == "" || name == "." || strings.HasSuffix(name, ".html") || !fs.ValidPath(name) {
-		http.NotFound(w, r)
-		return
+		return false
 	}
 	info, err := fs.Stat(files, name)
 	if err != nil || info.IsDir() {
-		http.NotFound(w, r)
-		return
+		return false
 	}
 	body, err := fs.ReadFile(files, name)
 	if err != nil {
-		http.NotFound(w, r)
-		return
+		return false
 	}
 	if strings.HasPrefix(name, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -103,4 +129,5 @@ func serveSiteFile(w http.ResponseWriter, r *http.Request, files fs.FS, name str
 	}
 	// ServeContent 按扩展名定 Content-Type，顺手处理 Range 与条件请求。
 	http.ServeContent(w, r, path.Base(name), time.Time{}, bytes.NewReader(body))
+	return true
 }

@@ -713,6 +713,7 @@ func TestCreateGroup(t *testing.T) {
 		"空名":   "",
 		"超长":   strings.Repeat("a", core.MaxGroupNameBytes+1),
 		"控制字符": "a\nb",
+		"系统路径": "favorites",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := instance.CreateGroup(raw)
