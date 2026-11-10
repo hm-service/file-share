@@ -433,6 +433,119 @@ func (s *Store) RenameGroup(path, newName string) (int64, error) {
 	return changed, nil
 }
 
+// DeleteGroup 删除一个分组，它的子分组一并删除。
+// deleteFiles 为 true 时同时删除组内（含子分组）全部记录并返回它们的 sha256（由调用方决定
+// blob 是否还有引用）；否则把文件移到被删分组的父路径，顶级分组的文件回到未分组。
+// 目标分组不存在返回 ErrNotFound。
+func (s *Store) DeleteGroup(path string, deleteFiles bool) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", path).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists == 0 {
+		return nil, ErrNotFound
+	}
+
+	// 受影响的路径：分组自己 + 它下面的子分组（最多一层）。
+	targets := []string{path}
+	rows, err := tx.Query("SELECT path FROM groups WHERE parent = ?", path)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var child string
+		if err := rows.Scan(&child); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		targets = append(targets, child)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	shas := []string{}
+	if deleteFiles {
+		for _, target := range targets {
+			rows, err := tx.Query("SELECT sha256 FROM file WHERE group_path = ?", target)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var sha string
+				if err := rows.Scan(&sha); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				shas = append(shas, sha)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+		}
+		for _, target := range targets {
+			if _, err := tx.Exec("DELETE FROM file WHERE group_path = ?", target); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		// 文件上移到被删分组的父路径，并挪到目标分组的末尾。
+		parent, _ := core.SplitGroupPath(path)
+		var next int64
+		if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) FROM file").Scan(&next); err != nil {
+			return nil, err
+		}
+		for _, target := range targets {
+			ids := make([]string, 0)
+			rows, err := tx.Query("SELECT id FROM file WHERE group_path = ? ORDER BY sort_order ASC, created_at DESC, id ASC", target)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				ids = append(ids, id)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rows.Close()
+			for _, id := range ids {
+				next++
+				if _, err := tx.Exec("UPDATE file SET group_path = ?, sort_order = ? WHERE id = ?", parent, next, id); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	for _, target := range targets {
+		if _, err := tx.Exec("DELETE FROM groups WHERE path = ?", target); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return shas, nil
+}
+
 // SetGroupOrder 按给定顺序重写某个父级下全部子分组的 sort_order。
 // names 必须是该父级下全部子分组名（顶层用空串作父路径）；对不上返回 ErrGroupOrderMismatch。
 func (s *Store) SetGroupOrder(parent string, names []string) error {

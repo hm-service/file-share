@@ -242,6 +242,18 @@ export function createGroup(path: string): Promise<{ path: string }> {
   });
 }
 
+/**
+ * POST /api/groups/delete：删除分组，子分组一并删除（成功 204）。
+ * deleteFiles 为 true 时组内文件一起删掉，否则上移到上级分组 / 未分组。
+ */
+export function deleteGroup(path: string, deleteFiles: boolean): Promise<void> {
+  return request<void>("/api/groups/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, delete_files: deleteFiles }),
+  });
+}
+
 /** POST /api/groups/rename：改写分组路径的最后一段（子分组与组内文件一起改名，成功 204）。 */
 export function renameGroup(path: string, newName: string): Promise<void> {
   return request<void>("/api/groups/rename", {

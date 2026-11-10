@@ -2,17 +2,16 @@
 /**
  * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 操作区。
  *
- * 行内只保留最常用的三个动作（收藏、下载、删除），其余（重命名、复制直链、
- * 公开/私有、移动到分组、新建分组）收进行末右对齐的「更多」菜单，避免一行里
- * 挤满七个图标。
+ * 行内只留「下载、收藏、分组、更多」四个按钮：分组是高频操作，单独开「移动到分组」菜单；
+ * 重命名、复制直链、公开/私有、删除收进最右的「更多」菜单，避免一行里挤满七个图标。
  *
  * 复制直链只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
  * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
- * 菜单定位按按钮 rect 计算并夹在视口内，滚动/缩放/Esc/点外面都关闭。
+ * 菜单定位按按钮 rect 计算并夹在视口内，滚动/缩放/Esc/点外面都关闭（菜单自身滚动除外）。
  */
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 
 import { publicLink } from "@/api";
 import { formatSize, formatTime } from "@/format";
@@ -144,23 +143,46 @@ async function copyLink(): Promise<void> {
   }, 1200);
 }
 
-/* ---------- 「更多操作」菜单 ---------- */
+/* ---------- 行内菜单（分组 / 更多） ---------- */
 
-const MENU_WIDTH = 240;
-const MENU_MAX_HEIGHT = 440;
+/** 菜单种类：分组菜单只负责「移动到分组」，更多菜单放其余低频操作。 */
+type MenuKind = "more" | "group";
 
-const menuOpen = ref(false);
+// 宽高与 style.css 里 .row-menu 的 width / max-height 保持一致：这里先按上限估位置，
+// 渲染完成后再用真实高度校正一次（见 adjustMenuPosition）。
+const MENUS: Record<MenuKind, { width: number; maxHeight: number }> = {
+  more: { width: 240, maxHeight: 440 },
+  group: { width: 240, maxHeight: 440 },
+};
+
+/** 当前打开的菜单；null 表示都关着。两个菜单共用一套定位与关闭逻辑。 */
+const openMenu = ref<MenuKind | null>(null);
 const menuEl = ref<HTMLElement | null>(null);
 const menuStyle = ref<{ left: string; top: string }>({ left: "0px", top: "0px" });
 let triggerEl: HTMLElement | null = null;
 
-function closeMenu(): void {
-  if (!menuOpen.value) return;
-  menuOpen.value = false;
+function unbindMenuEvents(): void {
   window.removeEventListener("pointerdown", onOutsidePointer, true);
   window.removeEventListener("keydown", onMenuKeydown, true);
   window.removeEventListener("resize", closeMenu);
-  window.removeEventListener("scroll", closeMenu, true);
+  window.removeEventListener("scroll", onWindowScroll, true);
+}
+
+/**
+ * 页面或列表滚动时关掉菜单（菜单是 fixed 定位，锚点会跑偏）。
+ * 菜单内部的滚动不算：分组多时菜单自己要滚，capture 阶段能收到子元素的 scroll，
+ * 直接 close 会让菜单一滚就消失。
+ */
+function onWindowScroll(event: Event): void {
+  const target = event.target;
+  if (target instanceof Node && menuEl.value?.contains(target)) return;
+  closeMenu();
+}
+
+function closeMenu(): void {
+  if (openMenu.value === null) return;
+  openMenu.value = null;
+  unbindMenuEvents();
 }
 
 function onOutsidePointer(event: PointerEvent): void {
@@ -176,27 +198,47 @@ function onMenuKeydown(event: KeyboardEvent): void {
   closeMenu();
 }
 
-function toggleMenu(event: MouseEvent): void {
-  triggerEl = event.currentTarget as HTMLElement;
-  if (menuOpen.value) {
+/** 点同一个按钮收起，点另一个按钮直接切过去；菜单贴着触发按钮右下角，夹在视口内。 */
+function toggleMenu(kind: MenuKind, event: MouseEvent): void {
+  const trigger = event.currentTarget as HTMLElement;
+  const sameTrigger = triggerEl === trigger;
+  triggerEl = trigger;
+  if (openMenu.value === kind && sameTrigger) {
     closeMenu();
     return;
   }
-  const rect = triggerEl.getBoundingClientRect();
+  unbindMenuEvents();
+
+  const { width, maxHeight } = MENUS[kind];
+  const rect = trigger.getBoundingClientRect();
   const left = Math.min(
-    Math.max(8, rect.right - MENU_WIDTH),
-    Math.max(8, window.innerWidth - MENU_WIDTH - 8),
+    Math.max(8, rect.right - width),
+    Math.max(8, window.innerWidth - width - 8),
   );
   let top = rect.bottom + 6;
-  if (top + MENU_MAX_HEIGHT > window.innerHeight - 8) {
-    top = Math.max(8, window.innerHeight - MENU_MAX_HEIGHT - 8);
+  if (top + maxHeight > window.innerHeight - 8) {
+    top = Math.max(8, window.innerHeight - maxHeight - 8);
   }
   menuStyle.value = { left: `${left}px`, top: `${top}px` };
-  menuOpen.value = true;
+  openMenu.value = kind;
   window.addEventListener("pointerdown", onOutsidePointer, true);
   window.addEventListener("keydown", onMenuKeydown, true);
   window.addEventListener("resize", closeMenu);
-  window.addEventListener("scroll", closeMenu, true);
+  window.addEventListener("scroll", onWindowScroll, true);
+  void nextTick(adjustMenuPosition);
+}
+
+/** 菜单按上限估的 top 可能偏高（内容比上限矮时），渲染后按真实高度夹回视口内。 */
+function adjustMenuPosition(): void {
+  const el = menuEl.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const overflow = rect.bottom - (window.innerHeight - 8);
+  if (overflow <= 0) return;
+  menuStyle.value = {
+    left: menuStyle.value.left,
+    top: `${Math.max(8, rect.top - overflow)}px`,
+  };
 }
 
 function chooseGroup(path: string): void {
@@ -260,6 +302,15 @@ onBeforeUnmount(() => {
     <div class="file-actions">
       <button
         type="button"
+        class="icon-btn download"
+        :title="t('action.download')"
+        :aria-label="t('action.download')"
+        v-html="ICONS.download"
+        @click="emit('download')"
+      ></button>
+
+      <button
+        type="button"
         class="icon-btn star"
         :class="{ on: file.is_favorite }"
         :title="file.is_favorite ? t('action.unfavorite') : t('action.favorite')"
@@ -268,67 +319,42 @@ onBeforeUnmount(() => {
         @click="emit('favorite')"
       ></button>
 
+      <!-- 分组独立成按钮：高频操作，不藏进聚合菜单 -->
       <button
         type="button"
-        class="icon-btn download"
-        :title="t('action.download')"
-        :aria-label="t('action.download')"
-        v-html="ICONS.download"
-        @click="emit('download')"
+        class="icon-btn group"
+        :class="{ on: openMenu === 'group' }"
+        :title="t('action.move-group')"
+        :aria-label="t('action.move-group')"
+        aria-haspopup="menu"
+        :aria-expanded="openMenu === 'group'"
+        v-html="ICONS.folder"
+        @click="toggleMenu('group', $event)"
       ></button>
 
-      <!-- 行内只留常用动作，其余收进菜单；入口固定在行末，右对齐 -->
       <button
         type="button"
         class="icon-btn more"
-        :class="{ on: menuOpen }"
+        :class="{ on: openMenu === 'more' }"
         :title="t('action.more')"
         :aria-label="t('action.more')"
         aria-haspopup="menu"
-        :aria-expanded="menuOpen"
+        :aria-expanded="openMenu === 'more'"
         v-html="ICONS.more"
-        @click="toggleMenu"
+        @click="toggleMenu('more', $event)"
       ></button>
     </div>
 
     <Teleport to="body">
+      <!-- 移动到分组：两级缩进，分组多时整张菜单滚动 -->
       <div
-        v-if="menuOpen"
+        v-if="openMenu === 'group'"
         ref="menuEl"
-        class="row-menu"
+        class="row-menu is-scroll"
         :style="menuStyle"
         role="menu"
-        :aria-label="t('action.more')"
+        :aria-label="t('action.move-group')"
       >
-        <button type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
-          <span class="row-menu-icon" v-html="ICONS.pencil"></span>
-          <span class="row-menu-label">{{ t("action.rename") }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="row-menu-item"
-          role="menuitem"
-          :disabled="!file.is_public"
-          :title="file.is_public ? undefined : t('action.copy-link-private')"
-          @click="chooseCopyLink"
-        >
-          <span class="row-menu-icon" v-html="copied ? ICONS.check : ICONS.link"></span>
-          <span class="row-menu-label">{{ copied ? t("action.copied") : t("action.copy-link") }}</span>
-        </button>
-
-        <button type="button" class="row-menu-item" role="menuitem" @click="chooseVisibility">
-          <span class="row-menu-icon" v-html="file.is_public ? ICONS.eyeOff : ICONS.eye"></span>
-          <span class="row-menu-label">
-            {{ file.is_public ? t("action.make-private") : t("action.make-public") }}
-          </span>
-        </button>
-
-        <div class="row-menu-sep" role="separator"></div>
-        <p class="row-menu-title">{{ t("action.move-group") }}</p>
-
-        <!-- 分组多时只让这一段滚动：重命名 / 公开 / 删除始终在视野里 -->
-        <div class="row-menu-groups">
         <button
           type="button"
           class="row-menu-item"
@@ -373,7 +399,6 @@ onBeforeUnmount(() => {
             <span class="row-menu-label">{{ child.name }}</span>
           </button>
         </template>
-        </div>
 
         <div class="row-menu-sep" role="separator"></div>
 
@@ -382,11 +407,44 @@ onBeforeUnmount(() => {
           <span class="row-menu-icon" v-html="ICONS.plus"></span>
           <span class="row-menu-label">{{ t("action.new-group") }}</span>
         </button>
+      </div>
+
+      <!-- 其余低频操作 -->
+      <div
+        v-else-if="openMenu === 'more'"
+        ref="menuEl"
+        class="row-menu"
+        :style="menuStyle"
+        role="menu"
+        :aria-label="t('action.more')"
+      >
+        <button type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
+          <span class="row-menu-icon" v-html="ICONS.pencil"></span>
+          <span class="row-menu-label">{{ t("action.rename") }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          :disabled="!file.is_public"
+          :title="file.is_public ? undefined : t('action.copy-link-private')"
+          @click="chooseCopyLink"
+        >
+          <span class="row-menu-icon" v-html="copied ? ICONS.check : ICONS.link"></span>
+          <span class="row-menu-label">{{ copied ? t("action.copied") : t("action.copy-link") }}</span>
+        </button>
+
+        <button type="button" class="row-menu-item" role="menuitem" @click="chooseVisibility">
+          <span class="row-menu-icon" v-html="file.is_public ? ICONS.eyeOff : ICONS.eye"></span>
+          <span class="row-menu-label">
+            {{ file.is_public ? t("action.make-private") : t("action.make-public") }}
+          </span>
+        </button>
 
         <div class="row-menu-sep" role="separator"></div>
 
         <button type="button" class="row-menu-item is-danger" role="menuitem" @click="chooseDelete">
-          <span class="row-menu-check"></span>
           <span class="row-menu-icon" v-html="ICONS.trash"></span>
           <span class="row-menu-label">{{ t("action.delete") }}</span>
         </button>

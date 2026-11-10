@@ -12,9 +12,10 @@
  * 分组是服务端的独立记录（不再由文件集合现算），空分组也保留；「全部」视图按上传时间
  * 倒序、按本地日期分段，其余视图按 sort_order 平铺，只有后者参与拖拽排序。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Sortable from "sortablejs";
 
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import FileList from "@/components/FileList.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
 import UploadDock from "@/components/UploadDock.vue";
@@ -22,6 +23,7 @@ import {
   ApiError,
   createGroup,
   deleteFile,
+  deleteGroup,
   downloadFile,
   listFiles,
   renameFile,
@@ -489,6 +491,119 @@ async function onRenameGroup(): Promise<void> {
   }
 }
 
+/* ---------- 分组右键菜单（创建子分组 / 删除） ---------- */
+
+/** 打开中的分组菜单：位置按点击点计算，夹在视口内。 */
+const groupMenu = ref<{ path: string; name: string; x: number; y: number } | null>(null);
+/** 等待确认删除的分组。 */
+const deleteTarget = ref<{ path: string; name: string } | null>(null);
+
+// 与 .row-menu 的 width 一致，用于把菜单夹在视口内。
+const GROUP_MENU_WIDTH = 240;
+
+function openGroupMenuAt(x: number, y: number, group: GroupItem): void {
+  groupMenu.value = {
+    path: group.path,
+    name: group.name,
+    x: Math.min(x, Math.max(8, window.innerWidth - GROUP_MENU_WIDTH - 8)),
+    y: Math.min(y, Math.max(8, window.innerHeight - 120)),
+  };
+}
+
+/** 侧栏 / chips 上的右键：分组条目的操作入口。 */
+function openGroupMenu(event: MouseEvent, group: GroupItem): void {
+  event.preventDefault();
+  event.stopPropagation();
+  openGroupMenuAt(event.clientX, event.clientY, group);
+}
+
+/** 标题旁的分组操作按钮：锚在按钮左下角，移动端没有右键时用它。 */
+function openGroupMenuFromButton(event: MouseEvent): void {
+  if (view.value.kind !== "group") return;
+  const current = view.value.group;
+  const group = groups.value.find((entry) => entry.path === current);
+  if (!group) return;
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  openGroupMenuAt(rect.left, rect.bottom + 6, group);
+}
+
+function closeGroupMenu(): void {
+  groupMenu.value = null;
+}
+
+/** 关闭分组菜单要点的「别处」：在别处按下指针就收起（菜单项自己的点击不算）。 */
+function onGroupMenuPointerDown(event: PointerEvent): void {
+  const target = event.target;
+  if (target instanceof Node && (target as Element).closest?.(".group-menu-pop, .title-action-group")) return;
+  closeGroupMenu();
+}
+
+watch(groupMenu, (value) => {
+  if (value) window.addEventListener("pointerdown", onGroupMenuPointerDown, true);
+  else window.removeEventListener("pointerdown", onGroupMenuPointerDown, true);
+});
+
+/** 在分组下新建子分组：只输入子分组名，父路径沿用右键的那一项。 */
+async function onCreateSubgroup(): Promise<void> {
+  const parent = groupMenu.value;
+  closeGroupMenu();
+  if (!parent) return;
+  const input = window.prompt(t("group.new-subgroup-prompt"));
+  if (input === null) return;
+  const name = input.trim();
+  if (!name) return;
+  try {
+    const created = await createGroup(`${parent.path}/${name}`);
+    await refresh();
+    applyView({ kind: "group", group: created.path });
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+/** 分组（含子分组）里的文件数：删除确认框据此说明影响范围。 */
+const deleteFileCount = computed(() => {
+  const target = deleteTarget.value?.path;
+  if (!target) return 0;
+  return files.value.filter(
+    (file) => file.group_path === target || file.group_path.startsWith(`${target}/`),
+  ).length;
+});
+
+/** 不删文件时，它们会落到哪里：子分组回到上级，顶级分组回到未分组。 */
+const deleteFallbackName = computed(() => {
+  const path = deleteTarget.value?.path ?? "";
+  const slash = path.lastIndexOf("/");
+  if (slash < 0) return t("nav.ungrouped");
+  const parent = path.slice(0, slash);
+  return groups.value.find((group) => group.path === parent)?.name ?? t("nav.ungrouped");
+});
+
+function onDeleteGroup(): void {
+  const target = groupMenu.value;
+  closeGroupMenu();
+  if (!target) return;
+  deleteTarget.value = { path: target.path, name: target.name };
+}
+
+async function confirmDeleteGroup(deleteFiles: boolean): Promise<void> {
+  const target = deleteTarget.value;
+  if (!target) return;
+  deleteTarget.value = null;
+  try {
+    await deleteGroup(target.path, deleteFiles);
+    // 视图停在被删分组（或它的子分组）里时，先回退到上级，避免刷新后闪一下「全部」。
+    const current = view.value;
+    if (current.kind === "group" && (current.group === target.path || current.group.startsWith(`${target.path}/`))) {
+      const slash = target.path.lastIndexOf("/");
+      applyView(slash < 0 ? { kind: "all" } : { kind: "group", group: target.path.slice(0, slash) }, "replace");
+    }
+    await refresh();
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
 /** 移动到分组（空串 = 未分组；分组路径随文件出现自动登记）。 */
 async function onMoveGroup(file: FileItem, groupPath: string): Promise<void> {
   if (file.group_path === groupPath) return;
@@ -696,6 +811,7 @@ onBeforeUnmount(() => {
             :class="{ active: isGroupActive(group.path) }"
             :aria-current="isGroupActive(group.path) ? 'page' : undefined"
             @click="showGroup(group.path)"
+            @contextmenu="openGroupMenu($event, group)"
           >
             <span class="nav-icon" v-html="ICONS.folder"></span>
             <span class="nav-label">{{ group.name }}</span>
@@ -718,6 +834,7 @@ onBeforeUnmount(() => {
               :class="{ active: isGroupActive(child.path), 'is-drop-target': groupDropTarget === child.path }"
               :aria-current="isGroupActive(child.path) ? 'page' : undefined"
               @click="showGroup(child.path)"
+              @contextmenu="openGroupMenu($event, child)"
               @dragenter.stop="onGroupDragEnter($event, child.path)"
               @dragover.stop="onGroupDragOver($event, child.path)"
               @dragleave.stop="onGroupDragLeave($event, child.path)"
@@ -813,6 +930,20 @@ onBeforeUnmount(() => {
             >
               <span v-html="ICONS.pencil"></span>
             </button>
+            <!-- 分组操作：桌面主要走侧栏右键，这里给窄屏（没有右键）留入口 -->
+            <button
+              v-if="isGroupView"
+              type="button"
+              class="title-action title-action-group"
+              :class="{ on: groupMenu !== null }"
+              :title="t('action.group-menu')"
+              :aria-label="t('action.group-menu')"
+              aria-haspopup="menu"
+              :aria-expanded="groupMenu !== null"
+              @click="openGroupMenuFromButton"
+            >
+              <span v-html="ICONS.more"></span>
+            </button>
           </div>
           <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
         </div>
@@ -905,6 +1036,7 @@ onBeforeUnmount(() => {
               :class="{ active: isGroupActive(group.path) }"
               :aria-selected="isGroupActive(group.path)"
               @click="showGroup(group.path)"
+              @contextmenu="openGroupMenu($event, group)"
             >
               <span class="chip-icon" v-html="ICONS.folder"></span>
               <span class="chip-label">{{ group.name }}</span>
@@ -958,6 +1090,7 @@ onBeforeUnmount(() => {
             :class="{ active: isGroupActive(child.path), 'is-drop-target': groupDropTarget === child.path }"
             :aria-selected="isGroupActive(child.path)"
             @click="showGroup(child.path)"
+            @contextmenu="openGroupMenu($event, child)"
             @dragenter.stop="onGroupDragEnter($event, child.path)"
             @dragover.stop="onGroupDragOver($event, child.path)"
             @dragleave.stop="onGroupDragLeave($event, child.path)"
@@ -1017,6 +1150,42 @@ onBeforeUnmount(() => {
         <p class="drop-overlay-text">{{ t("upload.drop-overlay") }}</p>
       </div>
     </main>
+
+    <!-- 分组右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="groupMenu"
+        class="row-menu group-menu-pop"
+        :style="{ left: `${groupMenu.x}px`, top: `${groupMenu.y}px` }"
+        role="menu"
+        :aria-label="groupMenu.name"
+      >
+        <button type="button" class="row-menu-item" role="menuitem" @click="onCreateSubgroup">
+          <span class="row-menu-icon" v-html="ICONS.folder"></span>
+          <span class="row-menu-label">{{ t("action.create-subgroup") }}</span>
+        </button>
+        <div class="row-menu-sep" role="separator"></div>
+        <button type="button" class="row-menu-item is-danger" role="menuitem" @click="onDeleteGroup">
+          <span class="row-menu-icon" v-html="ICONS.trash"></span>
+          <span class="row-menu-label">{{ t("action.delete-group") }}</span>
+        </button>
+      </div>
+    </Teleport>
+
+    <ConfirmDialog
+      v-if="deleteTarget"
+      :title="t('group.delete-title', { name: deleteTarget.name })"
+      :message="
+        deleteFileCount
+          ? t('group.delete-message', { count: deleteFileCount, target: deleteFallbackName })
+          : t('group.delete-empty')
+      "
+      :checkbox="deleteFileCount ? t('group.delete-files', { count: deleteFileCount }) : undefined"
+      :checkbox-hint="deleteFileCount ? t('group.delete-files-hint') : undefined"
+      :confirm-label="t('action.delete-group')"
+      @confirm="confirmDeleteGroup"
+      @cancel="deleteTarget = null"
+    />
 
     <UploadDock ref="uploadDock" :target-group="currentUploadGroup" @uploaded="refresh" />
   </div>

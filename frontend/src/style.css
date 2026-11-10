@@ -491,7 +491,8 @@ ul {
     background-color 0.15s;
 }
 
-.title-action:hover {
+.title-action:hover,
+.title-action.on {
   background: var(--surface-2);
   color: var(--accent-strong);
 }
@@ -935,14 +936,16 @@ ul {
   color: var(--accent);
 }
 
-.icon-btn.more {
-  margin-left: 2px;
-}
-
-.icon-btn.more:hover,
+.icon-btn.group:hover,
+.icon-btn.group.on,
 .icon-btn.more.on {
   background: var(--surface-2);
   color: var(--ink);
+}
+
+/* 分组条目的右键菜单：和行内菜单同一套外观，靠点击点定位 */
+.group-menu-pop {
+  z-index: 120;
 }
 
 /* 行内「更多操作」菜单：Teleport 到 body，fixed 定位避免被列表卡片裁剪 */
@@ -963,13 +966,8 @@ ul {
   scrollbar-width: thin;
 }
 
-/* 分组列表自己滚动，其它操作固定在菜单两端 */
-.row-menu-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-height: 0;
-  max-height: 200px;
+/* 分组菜单：项数不定，整张菜单滚动 */
+.row-menu.is-scroll {
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -1058,6 +1056,104 @@ ul {
 .row-menu-sep {
   margin: 4px 2px;
   border-top: 1px solid var(--line);
+}
+
+/* ================= 确认对话框 ================= */
+
+/* 磨砂黑色半透明遮罩：把背后的列表压下去，同时保留上下文 */
+.dialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(12 14 24 / 0.45);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+}
+
+.dialog {
+  width: min(420px, 100%);
+  padding: 22px 22px 18px;
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialog-title {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.dialog-message {
+  margin-top: 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.dialog-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.dialog-check input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  accent-color: var(--rose);
+}
+
+.dialog-check-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--rose);
+  font-size: 11.5px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.dialog-btn {
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+
+.dialog-btn:hover {
+  background: var(--surface-2);
+}
+
+.dialog-btn.is-danger {
+  border-color: transparent;
+  background: var(--rose);
+  color: #fff;
+}
+
+.dialog-btn.is-danger:hover {
+  background: #be123c;
 }
 
 /* 内容区很窄（手机 / 小窗口）时，操作按钮换到第二行，文件名拿回整行。 */

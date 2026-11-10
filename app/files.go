@@ -165,6 +165,41 @@ func (a *App) RenameGroup(rawPath, rawNewName string) error {
 	return storeFailure(err, "store.rename")
 }
 
+// DeleteGroup 删除一个分组，子分组一并删除；deleteFiles 决定组内文件是一起删掉还是上移
+// 到被删分组的父路径（顶级分组上移到未分组）。目标分组不存在按 404 返回。
+func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
+	path, ok := core.NormalizeGroupPath(rawPath)
+	if !ok || path == "" {
+		return core.Fail(400, "group.invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	shas, err := a.Store.DeleteGroup(path, deleteFiles)
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		return core.Fail(404, "group.not-found")
+	case err != nil:
+		return storeFailure(err, "store.delete")
+	}
+	// 记录已经删掉：blob 只剩这个分组引用时才清理，删不掉只留孤儿文件、不影响响应。
+	for _, sha := range shas {
+		remaining, err := a.Store.CountBySHA(sha)
+		if err != nil {
+			slog.Error("count blob references after group delete failed",
+				slog.String("sha256", sha), slog.Any("error", err))
+			continue
+		}
+		if remaining > 0 {
+			continue
+		}
+		if err := os.Remove(a.blobPath(sha)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Error("remove blob after group delete failed",
+				slog.String("sha256", sha), slog.Any("error", err))
+		}
+	}
+	return nil
+}
+
 // IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
 // blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
 func (a *App) IssueFileDownloadTicket(id string) (string, error) {

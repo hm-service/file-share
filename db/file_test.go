@@ -677,3 +677,78 @@ func TestNestedGroups(t *testing.T) {
 		t.Fatalf("子分组改名后 Groups() = %v，找不到 工作区/项目X", groupPaths(groups))
 	}
 }
+
+// 删除分组：子分组一并删除；文件要么一起删掉（返回 sha），要么上移到被删分组的父路径。
+func TestDeleteGroup(t *testing.T) {
+	store := testStore(t)
+	for _, item := range []struct {
+		id   string
+		path string
+	}{
+		{"aa", "工作"},
+		{"bb", "工作/项目A"},
+		{"cc", "工作/项目B"},
+		{"dd", "生活"},
+	} {
+		file := sampleFile(item.id, "sha-"+item.id, 100)
+		file.GroupPath = item.path
+		if err := store.InsertFile(file); err != nil {
+			t.Fatalf("InsertFile() 报错: %v", err)
+		}
+	}
+
+	// 删不存在的分组：ErrNotFound。
+	if _, err := store.DeleteGroup("不存在", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("删不存在的分组应当返回 ErrNotFound，得到 %v", err)
+	}
+
+	// 删除子分组且保留文件：文件回到上级分组。
+	if removed, err := store.DeleteGroup("工作/项目A", false); err != nil || len(removed) != 0 {
+		t.Fatalf("DeleteGroup() = (%v, %v)，想要删分组但不删文件", removed, err)
+	}
+	if groups := groupsByParent(mustGroups(t, store)); !samePaths(groups["工作"], "工作/项目B") {
+		t.Fatalf("删除子分组后 工作 下 = %v，想要只剩 工作/项目B", groups["工作"])
+	}
+	if got, err := store.File("bb"); err != nil || got.GroupPath != "工作" {
+		t.Fatalf("bb 的 group_path = %+v, %v，想要上移到 工作", got, err)
+	}
+
+	// 删除顶级分组且保留文件：子分组一并删除，文件回到未分组。
+	if removed, err := store.DeleteGroup("工作", false); err != nil || len(removed) != 0 {
+		t.Fatalf("DeleteGroup() = (%v, %v)", removed, err)
+	}
+	groups := groupsByParent(mustGroups(t, store))
+	if _, ok := groups["工作"]; ok {
+		t.Fatalf("顶级分组删除后 groups = %v，不该再有 工作", groups)
+	}
+	for _, id := range []string{"aa", "bb", "cc"} {
+		if got, err := store.File(id); err != nil || got.GroupPath != "" {
+			t.Errorf("%s 的 group_path = %q, %v，想要空串", id, got.GroupPath, err)
+		}
+	}
+
+	// 删除分组且删除文件：返回被删文件的 sha，记录消失。
+	removed, err := store.DeleteGroup("生活", true)
+	if err != nil {
+		t.Fatalf("DeleteGroup() 报错: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "sha-dd" {
+		t.Fatalf("removed = %v，想要 [sha-dd]", removed)
+	}
+	if _, err := store.File("dd"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("dd 应当已被删除，得到 %v", err)
+	}
+	if groups := mustGroups(t, store); len(groups) != 0 {
+		t.Errorf("分组应当清空，得到 %v", groupPaths(groups))
+	}
+}
+
+// mustGroups 是测试里的取值捷径。
+func mustGroups(t *testing.T, store *Store) []Group {
+	t.Helper()
+	groups, err := store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	return groups
+}

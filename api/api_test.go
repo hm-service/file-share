@@ -1725,3 +1725,72 @@ func TestCreateGroupRoute(t *testing.T) {
 		}
 	})
 }
+
+// POST /api/groups/delete：删分组，子分组级联；delete_files 决定组内文件是否一起删。
+func TestDeleteGroupRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	for _, item := range []struct {
+		id    string
+		group string
+	}{
+		{first.ID, "工作/项目A"},
+		{second.ID, "工作/项目B"},
+	} {
+		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+item.id,
+			map[string]any{"group_path": item.group}, token)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	// 保留文件：子分组级联删除，文件回到未分组。
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/delete",
+		map[string]any{"path": "工作"}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var list struct {
+		Groups []groupRow `json:"groups"`
+		Files  []struct {
+			ID        string `json:"id"`
+			GroupPath string `json:"group_path"`
+		} `json:"files"`
+	}
+	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &list)
+	if len(list.Groups) != 0 {
+		t.Errorf("删除后 groups = %v，想要空", list.Groups)
+	}
+	for _, file := range list.Files {
+		if file.GroupPath != "" {
+			t.Errorf("%s 的 group_path = %q，想要空串", file.ID, file.GroupPath)
+		}
+	}
+
+	// 再删同一个分组：404。
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/delete",
+		map[string]any{"path": "工作"}, token)
+	assertJSONError(t, recorder, http.StatusNotFound, "分组不存在")
+
+	// 删除分组并连带删文件。
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups", map[string]any{"path": "临时"}, token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("建分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"group_path": "临时"}, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("移动文件失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/delete",
+		map[string]any{"path": "临时", "delete_files": true}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &list)
+	if len(list.Files) != 1 || list.Files[0].ID != second.ID {
+		t.Errorf("删除文件后 files = %+v，想要只剩 second", list.Files)
+	}
+}

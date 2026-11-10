@@ -231,6 +231,22 @@ func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleDeleteGroup 删除一个分组（子分组一并删除）；delete_files 决定组内文件是一起删还是上移。
+func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Path        string `json:"path"`
+		DeleteFiles bool   `json:"delete_files"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	if err := s.App.DeleteGroup(payload.Path, payload.DeleteFiles); err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleSetOrder 批量重写列表顺序，成功回 204（无响应体）。
 func (s *Server) handleSetOrder(w http.ResponseWriter, r *http.Request) {
 	var payload struct {

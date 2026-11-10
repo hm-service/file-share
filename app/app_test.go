@@ -742,3 +742,48 @@ func TestCreateGroup(t *testing.T) {
 		})
 	}
 }
+
+// DeleteGroup 删分组：子分组级联；deleteFiles 决定组内文件一起删还是上移到上级。
+func TestDeleteGroup(t *testing.T) {
+	instance := testenv.New(t)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
+	if _, err := instance.UpdateFile(first.ID, nil, stringPtr("工作/项目A")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+	if _, err := instance.UpdateFile(second.ID, nil, stringPtr("工作")); err != nil {
+		t.Fatalf("UpdateFile() 报错: %v", err)
+	}
+
+	// 目录不存在 / 空路径。
+	if err := instance.DeleteGroup("不存在", false); err == nil {
+		t.Fatal("删不存在的分组应当报错")
+	} else {
+		assertBusinessError(t, err, 404, "group.not-found")
+	}
+	if err := instance.DeleteGroup("", false); err == nil {
+		t.Fatal("空路径应当报错")
+	} else {
+		assertBusinessError(t, err, 400, "group.invalid")
+	}
+
+	// 保留文件：子分组级联删除，文件回到未分组，blob 仍可下载。
+	if err := instance.DeleteGroup("工作", false); err != nil {
+		t.Fatalf("DeleteGroup() 报错: %v", err)
+	}
+	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
+		t.Fatalf("ListGroups() = %v, %v，想要空", groupPaths(groups), err)
+	}
+	files, err := instance.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	for _, file := range files {
+		if file.GroupPath != "" {
+			t.Errorf("%s 的 group_path = %q，想要空串", file.ID, file.GroupPath)
+		}
+	}
+	if _, err := instance.OpenDownload(first.ID); err != nil {
+		t.Errorf("保留文件后应当仍能读 blob: %v", err)
+	}
+}

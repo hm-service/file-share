@@ -87,11 +87,21 @@ export type MessageKey =
   | "action.move-group"
   | "action.more"
   | "action.new-group"
+  | "action.group-menu"
+  | "action.create-subgroup"
+  | "action.delete-group"
+  | "action.cancel"
   | "action.logout"
   | "badge.public"
   | "file.sha256"
   | "group.new-prompt"
   | "group.rename-prompt"
+  | "group.new-subgroup-prompt"
+  | "group.delete-title"
+  | "group.delete-message"
+  | "group.delete-empty"
+  | "group.delete-files"
+  | "group.delete-files-hint"
   | "rename.prompt"
   | "confirm.delete"
   | "date.group-heading"
@@ -171,6 +181,10 @@ const messages: Record<MessageKey, Message> = {
   "action.move-group": { zh: "移动到分组", en: "Move to group" },
   "action.more": { zh: "更多操作", en: "More actions" },
   "action.new-group": { zh: "新建分组…", en: "New group…" },
+  "action.group-menu": { zh: "分组操作", en: "Group actions" },
+  "action.create-subgroup": { zh: "创建子分组", en: "New sub-group" },
+  "action.delete-group": { zh: "删除分组", en: "Delete group" },
+  "action.cancel": { zh: "取消", en: "Cancel" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
@@ -179,6 +193,18 @@ const messages: Record<MessageKey, Message> = {
     en: "Group name; use parent/child for a sub-group",
   },
   "group.rename-prompt": { zh: "输入新的分组名", en: "Enter a new group name" },
+  "group.new-subgroup-prompt": { zh: "输入子分组名", en: "Enter a sub-group name" },
+  "group.delete-title": { zh: "删除分组「{name}」？", en: 'Delete group "{name}"?' },
+  "group.delete-empty": { zh: "这个分组里没有文件。", en: "This group has no files." },
+  "group.delete-message": {
+    zh: "该分组及子分组共 {count} 个文件；不勾选时，文件会移到「{target}」。",
+    en: '{count} files in this group and its sub-groups. Leave unchecked to move them to "{target}".',
+  },
+  "group.delete-files": { zh: "同时删除这 {count} 个文件", en: "Also delete these {count} files" },
+  "group.delete-files-hint": {
+    zh: "这些文件会被永久删除，无法恢复。",
+    en: "These files will be permanently deleted.",
+  },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },
