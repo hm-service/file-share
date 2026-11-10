@@ -14,6 +14,27 @@ import (
 	"file-share/internal/testenv"
 )
 
+// groupPaths 把分组行拆成路径列表：断言只关心路径与顺序。
+func groupPaths(groups []db.Group) []string {
+	paths := make([]string, 0, len(groups))
+	for _, group := range groups {
+		paths = append(paths, group.Path)
+	}
+	return paths
+}
+
+func samePaths(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func assertBusinessError(t *testing.T, err error, status int, key string) {
 	t.Helper()
 	var business *core.Error
@@ -455,7 +476,7 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.ID != first.ID || updated.GroupName != "工作" || updated.SortOrder != maxSort+1 {
+	if updated.ID != first.ID || updated.GroupPath != "工作" || updated.SortOrder != maxSort+1 {
 		t.Fatalf("UpdateFile() = %+v，想要分组「工作」且 sort_order %d", updated, maxSort+1)
 	}
 	files, err := instance.ListFiles()
@@ -471,8 +492,8 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.GroupName != "" {
-		t.Errorf("清空分组后 GroupName = %q，想要空串", updated.GroupName)
+	if updated.GroupPath != "" {
+		t.Errorf("清空分组后 GroupPath = %q，想要空串", updated.GroupPath)
 	}
 
 	// 非法分组名：超长 / 控制字符。
@@ -595,7 +616,7 @@ func TestRenameGroup(t *testing.T) {
 	}
 	byID := make(map[string]string, len(files))
 	for _, file := range files {
-		byID[file.ID] = file.GroupName
+		byID[file.ID] = file.GroupPath
 	}
 	if byID[first.ID] != "新组" || byID[second.ID] != "新组" || byID[kept.ID] != "保留组" {
 		t.Fatalf("重命名后分组 = %+v，想要 first/second 在新组", byID)
@@ -631,7 +652,7 @@ func TestGroupOrder(t *testing.T) {
 	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
 	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
 	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
-		t.Fatalf("初始分组 = %v, %v，想要空", groups, err)
+		t.Fatalf("初始分组 = %v, %v，想要空", groupPaths(groups), err)
 	}
 	for _, item := range []struct {
 		id    string
@@ -644,15 +665,15 @@ func TestGroupOrder(t *testing.T) {
 			t.Fatalf("UpdateFile() 报错: %v", err)
 		}
 	}
-	if groups, err := instance.ListGroups(); err != nil || len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
-		t.Fatalf("ListGroups() = %v, %v，想要 [一组 二组]", groups, err)
+	if groups, err := instance.ListGroups(); err != nil || !samePaths(groupPaths(groups), "一组", "二组") {
+		t.Fatalf("ListGroups() = %v, %v，想要 [一组 二组]", groupPaths(groups), err)
 	}
 
-	if err := instance.SetGroupOrder([]string{"二组", "一组"}); err != nil {
+	if err := instance.SetGroupOrder("", []string{"二组", "一组"}); err != nil {
 		t.Fatalf("SetGroupOrder() 报错: %v", err)
 	}
-	if groups, err := instance.ListGroups(); err != nil || groups[0] != "二组" || groups[1] != "一组" {
-		t.Fatalf("重排后 ListGroups() = %v, %v，想要 [二组 一组]", groups, err)
+	if groups, err := instance.ListGroups(); err != nil || !samePaths(groupPaths(groups), "二组", "一组") {
+		t.Fatalf("重排后 ListGroups() = %v, %v，想要 [二组 一组]", groupPaths(groups), err)
 	}
 
 	// 名字不合法 / 重复：400。
@@ -662,7 +683,7 @@ func TestGroupOrder(t *testing.T) {
 		"带空白":     {" 二组"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assertBusinessError(t, instance.SetGroupOrder(names), 400, "order.invalid")
+			assertBusinessError(t, instance.SetGroupOrder("", names), 400, "order.invalid")
 		})
 	}
 	// 与当前分组集合对不上（少 / 多）：409，提示刷新后重试。
@@ -671,7 +692,7 @@ func TestGroupOrder(t *testing.T) {
 		"多一个": {"二组", "一组", "三组"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assertBusinessError(t, instance.SetGroupOrder(names), 409, "group.changed")
+			assertBusinessError(t, instance.SetGroupOrder("", names), 409, "group.changed")
 		})
 	}
 }
@@ -679,7 +700,7 @@ func TestGroupOrder(t *testing.T) {
 func TestCreateGroup(t *testing.T) {
 	instance := testenv.New(t)
 	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
-		t.Fatalf("初始分组 = %v, %v，想要空", groups, err)
+		t.Fatalf("初始分组 = %v, %v，想要空", groupPaths(groups), err)
 	}
 	name, err := instance.CreateGroup("  空组  ")
 	if err != nil {
@@ -688,18 +709,18 @@ func TestCreateGroup(t *testing.T) {
 	if name != "空组" {
 		t.Errorf("CreateGroup() = %q，想要 trim 后的「空组」", name)
 	}
-	if groups, err := instance.ListGroups(); err != nil || len(groups) != 1 || groups[0] != "空组" {
-		t.Fatalf("ListGroups() = %v, %v，想要 [空组]", groups, err)
+	if groups, err := instance.ListGroups(); err != nil || !samePaths(groupPaths(groups), "空组") {
+		t.Fatalf("ListGroups() = %v, %v，想要 [空组]", groupPaths(groups), err)
 	}
 
 	// 空分组也能改名、参与排序。
 	if err := instance.RenameGroup("空组", "改名空组"); err != nil {
 		t.Fatalf("RenameGroup() 报错: %v", err)
 	}
-	if groups, err := instance.ListGroups(); err != nil || groups[0] != "改名空组" {
-		t.Fatalf("改名后 ListGroups() = %v, %v", groups, err)
+	if groups, err := instance.ListGroups(); err != nil || !samePaths(groupPaths(groups), "改名空组") {
+		t.Fatalf("改名后 ListGroups() = %v, %v", groupPaths(groups), err)
 	}
-	if err := instance.SetGroupOrder([]string{"改名空组"}); err != nil {
+	if err := instance.SetGroupOrder("", []string{"改名空组"}); err != nil {
 		t.Fatalf("SetGroupOrder() 报错: %v", err)
 	}
 

@@ -22,8 +22,8 @@
 
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
 - **上传与拖放**：点击上传或把文件拖到内容区任意位置；右下角滑出上传坞显示指纹计算 / 预检 / 上传进度与实时速度，支持取消与重试，完成后自动消失；每完成一个文件就增量刷新列表。单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
-- **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻收藏、下载、重命名、复制直链、公开/私有、移动到分组、删除，并显示文件的 SHA-256。视图与地址栏一一对应：`/`、`/favorites`、`/ungrouped`、`/<分组名>`，可刷新、可前进后退、可直接打开链接。
-- **分组与排序**：给文件设置一级分组（侧栏 / 移动端 chips 切换，分组本身可直接拖拽排序，也可手动新建空分组），在分组视图里上传的文件会直接归入该分组；分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件），单分组视图标题旁可重命名分组（批量改组名，目标分组已存在时拒绝，不做隐式合并）；行内菜单可移动到分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图按上传时间倒序、按本地日期分段（标题形如 `2026年11月7号`），不参与拖拽。
+- **文件浏览**：侧栏（窄屏是标签页）切换全部 / 收藏，顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻收藏、下载与右对齐的「更多」菜单（重命名、复制直链、公开/私有、移动到分组、删除），并显示文件的 SHA-256。视图与地址栏一一对应：`/`、`/favorites`、`/ungrouped`、`/<顶级分组>`、`/<顶级>/<二级分组>`，可刷新、可前进后退、可直接打开链接。
+- **两级分组与排序**：分组最多两级（顶级 + 二级），侧栏缩进展示、移动端 chips 第二行展示当前顶级分组的子分组；每层各自独立拖拽排序，父分组带子分组整体移动；空分组保留，新建时输入 `父/子` 即建二级分组（父级不存在会一并创建）。在分组视图里上传的文件会直接归入该分组；分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件），单分组视图标题旁可重命名分组（只改最后一段，顶级分组改名时子分组与组内路径一起改，目标已存在则拒绝）；「更多」菜单可移动到任意分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「全部」视图按上传时间倒序、按本地日期分段（标题形如 `2026年11月7号`），不参与拖拽。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为侧栏 + 内容区 + 右下角浮动上传坞；≤900px 收成顶栏 + 标签页 + 贴底上传面板，文件操作按钮常显并适配安全区。
@@ -95,15 +95,15 @@ podman kube play k8s.file-share.yaml
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/auth` | 用 `AUTH_TOKEN` 换会话 |
-| `GET` | `/api/files` | 文件列表与分组顺序 |
+| `GET` | `/api/files` | 文件列表与全部分组（含空分组） |
 | `POST` | `/api/check_file` | 秒传预检 |
 | `POST` | `/api/upload` | 上传（流式校验 SHA-256） |
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |
 | `POST` | `/api/files/{id}/public` | 切换公开 |
-| `PATCH` | `/api/files/{id}` | 重命名 / 设置分组（`filename`、`group_name`，至少给一个） |
-| `POST` | `/api/groups` | 手动新建空分组（`name`） |
-| `POST` | `/api/groups/rename` | 批量重命名分组（`name`、`new_name`） |
-| `PUT` | `/api/groups/order` | 保存拖拽后的分组顺序（`names`） |
+| `PATCH` | `/api/files/{id}` | 重命名 / 设置分组路径（`filename`、`group_path`，至少给一个） |
+| `POST` | `/api/groups` | 手动新建空分组（`path`，`父/子` 表示二级） |
+| `POST` | `/api/groups/rename` | 重命名分组最后一段（`path`、`new_name`） |
+| `PUT` | `/api/groups/order` | 保存某一层分组的顺序（`parent`、`names`） |
 | `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载（curl / 程序用） |
 | `GET` | `/api/files/{id}/download-ticket` | 换 60 秒有效的浏览器下载地址 |
@@ -154,49 +154,52 @@ curl -s -H "Authorization: Bearer $SESSION" \
 
 ### 分组与排序接口
 
-一级分组是独立记录：分组名与展示顺序存在 `groups` 表，空分组也保留；文件上的 `group_name` 指向分组，空串表示未分组。
-文件内排序使用 `sort_order`（升序，越小越靠前）。
+分组是独立记录：完整路径、父路径与同一层内的顺序存在 `groups` 表，空分组也保留；文件上的
+`group_path` 指向分组（`"工作"` 或 `"工作/项目A"`），空串表示未分组。最多两级，同级排序用 `sort_order`。
 
-分组名同时是页面路径的一段（`/<分组名>`），因此不能与站点已有路径重名（`api`、`s`、`d`、`auth`、`assets`、`readyz`、`livez`、`favorites`、`ungrouped`、`favicon.svg`），也不能含 `/`、不能以 `.html` 结尾。
+分组路径的每一段同时是页面路径的一段（`/<父>/<子>`），因此每段都不能含 `/`、不能是 `.` / `..`、
+不能以 `.html` 结尾；顶级段还不能与站点已有路径重名（`api`、`s`、`d`、`auth`、`assets`、`readyz`、
+`livez`、`favorites`、`ungrouped`、`favicon.svg`）。
 
-**设置分组**：`PATCH /api/files/{id}`，JSON `{"group_name":"工作"}`（trim 后 ≤64 字节，空串=移出分组）。
-成功返回完整文件对象，并自动移到列表末尾；非法分组名 400，文件不存在 404。
+**设置分组**：`PATCH /api/files/{id}`，JSON `{"group_path":"工作/项目A"}`（每段 trim 后 ≤64 字节，空串=移出分组）。
+成功返回完整文件对象，并自动移到列表末尾；非法路径 400，文件不存在 404。
 
 ```bash
 curl -s -X PATCH -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
-  -d '{"group_name":"工作"}' http://127.0.0.1:8080/api/files/3f2c…
+  -d '{"group_path":"工作/项目A"}' http://127.0.0.1:8080/api/files/3f2c…
 ```
 
 **重命名**：同一个 `PATCH /api/files/{id}`，JSON `{"filename":"新名字.pdf"}`（仅 basename，≤255 字节）。
 成功返回完整文件对象，顺序不变；文件名为空 / 含路径分隔符或控制字符 400，文件不存在 404。
-`filename` 与 `group_name` 可以一起给；一个字段都不给是 400（没有要改的东西就别发请求）。
+`filename` 与 `group_path` 可以一起给；一个字段都不给是 400（没有要改的东西就别发请求）。
 
 ```bash
 curl -s -X PATCH -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
   -d '{"filename":"新名字.pdf"}' http://127.0.0.1:8080/api/files/3f2c…
 ```
 
-**重命名分组**：`POST /api/groups/rename`，JSON `{"name":"旧组","new_name":"新组"}`。
+**重命名分组**：`POST /api/groups/rename`，JSON `{"path":"工作/项目A","new_name":"项目B"}`。
+只改路径最后一段，父路径与同级位置不变；顶级分组改名时子分组与组内文件路径一起跟着改。
 组内记录的 `sort_order` 不变；目标分组已存在时返回 409（不做隐式合并），源分组不存在返回 404，
-空名 / 超长 / 控制字符返回 400。成功返回 `204`。
+非法段名返回 400。成功返回 `204`。
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
-  -d '{"name":"旧组","new_name":"新组"}' http://127.0.0.1:8080/api/groups/rename
+  -d '{"path":"工作","new_name":"工作区"}' http://127.0.0.1:8080/api/groups/rename
 ```
 
-**新建分组**：`POST /api/groups`，JSON `{"name":"新组"}`；成功 `201 {"name":"新组"}`，
-同名返回 409、空名 / 超长 / 控制字符 / 含 `/` / 与站点路径重名返回 400。新分组追加到末尾，可以没有文件；
-在分组视图里上传的文件会自动归入该分组。
+**新建分组**：`POST /api/groups`，JSON `{"path":"工作/项目A"}`；成功 `201 {"path":"工作/项目A"}`，
+同名返回 409、非法段名 / 超过两级返回 400。新分组追加到同一父级的末尾，可以没有文件；
+父级不存在时一并创建。在分组视图里上传的文件会自动归入该分组。
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
-  -d '{"name":"新组"}' http://127.0.0.1:8080/api/groups
+  -d '{"path":"工作/项目A"}' http://127.0.0.1:8080/api/groups
 ```
 
-**分组排序**：`PUT /api/groups/order`，JSON `{"names":["二组","一组"]}`。
-`names` 必须与当前实际分组集合完全一致（含空分组）；成功返回 `204`，
-集合对不上返回 409（提示刷新后重试），重复 / 空名 / 空白名返回 400。
+**分组排序**：`PUT /api/groups/order`，JSON `{"parent":"","names":["二组","一组"]}`。
+`parent` 是父分组路径（顶级用空串），`names` 必须是该层全部分组的名字（含空分组）；
+成功返回 `204`，集合对不上返回 409（提示刷新后重试），重复 / 空名 / 空白名返回 400。
 
 ```bash
 curl -s -X PUT -H "Authorization: Bearer $SESSION" -H 'Content-Type: application/json' \
@@ -230,10 +233,10 @@ DATA_DIR/
   files/<sha256>         内容寻址的物理文件
 ```
 
-当前 schema 为 `user_version = 4`（v2 新增 `group_name` / `sort_order`，v3 引入分组顺序，
-v4 把 `group_order` 升级为分组注册表 `groups`，允许空分组与手动新建）。
-启动时旧库在事务内逐级迁移（v1 → v2 → v3 → v4）：v2 的旧文件默认未分组、顺序不变；
-v3 给已有分组按名称补一份初始顺序；v4 原样保留分组与顺序。更高版本会拒绝启动。检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。
+当前 schema 为 `user_version = 5`（v2 新增 `group_name` / `sort_order`，v3 引入分组顺序，
+v4 把 `group_order` 升级为分组注册表 `groups`，v5 让分组支持两级并把 `group_name` 改名
+`group_path`）。启动时旧库在事务内逐级迁移（v1 → v2 → v3 → v4 → v5）：v4 的分组名不含 `/`，
+迁移后都成为顶级分组，路径保持不变。更高版本会拒绝启动。检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。
 升级前先备份 `DATA_DIR`。
 
 ## 目录结构

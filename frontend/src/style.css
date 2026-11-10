@@ -21,7 +21,6 @@
   --rose: #e11d48;
   --rose-soft: #ffeef2;
   --green: #0e9f6e;
-  --green-soft: #e7f8f1;
   --radius: 14px;
   --shadow-sm: 0 1px 2px rgb(20 23 44 / 0.05);
   --shadow-md: 0 12px 32px -16px rgb(20 23 44 / 0.22);
@@ -290,6 +289,14 @@ ul {
   color: var(--accent-strong);
 }
 
+/* 顶级分组把落点高亮画在它自己的按钮上（wrapper 还包着子分组列表） */
+.nav-group-block.is-drop-target > .nav-item-group {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 /* 分组导航：全部/收藏之下，分组多时自己滚动 */
 .nav-sep {
   margin: 10px 4px 8px;
@@ -316,6 +323,34 @@ ul {
 .nav-item-group .nav-icon {
   opacity: 0.7;
 }
+
+/* 顶级分组的一项：自己的按钮 + 它的子分组列表，整体参与顶层拖拽 */
+.nav-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 二级分组缩进一层，只在本层内拖拽排序 */
+.nav-subgroups {
+  margin-top: 0;
+  padding-left: 14px;
+}
+
+.nav-item-subgroup {
+  padding: 7px 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.nav-item-subgroup .nav-icon {
+  opacity: 0.55;
+}
+
+.nav-item-subgroup .nav-icon svg {
+  width: 14px;
+  height: 14px;
+}
 .nav-ungrouped {
   flex: 0 0 auto;
 }
@@ -334,13 +369,13 @@ ul {
 }
 
 /* 分组拖拽：整项可拖；ghost 半透明，chosen 高亮 */
-.nav-item-group[data-group],
-.chip[data-group] {
+[data-group-block],
+[data-subgroup] {
   cursor: grab;
 }
 
-.nav-item-group[data-group]:active,
-.chip[data-group]:active {
+[data-group-block]:active,
+[data-subgroup]:active {
   cursor: grabbing;
 }
 
@@ -900,52 +935,27 @@ ul {
   color: var(--accent);
 }
 
-.icon-btn.link {
-  color: var(--green);
+.icon-btn.more {
+  margin-left: 2px;
 }
 
-.icon-btn.link:hover {
-  color: var(--green);
+.icon-btn.more:hover,
+.icon-btn.more.on {
+  background: var(--surface-2);
+  color: var(--ink);
 }
 
-.icon-btn.link.is-disabled {
-  color: var(--ink-3);
-  opacity: 0.35;
-}
-
-.icon-btn.link.is-disabled:hover {
-  background: none;
-}
-
-.icon-btn.link.is-copied {
-  color: var(--green);
-  background: var(--green-soft);
-}
-
-.icon-btn.visibility.on {
-  color: var(--accent);
-}
-
-.icon-btn.delete:hover {
-  background: var(--rose-soft);
-  color: var(--rose);
-}
-
-.icon-btn.group:hover {
-  color: var(--accent);
-}
-
-/* 「移动到分组」菜单：Teleport 到 body，fixed 定位避免被列表卡片裁剪 */
-.group-menu {
+/* 行内「更多操作」菜单：Teleport 到 body，fixed 定位避免被列表卡片裁剪 */
+.row-menu {
   position: fixed;
   z-index: 80;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  width: 216px;
-  max-height: 328px;
+  width: 240px;
+  max-height: 440px;
   padding: 6px;
-  overflow-y: auto;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--surface);
@@ -953,7 +963,18 @@ ul {
   scrollbar-width: thin;
 }
 
-.group-menu-item {
+/* 分组列表自己滚动，其它操作固定在菜单两端 */
+.row-menu-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.row-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -965,46 +986,76 @@ ul {
   text-align: left;
 }
 
-.group-menu-item:hover {
+.row-menu-item:hover {
   background: var(--surface-2);
 }
 
-.group-menu-item.is-new {
+.row-menu-item:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.row-menu-item:disabled:hover {
+  background: none;
+}
+
+.row-menu-item.is-new {
   color: var(--accent-strong);
 }
 
-.group-menu-check {
+.row-menu-item.is-danger {
+  color: var(--rose);
+}
+
+.row-menu-item.is-danger:hover {
+  background: var(--rose-soft);
+}
+
+/* 二级分组在菜单里缩进一层，和侧栏的层级感一致 */
+.row-menu-item.is-child {
+  padding-left: 26px;
+}
+
+.row-menu-title {
+  padding: 4px 8px 2px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.row-menu-check {
   display: inline-flex;
   flex: 0 0 auto;
   width: 15px;
   color: var(--accent);
 }
 
-.group-menu-check svg {
+.row-menu-check svg {
   display: block;
   width: 14px;
   height: 14px;
 }
 
-.group-menu-icon {
+.row-menu-icon {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--ink-3);
 }
 
-.group-menu-icon svg {
+.row-menu-icon svg {
   display: block;
   width: 15px;
   height: 15px;
 }
 
-.group-menu-label {
+.row-menu-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.group-menu-sep {
+.row-menu-sep {
   margin: 4px 2px;
   border-top: 1px solid var(--line);
 }
@@ -1784,6 +1835,28 @@ ul {
     flex: 0 0 auto;
   }
 
+  /* chips 也按层级分块：顶级 chip 单独一层，第二行只放当前顶级分组的子分组 */
+  .chip-block {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+  }
+
+  .chips-subgroups {
+    padding-top: 6px;
+  }
+
+  .chip-subgroup {
+    border-style: dashed;
+    color: var(--ink-3);
+    font-weight: 550;
+  }
+
+  .chip-subgroup.active {
+    border-style: solid;
+    color: var(--accent-strong);
+  }
+
   /* 新建分组：虚线边框的窄按钮，排在分组 chips 之后 */
   .chip-new {
     flex: 0 0 auto;
@@ -1834,6 +1907,13 @@ ul {
   }
 
   .chip.is-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .chip-block.is-drop-target .chip {
     outline: 2px dashed var(--accent);
     outline-offset: -3px;
     background: var(--accent-soft);

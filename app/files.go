@@ -21,8 +21,8 @@ func (a *App) ListFiles() ([]db.File, error) {
 	return files, nil
 }
 
-// ListGroups 返回当前分组的展示顺序；只有真正有文件的分组才会出现。
-func (a *App) ListGroups() ([]string, error) {
+// ListGroups 返回全部分组（含空分组）；顺序先按父路径、再按同级 sort_order。
+func (a *App) ListGroups() ([]db.Group, error) {
 	groups, err := a.Store.Groups()
 	if err != nil {
 		slog.Error("list groups failed", slog.Any("error", err))
@@ -31,33 +31,39 @@ func (a *App) ListGroups() ([]string, error) {
 	return groups, nil
 }
 
-// CreateGroup 手动新建一个空分组，返回规范化后的分组名；同名分组已存在返回 409。
-func (a *App) CreateGroup(rawName string) (string, error) {
-	name, ok := core.NormalizeGroupName(rawName)
-	if !ok || name == "" {
+// CreateGroup 手动新建一个空分组，返回规范化后的路径；父级不存在时一并创建。
+// 路径已存在返回 409。未分组不是一个分组，空路径一律拒绝。
+func (a *App) CreateGroup(rawPath string) (string, error) {
+	path, ok := core.NormalizeGroupPath(rawPath)
+	if !ok || path == "" {
 		return "", core.Fail(400, "group.invalid")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, err := a.Store.CreateGroup(name)
+	_, err := a.Store.CreateGroup(path)
 	switch {
 	case errors.Is(err, db.ErrGroupExists):
 		return "", core.Fail(409, "group.exists")
 	case err != nil:
 		return "", storeFailure(err, "store.create")
 	}
-	return name, nil
+	return path, nil
 }
 
-// SetGroupOrder 按拖拽后的顺序重写分组顺序；提交的名字必须与当前分组集合完全一致。
-func (a *App) SetGroupOrder(names []string) error {
+// SetGroupOrder 按拖拽后的顺序重写某个父级下子分组的顺序；
+// 提交的分组名必须与当前该父级下的集合完全一致，父级用空串表示顶级。
+func (a *App) SetGroupOrder(rawParent string, names []string) error {
+	parent, ok := core.NormalizeGroupPath(rawParent)
+	if !ok {
+		return core.Fail(400, "order.invalid")
+	}
 	if len(names) > core.MaxOrderItems {
 		return core.Fail(400, "order.invalid")
 	}
 	seen := make(map[string]struct{}, len(names))
 	for _, raw := range names {
-		name, ok := core.NormalizeGroupName(raw)
-		if !ok || name == "" || name != raw {
+		name, ok := core.NormalizeGroupSegment(raw)
+		if !ok || name != raw {
 			return core.Fail(400, "order.invalid")
 		}
 		if _, dup := seen[name]; dup {
@@ -67,7 +73,7 @@ func (a *App) SetGroupOrder(names []string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	err := a.Store.SetGroupOrder(names)
+	err := a.Store.SetGroupOrder(parent, names)
 	if errors.Is(err, db.ErrGroupOrderMismatch) {
 		return core.Fail(409, "group.changed")
 	}
@@ -110,46 +116,46 @@ func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool,
 	return record, true, nil
 }
 
-// UpdateFile 按需改写文件名（filename）与分组名（groupName），指针为 nil 表示不动这个字段。
+// UpdateFile 按需改写文件名（filename）与分组路径（groupPath），指针为 nil 表示不动这个字段。
 // 改分组会把记录移到列表末尾；只改名保持原顺序。
-func (a *App) UpdateFile(id string, filename, rawGroupName *string) (*db.File, error) {
-	if filename == nil && rawGroupName == nil {
+func (a *App) UpdateFile(id string, filename, rawGroupPath *string) (*db.File, error) {
+	if filename == nil && rawGroupPath == nil {
 		return nil, core.Fail(400, "request.empty")
 	}
 	if filename != nil && !core.ValidFilename(*filename) {
 		return nil, core.Fail(400, "upload.invalid-filename")
 	}
-	var groupName *string
-	if rawGroupName != nil {
-		normalized, ok := core.NormalizeGroupName(*rawGroupName)
+	var groupPath *string
+	if rawGroupPath != nil {
+		normalized, ok := core.NormalizeGroupPath(*rawGroupPath)
 		if !ok {
 			return nil, core.Fail(400, "group.invalid")
 		}
-		groupName = &normalized
+		groupPath = &normalized
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	record, err := a.Store.UpdateFile(id, filename, groupName)
+	record, err := a.Store.UpdateFile(id, filename, groupPath)
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}
 	return record, nil
 }
 
-// RenameGroup 批量改写一个分组的名字，组内顺序不变。
+// RenameGroup 改写一个分组路径的最后一段，同级位置不变；顶级分组的子分组与组内文件一起改名。
 // 目标分组已存在时拒绝（不做隐式合并）；源分组不存在按 404 返回。
-func (a *App) RenameGroup(rawName, rawNewName string) error {
-	name, ok := core.NormalizeGroupName(rawName)
-	if !ok || name == "" {
+func (a *App) RenameGroup(rawPath, rawNewName string) error {
+	path, ok := core.NormalizeGroupPath(rawPath)
+	if !ok || path == "" {
 		return core.Fail(400, "group.invalid")
 	}
-	newName, ok := core.NormalizeGroupName(rawNewName)
-	if !ok || newName == "" {
+	newName, ok := core.NormalizeGroupSegment(rawNewName)
+	if !ok {
 		return core.Fail(400, "group.invalid")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, err := a.Store.RenameGroup(name, newName)
+	_, err := a.Store.RenameGroup(path, newName)
 	switch {
 	case errors.Is(err, db.ErrGroupExists):
 		return core.Fail(409, "group.exists")

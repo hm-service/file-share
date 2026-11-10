@@ -85,6 +85,7 @@ export type MessageKey =
   | "action.make-public"
   | "action.make-private"
   | "action.move-group"
+  | "action.more"
   | "action.new-group"
   | "action.logout"
   | "badge.public"
@@ -168,11 +169,15 @@ const messages: Record<MessageKey, Message> = {
   "action.make-public": { zh: "设为公开", en: "Make public" },
   "action.make-private": { zh: "设为私有", en: "Make private" },
   "action.move-group": { zh: "移动到分组", en: "Move to group" },
+  "action.more": { zh: "更多操作", en: "More actions" },
   "action.new-group": { zh: "新建分组…", en: "New group…" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
-  "group.new-prompt": { zh: "输入分组名", en: "Enter a group name" },
+  "group.new-prompt": {
+    zh: "输入分组名；用 父/子 新建二级分组",
+    en: "Group name; use parent/child for a sub-group",
+  },
   "group.rename-prompt": { zh: "输入新的分组名", en: "Enter a new group name" },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },

@@ -25,11 +25,20 @@ type File struct {
 	IsFavorite bool   `json:"is_favorite"`
 	IsPublic   bool   `json:"is_public"`
 	CreatedAt  int64  `json:"created_at"`
-	GroupName  string `json:"group_name"`
+	GroupPath  string `json:"group_path"`
 	SortOrder  int64  `json:"sort_order"`
 }
 
-const fileColumns = "id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order"
+// Group 是 groups 表的一行：完整路径、父路径与最后一段名字。
+// 展示顺序不放进 JSON —— 数组本身已经按父级分组、同级 sort_order 排好。
+type Group struct {
+	Path      string `json:"path"`
+	Parent    string `json:"parent"`
+	Name      string `json:"name"`
+	SortOrder int64  `json:"-"`
+}
+
+const fileColumns = "id, filename, sha256, size, is_favorite, is_public, created_at, group_path, sort_order"
 
 // rowScanner 让单行查询与多行查询共用一套扫描代码。
 type rowScanner interface {
@@ -39,7 +48,7 @@ type rowScanner interface {
 func scanFile(row rowScanner) (*File, error) {
 	var file File
 	if err := row.Scan(&file.ID, &file.Filename, &file.SHA256, &file.Size,
-		&file.IsFavorite, &file.IsPublic, &file.CreatedAt, &file.GroupName, &file.SortOrder); err != nil {
+		&file.IsFavorite, &file.IsPublic, &file.CreatedAt, &file.GroupPath, &file.SortOrder); err != nil {
 		return nil, err
 	}
 	return &file, nil
@@ -110,24 +119,24 @@ func (s *Store) InsertFile(file File) error {
 	if _, err := tx.Exec(
 		"INSERT INTO file ("+fileColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		file.ID, file.Filename, file.SHA256, file.Size, file.IsFavorite, file.IsPublic,
-		file.CreatedAt, file.GroupName, file.SortOrder); err != nil {
+		file.CreatedAt, file.GroupPath, file.SortOrder); err != nil {
 		return err
 	}
 	// 直接写入带分组的记录（迁移 / 测试）时也保证分组在 groups 表里有登记。
-	if err := ensureGroup(tx, file.GroupName); err != nil {
+	if err := ensureGroup(tx, file.GroupPath); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// UpdateFile 按需改写一条记录的文件名与分组名：指针为 nil 表示不动这个字段。
+// UpdateFile 按需改写一条记录的文件名与分组路径：指针为 nil 表示不动这个字段。
 //
 // 改分组时把记录移到列表末尾（sort_order 取最大值 +1）；只改名时顺序不变。
 // 改名与移动分组要么一起生效、要么一起回滚，所以放在一个事务里。
-func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error) {
+func (s *Store) UpdateFile(id string, filename, groupPath *string) (*File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if filename == nil && groupName == nil {
+	if filename == nil && groupPath == nil {
 		return nil, errors.New("UpdateFile requires at least one field")
 	}
 
@@ -138,9 +147,10 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 	defer tx.Rollback()
 
 	changed := int64(0)
-	oldGroup := ""
-	if groupName != nil {
-		if err := tx.QueryRow("SELECT group_name FROM file WHERE id = ?", id).Scan(&oldGroup); err != nil {
+	if groupPath != nil {
+		// 先确认记录存在：UPDATE 影响 0 行分不清「不存在」与「值没变」。
+		var exists int
+		if err := tx.QueryRow("SELECT 1 FROM file WHERE id = ?", id).Scan(&exists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, ErrNotFound
 			}
@@ -150,7 +160,7 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 		if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM file").Scan(&next); err != nil {
 			return nil, err
 		}
-		result, err := tx.Exec("UPDATE file SET group_name = ?, sort_order = ? WHERE id = ?", *groupName, next, id)
+		result, err := tx.Exec("UPDATE file SET group_path = ?, sort_order = ? WHERE id = ?", *groupPath, next, id)
 		if err != nil {
 			return nil, err
 		}
@@ -176,8 +186,8 @@ func (s *Store) UpdateFile(id string, filename, groupName *string) (*File, error
 	if changed == 0 {
 		return nil, ErrNotFound
 	}
-	if groupName != nil {
-		if err := ensureGroup(tx, *groupName); err != nil {
+	if groupPath != nil {
+		if err := ensureGroup(tx, *groupPath); err != nil {
 			return nil, err
 		}
 	}
@@ -277,9 +287,64 @@ func (s *Store) DeleteFile(id string) error {
 	return nil
 }
 
-// RenameGroup 把分组与组内记录一起改名，组内 sort_order 不变；空分组也能改。
-// 源分组不存在返回 ErrNotFound，目标分组已存在返回 ErrGroupExists（不做隐式合并）。
-func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
+// Groups 返回全部分组（含空分组）。顺序先按父路径、再按同级 sort_order：
+// 调用方据此把同一父级的分组聚在一起，不用自己排序。
+func (s *Store) Groups() ([]Group, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query("SELECT path, parent, name, sort_order FROM groups ORDER BY parent ASC, sort_order ASC, name ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := []Group{}
+	for rows.Next() {
+		var group Group
+		if err := rows.Scan(&group.Path, &group.Parent, &group.Name, &group.SortOrder); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+// CreateGroup 新建一个空分组，父级不存在时一并创建；路径已存在返回 ErrGroupExists。
+// 新分组追加到同一父级的末尾。
+func (s *Store) CreateGroup(path string) (*Group, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", path).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists > 0 {
+		return nil, ErrGroupExists
+	}
+	if err := ensureGroup(tx, path); err != nil {
+		return nil, err
+	}
+	group, err := scanGroup(tx.QueryRow(
+		"SELECT path, parent, name, sort_order FROM groups WHERE path = ?", path))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return group, nil
+}
+
+// RenameGroup 只改写分组的最后一段名字，父路径与同级 sort_order 不变；
+// 顶级分组的子分组与组内文件的路径一起跟着改。返回受影响的文件条数。
+//
+// 源分组不存在返回 ErrNotFound；目标路径已存在返回 ErrGroupExists（不做隐式合并）。
+func (s *Store) RenameGroup(path, newName string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -288,33 +353,79 @@ func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	}
 	defer tx.Rollback()
 
+	parent, _ := core.SplitGroupPath(path)
 	var exists int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", oldName).Scan(&exists); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", path).Scan(&exists); err != nil {
 		return 0, err
 	}
 	if exists == 0 {
 		return 0, ErrNotFound
 	}
-	if oldName != newName {
+	newPath := newName
+	if parent != "" {
+		newPath = parent + "/" + newName
+	}
+	if newPath != path {
 		var conflicts int
-		if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", newName).Scan(&conflicts); err != nil {
+		if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", newPath).Scan(&conflicts); err != nil {
 			return 0, err
 		}
 		if conflicts > 0 {
 			return 0, ErrGroupExists
 		}
-		if _, err := tx.Exec("UPDATE groups SET name = ? WHERE name = ?", newName, oldName); err != nil {
+	}
+
+	changed := int64(0)
+	// 先改自身，再改子分组：子分组的上限是一层，逐个改路径与父路径。
+	if _, err := tx.Exec("UPDATE groups SET path = ?, name = ? WHERE path = ?", newPath, newName, path); err != nil {
+		return 0, err
+	}
+	rows, err := tx.Query("SELECT name FROM groups WHERE parent = ?", path)
+	if err != nil {
+		return 0, err
+	}
+	var children []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		children = append(children, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	for _, name := range children {
+		if _, err := tx.Exec("UPDATE groups SET path = ?, parent = ? WHERE parent = ? AND name = ?",
+			newPath+"/"+name, newPath, path, name); err != nil {
 			return 0, err
 		}
 	}
 
-	result, err := tx.Exec("UPDATE file SET group_name = ? WHERE group_name = ?", newName, oldName)
+	// 文件跟着路径走：先改直属，再逐个改子分组的。
+	result, err := tx.Exec("UPDATE file SET group_path = ? WHERE group_path = ?", newPath, path)
 	if err != nil {
 		return 0, err
 	}
-	changed, err := result.RowsAffected()
+	changed, err = result.RowsAffected()
 	if err != nil {
 		return 0, err
+	}
+	for _, name := range children {
+		result, err := tx.Exec("UPDATE file SET group_path = ? WHERE group_path = ?",
+			newPath+"/"+name, path+"/"+name)
+		if err != nil {
+			return 0, err
+		}
+		moved, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		changed += moved
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -322,59 +433,9 @@ func (s *Store) RenameGroup(oldName, newName string) (int64, error) {
 	return changed, nil
 }
 
-// Groups 返回全部分组名（含空分组），按 sort_order 升序、名称兜底。
-func (s *Store) Groups() ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows, err := s.db.Query("SELECT name FROM groups ORDER BY sort_order ASC, name ASC")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	names := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, rows.Err()
-}
-
-// CreateGroup 新建一个空分组，追加到末尾；同名分组已存在返回 ErrGroupExists。
-func (s *Store) CreateGroup(name string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	var exists int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", name).Scan(&exists); err != nil {
-		return 0, err
-	}
-	if exists > 0 {
-		return 0, ErrGroupExists
-	}
-	var next int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").Scan(&next); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec("INSERT INTO groups (name, sort_order) VALUES (?, ?)", name, next); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return next, nil
-}
-
-// SetGroupOrder 按给定顺序重写全部分组的 sort_order。names 必须与当前实际分组集合完全一致，
-// 否则返回 ErrGroupOrderMismatch 且一条都不改。
-func (s *Store) SetGroupOrder(names []string) error {
+// SetGroupOrder 按给定顺序重写某个父级下全部子分组的 sort_order。
+// names 必须是该父级下全部子分组名（顶层用空串作父路径）；对不上返回 ErrGroupOrderMismatch。
+func (s *Store) SetGroupOrder(parent string, names []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -383,7 +444,7 @@ func (s *Store) SetGroupOrder(names []string) error {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query("SELECT name FROM groups")
+	rows, err := tx.Query("SELECT name FROM groups WHERE parent = ?", parent)
 	if err != nil {
 		return err
 	}
@@ -402,9 +463,6 @@ func (s *Store) SetGroupOrder(names []string) error {
 	}
 	rows.Close()
 
-	if len(current) != len(names) {
-		return ErrGroupOrderMismatch
-	}
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if _, ok := current[name]; !ok {
@@ -415,36 +473,55 @@ func (s *Store) SetGroupOrder(names []string) error {
 		}
 		seen[name] = struct{}{}
 	}
+	if len(current) != len(seen) {
+		return ErrGroupOrderMismatch
+	}
 
 	for i, name := range names {
-		if _, err := tx.Exec(
-			"INSERT INTO groups (name, sort_order) VALUES (?, ?) "+
-				"ON CONFLICT(name) DO UPDATE SET sort_order = excluded.sort_order",
-			name, i,
-		); err != nil {
+		path := name
+		if parent != "" {
+			path = parent + "/" + name
+		}
+		if _, err := tx.Exec("UPDATE groups SET sort_order = ? WHERE path = ?", i, path); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// ensureGroup 保证分组存在于 groups 表；没有就追加到末尾。空串（未分组）不落库。
-func ensureGroup(tx *sql.Tx, name string) error {
-	if name == "" {
+// scanGroup 读一行分组。
+func scanGroup(row rowScanner) (*Group, error) {
+	var group Group
+	if err := row.Scan(&group.Path, &group.Parent, &group.Name, &group.SortOrder); err != nil {
+		return nil, err
+	}
+	return &group, nil
+}
+
+// ensureGroup 保证分组及其祖先都存在；缺的追加到各自父级的末尾。空串（未分组）不落库。
+func ensureGroup(tx *sql.Tx, path string) error {
+	if path == "" {
 		return nil
 	}
+	parent, name := core.SplitGroupPath(path)
+	if parent != "" {
+		if err := ensureGroup(tx, parent); err != nil {
+			return err
+		}
+	}
 	var count int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE name = ?", name).Scan(&count); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", path).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
 	}
 	var next int64
-	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups").Scan(&next); err != nil {
+	if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM groups WHERE parent = ?", parent).Scan(&next); err != nil {
 		return err
 	}
-	_, err := tx.Exec("INSERT INTO groups (name, sort_order) VALUES (?, ?)", name, next)
+	_, err := tx.Exec("INSERT INTO groups (path, parent, name, sort_order) VALUES (?, ?, ?, ?)",
+		path, parent, name, next)
 	return err
 }
 

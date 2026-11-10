@@ -49,11 +49,11 @@ func TestOpenFreshDatabase(t *testing.T) {
 	}
 	var newColumns int
 	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM pragma_table_info('file') WHERE name IN ('group_name', 'sort_order')").Scan(&newColumns); err != nil {
+		"SELECT COUNT(*) FROM pragma_table_info('file') WHERE name IN ('group_path', 'sort_order')").Scan(&newColumns); err != nil {
 		t.Fatalf("读表结构失败: %v", err)
 	}
 	if newColumns != 2 {
-		t.Errorf("新库里 group_name / sort_order 两列只找到 %d 列", newColumns)
+		t.Errorf("新库里 group_path / sort_order 两列只找到 %d 列", newColumns)
 	}
 	var hasGroups int
 	if err := store.db.QueryRow(
@@ -79,7 +79,7 @@ func TestOpenRejectsUnsupportedSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
 	}
-	if _, err := store.db.Exec("PRAGMA user_version = 5"); err != nil {
+	if _, err := store.db.Exec("PRAGMA user_version = 6"); err != nil {
 		t.Fatalf("改 schema 版本失败: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -180,11 +180,11 @@ func TestOpenMigratesV1Database(t *testing.T) {
 	}
 	var columns int
 	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM pragma_table_info('file') WHERE name IN ('group_name', 'sort_order')").Scan(&columns); err != nil {
+		"SELECT COUNT(*) FROM pragma_table_info('file') WHERE name IN ('group_path', 'sort_order')").Scan(&columns); err != nil {
 		t.Fatalf("读表结构失败: %v", err)
 	}
 	if columns != 2 {
-		t.Fatalf("迁移后 group_name / sort_order 两列只找到 %d 列", columns)
+		t.Fatalf("迁移后 group_path / sort_order 两列只找到 %d 列", columns)
 	}
 	var hasGroups int
 	if err := store.db.QueryRow(
@@ -203,7 +203,7 @@ func TestOpenMigratesV1Database(t *testing.T) {
 		t.Fatalf("迁移后列表 = %+v，想要旧数据保留且按 created_at 倒序", files)
 	}
 	for _, file := range files {
-		if file.GroupName != "" || file.SortOrder != 0 {
+		if file.GroupPath != "" || file.SortOrder != 0 {
 			t.Errorf("迁移来的记录新列默认值不对: %+v", file)
 		}
 	}
@@ -287,11 +287,11 @@ func TestOpenMigratesV2Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Groups() 报错: %v", err)
 	}
-	if len(groups) != 2 || groups[0] != "a组" || groups[1] != "b组" {
-		t.Fatalf("迁移后的分组顺序 = %v，想要 [a组 b组]", groups)
+	if !samePaths(groupPaths(groups), "a组", "b组") {
+		t.Fatalf("迁移后的分组顺序 = %v，想要 [a组 b组]", groupPaths(groups))
 	}
 	// 用户拖拽后的顺序要能持久化。
-	if err := store.SetGroupOrder([]string{"b组", "a组"}); err != nil {
+	if err := store.SetGroupOrder("", []string{"b组", "a组"}); err != nil {
 		t.Fatalf("SetGroupOrder() 报错: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -307,8 +307,8 @@ func TestOpenMigratesV2Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Groups() 报错: %v", err)
 	}
-	if len(groups) != 2 || groups[0] != "b组" || groups[1] != "a组" {
-		t.Fatalf("重开后分组顺序 = %v，想要 [b组 a组]", groups)
+	if !samePaths(groupPaths(groups), "b组", "a组") {
+		t.Fatalf("重开后分组顺序 = %v，想要 [b组 a组]", groupPaths(groups))
 	}
 }
 
@@ -363,10 +363,46 @@ func createV3Database(t *testing.T, path string) {
 	}
 }
 
-// v3 → v4：group_order 升级为分组注册表 groups，空分组（甲组）也保留。
-func TestOpenMigratesV3Database(t *testing.T) {
+// createV4Database 造一个 v4 库：file + groups（一级分组）+ user_version = 4，验证 v4 → v5 迁移。
+func createV4Database(t *testing.T, path string) {
+	t.Helper()
+	handle, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("打开 v4 库失败: %v", err)
+	}
+	defer handle.Close()
+	statements := []string{
+		`CREATE TABLE file (
+			id          TEXT    PRIMARY KEY,
+			filename    TEXT    NOT NULL,
+			sha256      TEXT    NOT NULL,
+			size        INTEGER NOT NULL,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			is_public   INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL,
+			group_name  TEXT    NOT NULL DEFAULT '',
+			sort_order  INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX file_sha256_idx ON file (sha256)`,
+		`CREATE TABLE groups (name TEXT PRIMARY KEY, sort_order INTEGER NOT NULL)`,
+		`INSERT INTO file (id, filename, sha256, size, is_favorite, is_public, created_at, group_name, sort_order)
+		 VALUES ('one', 'one.txt', 'sha-one', 1, 0, 0, 100, '乙组', 0)`,
+		`INSERT INTO groups (name, sort_order) VALUES ('甲组', 1)`,
+		`INSERT INTO groups (name, sort_order) VALUES ('乙组', 0)`,
+		`PRAGMA user_version = 4`,
+	}
+	for _, statement := range statements {
+		if _, err := handle.Exec(statement); err != nil {
+			t.Fatalf("准备 v4 库失败: %v", err)
+		}
+	}
+}
+
+// v4 → v5：一级分组补上 parent / name 两列，file.group_name 改名为 group_path；
+// v4 的分组名不含 "/"，迁移后都变成顶级分组。
+func TestOpenMigratesV4Database(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file-share.db")
-	createV3Database(t, path)
+	createV4Database(t, path)
 
 	store, err := Open(path)
 	if err != nil {
@@ -376,19 +412,28 @@ func TestOpenMigratesV3Database(t *testing.T) {
 	if version, err := store.schemaVersion(); err != nil || version != schemaVersion {
 		t.Fatalf("迁移后 schema 版本 = %d, %v，想要 %d", version, err, schemaVersion)
 	}
-	var oldTable int
-	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_order'").Scan(&oldTable); err != nil {
-		t.Fatalf("查询 group_order 表失败: %v", err)
-	}
-	if oldTable != 0 {
-		t.Error("v4 迁移后不应再有 group_order 表")
-	}
 	groups, err := store.Groups()
 	if err != nil {
 		t.Fatalf("Groups() 报错: %v", err)
 	}
-	if len(groups) != 2 || groups[0] != "乙组" || groups[1] != "甲组" {
-		t.Fatalf("迁移后的分组 = %v，想要 [乙组 甲组]", groups)
+	if !samePaths(groupPaths(groups), "乙组", "甲组") {
+		t.Fatalf("迁移后的分组 = %v，想要 [乙组 甲组]", groupPaths(groups))
+	}
+	for _, group := range groups {
+		if group.Parent != "" || group.Name != group.Path {
+			t.Errorf("v4 分组迁移后 = %+v，想要顶级分组（parent 为空、name 等于路径）", group)
+		}
+	}
+	files, err := store.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	if len(files) != 1 || files[0].GroupPath != "乙组" {
+		t.Fatalf("迁移后的文件 = %+v，想要 group_path 乙组", files)
+	}
+
+	// 迁移后可以直接建二级分组。
+	if _, err := store.CreateGroup("乙组/子组"); err != nil {
+		t.Fatalf("迁移后建二级分组报错: %v", err)
 	}
 }

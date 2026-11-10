@@ -1,9 +1,10 @@
 /**
- * 视图与地址栏的映射：全部 `/`、收藏 `/favorites`、未分组 `/ungrouped`、分组 `/<分组名>`。
+ * 视图与地址栏的映射：全部 `/`、收藏 `/favorites`、未分组 `/ungrouped`、
+ * 分组 `/<顶级>` 或 `/<顶级>/<二级>`。
  *
- * 分组名是用户输入，可能含中文、空格、`#`、`?` 等字符，生成路径时一律走
- * encodeURIComponent，还原时走 decodeURIComponent；解不开（非法百分号转义）
- * 或多段的路径返回 null，由调用方回退到「全部」。
+ * 分组路径的每一段都是用户输入，可能含中文、空格、`#`、`?` 等字符：
+ * 生成路径时逐段 encodeURIComponent，还原时逐段 decodeURIComponent；
+ * 解不开（非法百分号转义）或超过两段的路径返回 null，由调用方回退到「全部」。
  *
  * favorites / ungrouped 是保留的一级路径，服务端创建分组时也会拒绝这两个名字，
  * 所以它们不会和分组重名。
@@ -16,7 +17,7 @@ export type View =
   | { kind: "ungrouped" }
   | { kind: "group"; group: string };
 
-/** 视图对应的地址栏路径（分组名已转义）。 */
+/** 视图对应的地址栏路径（分组路径已逐段转义）。 */
 export function viewPath(view: View): string {
   switch (view.kind) {
     case "favorites":
@@ -24,7 +25,7 @@ export function viewPath(view: View): string {
     case "ungrouped":
       return "/ungrouped";
     case "group":
-      return `/${encodeURIComponent(view.group)}`;
+      return `/${view.group.split("/").map(encodeURIComponent).join("/")}`;
     default:
       return "/";
   }
@@ -34,15 +35,19 @@ export function viewPath(view: View): string {
 export function viewFromPath(pathname: string): View | null {
   if (pathname === "/") return { kind: "all" };
   if (!pathname.startsWith("/")) return null;
-  const segment = pathname.slice(1);
-  if (segment === "" || segment.includes("/")) return null;
-  let name: string;
-  try {
-    name = decodeURIComponent(segment);
-  } catch {
-    return null;
+  const segments = pathname.slice(1).split("/");
+  if (segments.length > 2) return null;
+  const decoded: string[] = [];
+  for (const segment of segments) {
+    if (segment === "") return null;
+    try {
+      decoded.push(decodeURIComponent(segment));
+    } catch {
+      return null;
+    }
   }
-  if (name === "favorites") return { kind: "favorites" };
-  if (name === "ungrouped") return { kind: "ungrouped" };
-  return { kind: "group", group: name };
+  const path = decoded.join("/");
+  if (path === "favorites") return { kind: "favorites" };
+  if (path === "ungrouped") return { kind: "ungrouped" };
+  return { kind: "group", group: path };
 }

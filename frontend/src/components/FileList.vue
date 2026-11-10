@@ -10,12 +10,12 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Sortable from "sortablejs";
 
 import FileRow from "@/components/FileRow.vue";
-import type { FileItem } from "@/types";
+import type { FileItem, GroupItem } from "@/types";
 
 const props = defineProps<{
   files: FileItem[];
-  /** 全部分组名，透传给行内「移动到分组」菜单。 */
-  groups: readonly string[];
+  /** 全部分组，透传给行内「移动到分组」菜单。 */
+  groups: readonly GroupItem[];
   /** 搜索过滤时 DOM 只是子集，提交顺序会打乱整段，所以直接禁用拖拽。 */
   sortable: boolean;
 }>();

@@ -7,6 +7,37 @@ import (
 	"file-share/core"
 )
 
+// groupPaths 把分组行拆成路径列表，断言顺序时只关心路径。
+func groupPaths(groups []Group) []string {
+	paths := make([]string, 0, len(groups))
+	for _, group := range groups {
+		paths = append(paths, group.Path)
+	}
+	return paths
+}
+
+// groupsByParent 把分组行按父路径聚合：跨父级的分组在数组里的相对顺序不在契约内，
+// 契约只保证「同一父级内按 sort_order」。
+func groupsByParent(groups []Group) map[string][]string {
+	byParent := make(map[string][]string)
+	for _, group := range groups {
+		byParent[group.Parent] = append(byParent[group.Parent], group.Path)
+	}
+	return byParent
+}
+
+func samePaths(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func sampleFile(id, sha string, createdAt int64) File {
 	return File{
 		ID:        id,
@@ -18,7 +49,7 @@ func sampleFile(id, sha string, createdAt int64) File {
 }
 
 // 插入顺序就是列表顺序：每次插入都排在末尾（sort_order = 当前最大值 + 1），
-// group_name 默认为空。
+// group_path 默认为空。
 func TestInsertAndListFiles(t *testing.T) {
 	store := testStore(t)
 	for _, file := range []File{
@@ -52,8 +83,8 @@ func TestInsertAndListFiles(t *testing.T) {
 		if file.SortOrder != int64(i+1) {
 			t.Errorf("%s sort_order = %d，想要 %d", file.ID, file.SortOrder, i+1)
 		}
-		if file.GroupName != "" {
-			t.Errorf("%s group_name = %q，想要空串", file.ID, file.GroupName)
+		if file.GroupPath != "" {
+			t.Errorf("%s group_path = %q，想要空串", file.ID, file.GroupPath)
 		}
 	}
 }
@@ -112,7 +143,7 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.Filename != "新名字.txt" || updated.SortOrder != 2 || updated.GroupName != "" {
+	if updated.Filename != "新名字.txt" || updated.SortOrder != 2 || updated.GroupPath != "" {
 		t.Fatalf("只改名后 = %+v，想要新文件名且 sort_order 2", updated)
 	}
 	if files, err := store.ListFiles(); err != nil || len(files) != 3 || files[1].ID != "bb" {
@@ -124,7 +155,7 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.ID != "aa" || updated.GroupName != "工作" || updated.SortOrder != 4 {
+	if updated.ID != "aa" || updated.GroupPath != "工作" || updated.SortOrder != 4 {
 		t.Fatalf("UpdateFile() = %+v，想要分组「工作」且 sort_order 4", updated)
 	}
 	if files, err := store.ListFiles(); err != nil || len(files) != 3 || files[2].ID != "aa" {
@@ -136,7 +167,7 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.Filename != "重命名.txt" || updated.GroupName != "归档" || updated.SortOrder != 5 {
+	if updated.Filename != "重命名.txt" || updated.GroupPath != "归档" || updated.SortOrder != 5 {
 		t.Fatalf("同时改名与分组后 = %+v，想要新名字、分组「归档」、sort_order 5", updated)
 	}
 
@@ -145,7 +176,7 @@ func TestUpdateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if updated.GroupName != "" || updated.SortOrder != 6 {
+	if updated.GroupPath != "" || updated.SortOrder != 6 {
 		t.Fatalf("清空分组后 = %+v，想要空串分组与 sort_order 6", updated)
 	}
 
@@ -357,7 +388,7 @@ func TestRenameGroup(t *testing.T) {
 		{"cc", "保留组"},
 	} {
 		file := sampleFile(item.id, "sha-"+item.id, 100)
-		file.GroupName = item.group
+		file.GroupPath = item.group
 		if err := store.InsertFile(file); err != nil {
 			t.Fatalf("InsertFile() 报错: %v", err)
 		}
@@ -379,8 +410,8 @@ func TestRenameGroup(t *testing.T) {
 		t.Fatalf("ListFiles() 报错: %v", err)
 	}
 	for _, file := range files {
-		if file.GroupName != "新组" && file.GroupName != "保留组" {
-			t.Errorf("%s 的分组 = %q，想要新组或保留组", file.ID, file.GroupName)
+		if file.GroupPath != "新组" && file.GroupPath != "保留组" {
+			t.Errorf("%s 的分组 = %q，想要新组或保留组", file.ID, file.GroupPath)
 		}
 	}
 	if files[0].ID != "bb" || files[1].ID != "aa" || files[2].ID != "cc" {
@@ -399,7 +430,7 @@ func TestRenameGroup(t *testing.T) {
 	}
 }
 
-// 分组顺序跟随分组生命周期：新分组排到末尾，改名保持位置，最后一个文件搬走 / 删掉时清理顺序行。
+// 分组顺序跟随分组生命周期：新分组排到末尾，改名保持位置，搬空 / 删光文件后分组仍保留。
 func TestGroupOrderLifecycle(t *testing.T) {
 	store := testStore(t)
 	for _, id := range []string{"aa", "bb"} {
@@ -415,16 +446,16 @@ func TestGroupOrderLifecycle(t *testing.T) {
 	if _, err := store.UpdateFile("bb", nil, textPtr("二组")); err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
-		t.Fatalf("Groups() = %v, %v，想要 [一组 二组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "一组", "二组") {
+		t.Fatalf("Groups() = %v, %v，想要 [一组 二组]", groupPaths(groups), err)
 	}
 
 	// 拖拽后的顺序落库。
-	if err := store.SetGroupOrder([]string{"二组", "一组"}); err != nil {
+	if err := store.SetGroupOrder("", []string{"二组", "一组"}); err != nil {
 		t.Fatalf("SetGroupOrder() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || groups[0] != "二组" || groups[1] != "一组" {
-		t.Fatalf("重排后 Groups() = %v, %v，想要 [二组 一组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "二组", "一组") {
+		t.Fatalf("重排后 Groups() = %v, %v，想要 [二组 一组]", groupPaths(groups), err)
 	}
 
 	// 提交的分组集合必须与现状完全一致。
@@ -435,7 +466,7 @@ func TestGroupOrderLifecycle(t *testing.T) {
 		"空列表": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := store.SetGroupOrder(names); !errors.Is(err, ErrGroupOrderMismatch) {
+			if err := store.SetGroupOrder("", names); !errors.Is(err, ErrGroupOrderMismatch) {
 				t.Errorf("SetGroupOrder(%v) = %v，想要 ErrGroupOrderMismatch", names, err)
 			}
 		})
@@ -445,16 +476,16 @@ func TestGroupOrderLifecycle(t *testing.T) {
 	if _, err := store.RenameGroup("二组", "新二组"); err != nil {
 		t.Fatalf("RenameGroup() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || groups[0] != "新二组" || groups[1] != "一组" {
-		t.Fatalf("改名后 Groups() = %v, %v，想要 [新二组 一组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "新二组", "一组") {
+		t.Fatalf("改名后 Groups() = %v, %v，想要 [新二组 一组]", groupPaths(groups), err)
 	}
 
 	// 搬走最后一个文件：分组保留，顺序不变（空分组是合法状态）。
 	if _, err := store.UpdateFile("aa", nil, textPtr("新二组")); err != nil {
 		t.Fatalf("UpdateFile() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 2 || groups[0] != "新二组" || groups[1] != "一组" {
-		t.Fatalf("搬走最后文件后 Groups() = %v, %v，想要 [新二组 一组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "新二组", "一组") {
+		t.Fatalf("搬走最后文件后 Groups() = %v, %v，想要 [新二组 一组]", groupPaths(groups), err)
 	}
 
 	// 文件全部删光，分组仍然保留。
@@ -465,34 +496,184 @@ func TestGroupOrderLifecycle(t *testing.T) {
 		t.Fatalf("DeleteFile() 报错: %v", err)
 	}
 	if groups, err := store.Groups(); err != nil || len(groups) != 2 {
-		t.Fatalf("删空文件后 Groups() = %v, %v，想要两个空分组", groups, err)
+		t.Fatalf("删空文件后 Groups() = %v, %v，想要两个空分组", groupPaths(groups), err)
 	}
 
 	// 手动新建空分组：追加到末尾；同名冲突。
-	if order, err := store.CreateGroup("空组"); err != nil || order != 2 {
-		t.Fatalf("CreateGroup() = (%d, %v)，想要 sort_order 2", order, err)
+	created, err := store.CreateGroup("空组")
+	if err != nil || created.Path != "空组" || created.Parent != "" || created.Name != "空组" || created.SortOrder != 2 {
+		t.Fatalf("CreateGroup() = %+v, %v，想要顶级空组、sort_order 2", created, err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 3 || groups[2] != "空组" {
-		t.Fatalf("新建后 Groups() = %v, %v，想要 [新二组 一组 空组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "新二组", "一组", "空组") {
+		t.Fatalf("新建后 Groups() = %v, %v，想要 [新二组 一组 空组]", groupPaths(groups), err)
 	}
 	if _, err := store.CreateGroup("空组"); !errors.Is(err, ErrGroupExists) {
 		t.Errorf("重复新建应当返回 ErrGroupExists，得到 %v", err)
 	}
 
 	// 空分组也参与排序与改名，位置保持。
-	if err := store.SetGroupOrder([]string{"空组", "一组", "新二组"}); err != nil {
+	if err := store.SetGroupOrder("", []string{"空组", "一组", "新二组"}); err != nil {
 		t.Fatalf("SetGroupOrder() 报错: %v", err)
 	}
 	if _, err := store.RenameGroup("空组", "改名空组"); err != nil {
 		t.Fatalf("RenameGroup() 报错: %v", err)
 	}
-	if groups, err := store.Groups(); err != nil || len(groups) != 3 || groups[0] != "改名空组" {
-		t.Fatalf("改名空分组后 Groups() = %v, %v，想要 [改名空组 一组 新二组]", groups, err)
+	if groups, err := store.Groups(); err != nil || !samePaths(groupPaths(groups), "改名空组", "一组", "新二组") {
+		t.Fatalf("改名空分组后 Groups() = %v, %v，想要 [改名空组 一组 新二组]", groupPaths(groups), err)
 	}
 	if _, err := store.RenameGroup("改名空组", "一组"); !errors.Is(err, ErrGroupExists) {
 		t.Errorf("改成已存在的分组应当返回 ErrGroupExists，得到 %v", err)
 	}
 	if _, err := store.RenameGroup("不存在", "x"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("改不存在的分组应当返回 ErrNotFound，得到 %v", err)
+	}
+}
+
+// 两级分组：子分组挂在父分组下、同级独立排序；父分组改名时子分组与文件路径一起改。
+func TestNestedGroups(t *testing.T) {
+	store := testStore(t)
+	for _, item := range []struct {
+		id   string
+		path string
+	}{
+		{"aa", "工作"},
+		{"bb", "工作/项目A"},
+		{"cc", "工作/项目B"},
+		{"dd", "生活"},
+	} {
+		file := sampleFile(item.id, "sha-"+item.id, 100)
+		file.GroupPath = item.path
+		if err := store.InsertFile(file); err != nil {
+			t.Fatalf("InsertFile() 报错: %v", err)
+		}
+	}
+
+	// 顶层按创建顺序，子分组只出现在自己的父级下。
+	groups, err := store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	byParent := groupsByParent(groups)
+	if !samePaths(byParent[""], "工作", "生活") {
+		t.Fatalf("顶层分组 = %v，想要 [工作 生活]", byParent[""])
+	}
+	if !samePaths(byParent["工作"], "工作/项目A", "工作/项目B") {
+		t.Fatalf("工作下的子分组 = %v，想要 [工作/项目A 工作/项目B]", byParent["工作"])
+	}
+	for _, group := range groups {
+		switch group.Path {
+		case "工作":
+			if group.Parent != "" || group.Name != "工作" {
+				t.Errorf("顶层分组 = %+v，想要 parent 为空、name 工作", group)
+			}
+		case "工作/项目A":
+			if group.Parent != "工作" || group.Name != "项目A" {
+				t.Errorf("子分组 = %+v，想要 parent 工作、name 项目A", group)
+			}
+		}
+	}
+
+	// 新建子分组追加到同一父级的末尾，父级不存在时一并创建。
+	created, err := store.CreateGroup("工作/项目C")
+	if err != nil {
+		t.Fatalf("CreateGroup() 报错: %v", err)
+	}
+	if created.Parent != "工作" || created.Name != "项目C" || created.SortOrder != 2 {
+		t.Errorf("CreateGroup() = %+v，想要 parent 工作、name 项目C、sort_order 2", created)
+	}
+	if _, err := store.CreateGroup("全新/子"); err != nil {
+		t.Fatalf("CreateGroup() 补父级报错: %v", err)
+	}
+	groups, err = store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	byParent = groupsByParent(groups)
+	if !samePaths(byParent[""], "工作", "生活", "全新") {
+		t.Fatalf("顶层分组 = %v，想要 [工作 生活 全新]", byParent[""])
+	}
+	if !samePaths(byParent["工作"], "工作/项目A", "工作/项目B", "工作/项目C") {
+		t.Fatalf("工作下的子分组 = %v", byParent["工作"])
+	}
+	if !samePaths(byParent["全新"], "全新/子") {
+		t.Fatalf("全新下的子分组 = %v", byParent["全新"])
+	}
+
+	// 同级重排只动这个父级下的顺序；顶层重排不影响子分组。
+	if err := store.SetGroupOrder("工作", []string{"项目C", "项目B", "项目A"}); err != nil {
+		t.Fatalf("SetGroupOrder() 报错: %v", err)
+	}
+	groups, err = store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	if !samePaths(groupsByParent(groups)["工作"], "工作/项目C", "工作/项目B", "工作/项目A") {
+		t.Fatalf("重排子分组后 Groups() = %v", groupPaths(groups))
+	}
+
+	// 某个父级下的集合必须完全一致：拿顶层名字来排子级应当对不上。
+	if err := store.SetGroupOrder("工作", []string{"项目A", "项目B"}); !errors.Is(err, ErrGroupOrderMismatch) {
+		t.Errorf("少一个子分组应当返回 ErrGroupOrderMismatch，得到 %v", err)
+	}
+	if err := store.SetGroupOrder("不存在", []string{}); err != nil {
+		t.Errorf("空父级下没有分组时，空顺序应当成功，得到 %v", err)
+	}
+
+	// 父分组改名：子分组的路径与父路径、组内文件的分组路径一起改。
+	changed, err := store.RenameGroup("工作", "工作区")
+	if err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if changed != 3 {
+		t.Errorf("重命名影响文件数 = %d，想要 3", changed)
+	}
+	groups, err = store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	byParent = groupsByParent(groups)
+	if !samePaths(byParent[""], "工作区", "生活", "全新") {
+		t.Fatalf("父分组改名后顶层 = %v", byParent[""])
+	}
+	if !samePaths(byParent["工作区"], "工作区/项目C", "工作区/项目B", "工作区/项目A") {
+		t.Fatalf("父分组改名后子分组 = %v", byParent["工作区"])
+	}
+	files, err := store.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	paths := make(map[string]string, len(files))
+	for _, file := range files {
+		paths[file.ID] = file.GroupPath
+	}
+	for id, want := range map[string]string{
+		"aa": "工作区",
+		"bb": "工作区/项目A",
+		"cc": "工作区/项目B",
+	} {
+		if paths[id] != want {
+			t.Errorf("%s 的 group_path = %q，想要 %q", id, paths[id], want)
+		}
+	}
+
+	// 子分组改名只改自己那一段，父路径不变。
+	if _, err := store.RenameGroup("工作区/项目A", "项目X"); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	groups, err = store.Groups()
+	if err != nil {
+		t.Fatalf("Groups() 报错: %v", err)
+	}
+	found := false
+	for _, group := range groups {
+		if group.Path == "工作区/项目X" {
+			found = true
+			if group.Parent != "工作区" || group.Name != "项目X" {
+				t.Errorf("子分组改名后 = %+v", group)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("子分组改名后 Groups() = %v，找不到 工作区/项目X", groupPaths(groups))
 	}
 }

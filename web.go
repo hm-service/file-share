@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"file-share/core"
 )
 
 // built 是前端的构建产物（frontend/dist，由 just frontend 生成）。
@@ -76,15 +78,32 @@ func siteHandler(files fs.FS) http.Handler {
 	return mux
 }
 
-// isViewRoute 判断路径是不是前端视图路由：一个非空的路径段，且不指向产物里的页面文件。
-// 分组名由用户输入、直接作为这一段出现，所以这里只能按形状判断，不能枚举。
-// 多段路径（/assets/xxx、/a/b）与 *.html 仍然只认产物里的真实文件，未知的一律 404。
+// reservedViewRoots 是下面不再有视图路由的一级路径：/assets/* 只发构建产物里的真实文件，
+// /auth 只有登录页本身。core 保证分组名不会和它们重名，这里据此排除。
+var reservedViewRoots = map[string]struct{}{
+	"assets": {},
+	"auth":   {},
+}
+
+// isViewRoute 判断路径是不是前端视图路由：一到两段非空路径，最多到二级分组。
+// 分组名由用户输入、直接作为路径段出现，所以这里只能按形状判断，不能枚举。
+// *.html 与保留根路径下面的多段路径仍然只认产物里的真实文件，未知的一律 404。
 func isViewRoute(path string) bool {
-	segment, found := strings.CutPrefix(path, "/")
-	if !found || segment == "" || strings.Contains(segment, "/") {
+	segments, found := strings.CutPrefix(path, "/")
+	if !found {
 		return false
 	}
-	return !strings.HasSuffix(segment, ".html")
+	parts := strings.Split(segments, "/")
+	if len(parts) < 1 || len(parts) > core.MaxGroupDepth {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || strings.HasSuffix(part, ".html") {
+			return false
+		}
+	}
+	_, reserved := reservedViewRoots[parts[0]]
+	return !reserved
 }
 
 // servePage 把页面写出去：页面一律 no-store，免得改完前端还看旧的。

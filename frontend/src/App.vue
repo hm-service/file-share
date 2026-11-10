@@ -37,7 +37,7 @@ import { ICONS } from "@/icons";
 import { t } from "@/i18n";
 import { viewFromPath, viewPath, type View } from "@/routes";
 import { toLogin } from "@/session";
-import type { FileItem } from "@/types";
+import type { FileItem, GroupItem } from "@/types";
 
 const files = ref<FileItem[]>([]);
 const loaded = ref(false);
@@ -55,13 +55,22 @@ const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 
 /* ---------- 分组 ---------- */
 
-/** 分组名列表，顺序由服务端 group_order 决定（拖动侧栏 / chips 可调整）。 */
-const groups = ref<string[]>([]);
+/** 全部分组（含空分组）。同一父级内的顺序由服务端 sort_order 决定（拖动可调整）。 */
+const groups = ref<GroupItem[]>([]);
 
+/** 顶级分组：侧栏第一层、移动端 chips 第一行。 */
+const topGroups = computed(() => groups.value.filter((group) => group.parent === ""));
+
+/** 某个分组下的子分组。 */
+function childrenOf(path: string): GroupItem[] {
+  return groups.value.filter((group) => group.parent === path);
+}
+
+/** 每个分组的直属文件数（父分组的 badge 不含子分组，和分组视图里看到的列表一致）。 */
 const groupCounts = computed(() => {
   const counts = new Map<string, number>();
   for (const file of files.value) {
-    if (file.group_name) counts.set(file.group_name, (counts.get(file.group_name) ?? 0) + 1);
+    if (file.group_path) counts.set(file.group_path, (counts.get(file.group_path) ?? 0) + 1);
   }
   return counts;
 });
@@ -69,7 +78,7 @@ const groupCounts = computed(() => {
 const ungroupedCount = computed(() => {
   let count = 0;
   for (const file of files.value) {
-    if (!file.group_name) count += 1;
+    if (!file.group_path) count += 1;
   }
   return count;
 });
@@ -107,9 +116,9 @@ const visibleFiles = computed(() => {
     case "favorites":
       return base.filter((file) => file.is_favorite);
     case "group":
-      return base.filter((file) => file.group_name === current.group);
+      return base.filter((file) => file.group_path === current.group);
     case "ungrouped":
-      return base.filter((file) => !file.group_name);
+      return base.filter((file) => !file.group_path);
     default:
       return base;
   }
@@ -170,8 +179,21 @@ const isAll = computed(() => view.value.kind === "all");
 const isFavorites = computed(() => view.value.kind === "favorites");
 const isUngrouped = computed(() => view.value.kind === "ungrouped");
 const isGroupView = computed(() => view.value.kind === "group");
-const isGroupActive = (group: string): boolean =>
-  view.value.kind === "group" && view.value.group === group;
+const isGroupActive = (path: string): boolean =>
+  view.value.kind === "group" && view.value.group === path;
+
+/** 当前视图所属的顶级分组；不在分组视图时为空串。 */
+const currentTopGroup = computed(() => {
+  const current = view.value;
+  if (current.kind !== "group") return "";
+  const slash = current.group.indexOf("/");
+  return slash < 0 ? current.group : current.group.slice(0, slash);
+});
+
+/** 当前顶级分组下的子分组：窄屏第二行 chips 只展示这一层。 */
+const currentChildren = computed(() =>
+  currentTopGroup.value ? childrenOf(currentTopGroup.value) : [],
+);
 
 /** 只有按 sort_order 排列的视图才开放拖拽；「全部」是固定时间序，搜索时 DOM 只是子集。 */
 const canSort = computed(() => !sortingDisabled.value && !isAll.value);
@@ -226,27 +248,39 @@ function showUngrouped(): void {
 
 /** 分组 / 未分组视图失去存在依据时回退「全部」：同步地址栏，刷新后不会停在空视图。 */
 function validateView(): void {
-  if (view.value.kind === "group" && !groups.value.includes(view.value.group)) {
+  const current = view.value;
+  if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
     applyView({ kind: "all" }, "replace");
-  } else if (view.value.kind === "ungrouped" && ungroupedCount.value === 0) {
+  } else if (current.kind === "ungrouped" && ungroupedCount.value === 0) {
     applyView({ kind: "all" }, "replace");
   }
 }
 
 /* ---------- 分组顺序拖拽 ---------- */
 
-const navGroupsEl = ref<HTMLElement | null>(null);
-const chipsGroupsEl = ref<HTMLElement | null>(null);
-let navGroupSortable: Sortable | null = null;
-let chipsGroupSortable: Sortable | null = null;
+/**
+ * 每一层分组是一个独立的排序容器：顶级一层、每个父分组各一层。
+ *
+ * 顶级项是包含自己子列表的 wrapper（拖动父分组时子分组跟着走），所以顶级的可拖元素是
+ * `[data-group-block]`，并用 filter 把内层的 `[data-subgroup]` 排除掉，免得点中子分组时
+ * 启动外层的拖拽。容器按 key 存在 Map 里，v-for 重建时由 ref 回调负责挂载与销毁。
+ */
+const groupSortables = new Map<string, Sortable>();
 /** 拖拽结束后的短暂刻度：用来吞掉松手时补发的 click。 */
 let groupClickGuardUntil = 0;
 
-/** 侧栏与移动端 chips 共用一份排序配置，返回时把新顺序交给服务端。 */
-function createGroupSortable(container: HTMLElement): Sortable {
+function createGroupSortable(parent: string, container: HTMLElement): Sortable {
+  const topLevel = parent === "";
   return Sortable.create(container, {
     animation: 150,
-    draggable: "[data-group]",
+    // 分组项里有 <button>：Chrome 的 UA 样式让原生 DnD 对按钮不生效，
+    // 统一用 Sortable 自己的 fallback 拖拽，顶层与子层行为一致。
+    forceFallback: true,
+    fallbackOnBody: true,
+    fallbackTolerance: 2,
+    draggable: topLevel ? "[data-group-block]" : "[data-subgroup]",
+    filter: topLevel ? "[data-subgroup]" : undefined,
+    preventOnFilter: false,
     ghostClass: "group-drag-ghost",
     chosenClass: "group-drag-chosen",
     delay: 120,
@@ -254,40 +288,50 @@ function createGroupSortable(container: HTMLElement): Sortable {
     touchStartThreshold: 4,
     onEnd: () => {
       groupClickGuardUntil = Date.now() + 250;
-      const ordered = Array.from(container.querySelectorAll<HTMLElement>("[data-group]"))
-        .map((node) => node.dataset.group ?? "")
+      // 顶级只读直接子元素：内层子分组也带 data-group-name，不能混进来。
+      const items = topLevel
+        ? Array.from(container.children).filter((node) => node.matches("[data-group-block]"))
+        : Array.from(container.querySelectorAll<HTMLElement>("[data-subgroup]"));
+      const ordered = items
+        .map((node) => (node as HTMLElement).dataset.groupName ?? "")
         .filter((name) => name !== "");
-      if (ordered.length !== groups.value.length) return;
-      if (ordered.join("\n") === groups.value.join("\n")) return;
-      void applyGroupOrder(ordered);
+      const current = childrenOf(parent).map((group) => group.name);
+      if (ordered.length !== current.length || ordered.join("\n") === current.join("\n")) return;
+      void applyGroupOrder(parent, ordered);
     },
   });
 }
 
-async function applyGroupOrder(ordered: string[]): Promise<void> {
-  groups.value = ordered;
-  try {
-    await reorderGroups(ordered);
-  } catch (error) {
-    showActionError(error);
-    await refresh();
+/** v-for 的 ref 回调：元素挂上/卸载时同步该层的 Sortable 实例。 */
+function setGroupContainer(key: string, parent: string, el: unknown): void {
+  const existing = groupSortables.get(key);
+  if (existing && existing.el !== el) {
+    existing.destroy();
+    groupSortables.delete(key);
   }
-}
-
-function mountGroupSortables(): void {
-  if (navGroupsEl.value && !navGroupSortable) {
-    navGroupSortable = createGroupSortable(navGroupsEl.value);
-  }
-  if (chipsGroupsEl.value && !chipsGroupSortable) {
-    chipsGroupSortable = createGroupSortable(chipsGroupsEl.value);
+  if (el instanceof HTMLElement && !groupSortables.has(key)) {
+    groupSortables.set(key, createGroupSortable(parent, el));
   }
 }
 
 function destroyGroupSortables(): void {
-  navGroupSortable?.destroy();
-  navGroupSortable = null;
-  chipsGroupSortable?.destroy();
-  chipsGroupSortable = null;
+  for (const instance of groupSortables.values()) instance.destroy();
+  groupSortables.clear();
+}
+
+/** 拖拽后先按新顺序重排本地数组（同一父级内），再提交服务端；失败回滚到服务端顺序。 */
+async function applyGroupOrder(parent: string, ordered: string[]): Promise<void> {
+  const position = new Map(ordered.map((name, index) => [name, index] as const));
+  groups.value = [...groups.value].sort((a, b) => {
+    if (a.parent !== parent || b.parent !== parent) return 0;
+    return (position.get(a.name) ?? 0) - (position.get(b.name) ?? 0);
+  });
+  try {
+    await reorderGroups(parent, ordered);
+  } catch (error) {
+    showActionError(error);
+    await refresh();
+  }
 }
 
 /* ---------- 列表数据与操作 ---------- */
@@ -371,7 +415,7 @@ async function onDownload(file: FileItem): Promise<void> {
 async function onDownloadGroup(): Promise<void> {
   if (view.value.kind !== "group") return;
   const groupName = view.value.group;
-  const targets = sortedFiles.value.filter((file) => file.group_name === groupName);
+  const targets = sortedFiles.value.filter((file) => file.group_path === groupName);
   if (!targets.length) return;
   try {
     for (const file of targets) {
@@ -411,43 +455,45 @@ const currentUploadGroup = computed(() => {
   return view.value.kind === "group" ? view.value.group : "";
 });
 
-/** 手动新建空分组：创建后直接进入该分组，方便马上往里传文件。 */
+/** 手动新建空分组：输入 "父/子" 建二级分组；创建后直接进入该分组，方便马上往里传文件。 */
 async function onCreateGroup(): Promise<void> {
   const input = window.prompt(t("group.new-prompt"));
   if (input === null) return;
-  const name = input.trim();
-  if (!name) return;
+  const path = input.trim();
+  if (!path) return;
   try {
-    const created = await createGroup(name);
+    const created = await createGroup(path);
     await refresh();
-    applyView({ kind: "group", group: created.name });
+    applyView({ kind: "group", group: created.path });
   } catch (error) {
     showActionError(error);
   }
 }
 
-/** 重命名当前分组：批量改写组内文件的 group_name，成功后留在新分组视图（地址同步改名）。 */
+/** 重命名当前分组：只改最后一段，父路径不变；成功后地址同步改名。 */
 async function onRenameGroup(): Promise<void> {
   if (view.value.kind !== "group") return;
-  const groupName = view.value.group;
-  const input = window.prompt(t("group.rename-prompt"), groupName);
+  const path = view.value.group;
+  const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  const currentName = path.slice(path.lastIndexOf("/") + 1);
+  const input = window.prompt(t("group.rename-prompt"), currentName);
   if (input === null) return;
   const newName = input.trim();
-  if (!newName || newName === groupName) return;
+  if (!newName || newName === currentName) return;
   try {
-    await renameGroup(groupName, newName);
-    applyView({ kind: "group", group: newName }, "replace");
+    await renameGroup(path, newName);
+    applyView({ kind: "group", group: parent ? `${parent}/${newName}` : newName }, "replace");
     await refresh();
   } catch (error) {
     showActionError(error);
   }
 }
 
-/** 移动到分组（空串 = 未分组；新分组名会随着文件出现自动出现在左栏）。 */
-async function onMoveGroup(file: FileItem, groupName: string): Promise<void> {
-  if (file.group_name === groupName) return;
+/** 移动到分组（空串 = 未分组；分组路径随文件出现自动登记）。 */
+async function onMoveGroup(file: FileItem, groupPath: string): Promise<void> {
+  if (file.group_path === groupPath) return;
   try {
-    await updateFileGroup(file.id, groupName);
+    await updateFileGroup(file.id, groupPath);
     await refresh();
   } catch (error) {
     showActionError(error);
@@ -492,15 +538,15 @@ function onGroupDragLeave(event: DragEvent, groupName: string): void {
 }
 
 /** 松手即改分组；空串表示移入未分组。 */
-async function onGroupDrop(event: DragEvent, groupName: string): Promise<void> {
+async function onGroupDrop(event: DragEvent, groupPath: string): Promise<void> {
   event.preventDefault();
   const fileId = draggingFileId.value ?? "";
   draggingFileId.value = null;
   groupDropTarget.value = null;
   const file = files.value.find((entry) => entry.id === fileId);
-  if (!file || file.group_name === groupName) return;
+  if (!file || file.group_path === groupPath) return;
   try {
-    await updateFileGroup(fileId, groupName);
+    await updateFileGroup(fileId, groupPath);
     await refresh();
   } catch (error) {
     showActionError(error);
@@ -577,7 +623,6 @@ onMounted(() => {
   document.addEventListener("dragend", endFileDrag);
   window.addEventListener("popstate", syncViewFromLocation);
   syncViewFromLocation();
-  mountGroupSortables();
   void refresh();
 });
 
@@ -632,26 +677,59 @@ onBeforeUnmount(() => {
       <p class="nav-section-title">{{ t("nav.groups") }}</p>
 
       <!-- 分组可拖拽排序：未分组不是真实分组，放在排序容器外，固定排在最后 -->
-      <div ref="navGroupsEl" class="nav nav-groups">
-        <button
-          v-for="group in groups"
-          :key="group"
-          type="button"
-          class="nav-item nav-item-group"
-          :data-group="group"
-          :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
-          :aria-current="isGroupActive(group) ? 'page' : undefined"
-          @click="showGroup(group)"
-          @dragenter="onGroupDragEnter($event, group)"
-          @dragover="onGroupDragOver($event, group)"
-          @dragleave="onGroupDragLeave($event, group)"
-          @drop="onGroupDrop($event, group)"
+      <div class="nav nav-groups" :ref="(el) => setGroupContainer('nav:', '', el)">
+        <div
+          v-for="group in topGroups"
+          :key="group.path"
+          class="nav-group-block"
+          data-group-block
+          :data-group-name="group.name"
+          :class="{ 'is-drop-target': groupDropTarget === group.path }"
+          @dragenter="onGroupDragEnter($event, group.path)"
+          @dragover="onGroupDragOver($event, group.path)"
+          @dragleave="onGroupDragLeave($event, group.path)"
+          @drop="onGroupDrop($event, group.path)"
         >
-          <span class="nav-icon" v-html="ICONS.folder"></span>
-          <span class="nav-label">{{ group }}</span>
-          <span class="nav-count">{{ groupCounts.get(group) ?? 0 }}</span>
-        </button>
-        <p v-if="!groups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
+          <button
+            type="button"
+            class="nav-item nav-item-group"
+            :class="{ active: isGroupActive(group.path) }"
+            :aria-current="isGroupActive(group.path) ? 'page' : undefined"
+            @click="showGroup(group.path)"
+          >
+            <span class="nav-icon" v-html="ICONS.folder"></span>
+            <span class="nav-label">{{ group.name }}</span>
+            <span class="nav-count">{{ groupCounts.get(group.path) ?? 0 }}</span>
+          </button>
+
+          <!-- 二级分组：缩进一层，只在本层内拖拽排序 -->
+          <div
+            v-if="childrenOf(group.path).length"
+            class="nav nav-subgroups"
+            :ref="(el) => setGroupContainer(`nav:${group.path}`, group.path, el)"
+          >
+            <button
+              v-for="child in childrenOf(group.path)"
+              :key="child.path"
+              type="button"
+              class="nav-item nav-item-subgroup"
+              data-subgroup
+              :data-group-name="child.name"
+              :class="{ active: isGroupActive(child.path), 'is-drop-target': groupDropTarget === child.path }"
+              :aria-current="isGroupActive(child.path) ? 'page' : undefined"
+              @click="showGroup(child.path)"
+              @dragenter.stop="onGroupDragEnter($event, child.path)"
+              @dragover.stop="onGroupDragOver($event, child.path)"
+              @dragleave.stop="onGroupDragLeave($event, child.path)"
+              @drop.stop="onGroupDrop($event, child.path)"
+            >
+              <span class="nav-icon" v-html="ICONS.folder"></span>
+              <span class="nav-label">{{ child.name }}</span>
+              <span class="nav-count">{{ groupCounts.get(child.path) ?? 0 }}</span>
+            </button>
+          </div>
+        </div>
+        <p v-if="!topGroups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
       </div>
       <div v-if="ungroupedCount > 0" class="nav nav-ungrouped">
         <button
@@ -800,32 +878,38 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- 窄屏分组 chips：分组横向滚动、可拖拽排序；未分组固定在右侧 -->
+      <!-- 窄屏分组 chips：第一行顶级分组，第二行是当前所属顶级分组的子分组 -->
       <div
-        v-show="groups.length || ungroupedCount > 0"
+        v-show="topGroups.length || ungroupedCount > 0"
         class="chips"
         role="tablist"
         :aria-label="t('nav.groups')"
       >
-        <div ref="chipsGroupsEl" class="chips-groups">
-          <button
-            v-for="group in groups"
-            :key="group"
-            type="button"
-            class="chip"
-            role="tab"
-            :data-group="group"
-            :class="{ active: isGroupActive(group), 'is-drop-target': groupDropTarget === group }"
-            :aria-selected="isGroupActive(group)"
-            @click="showGroup(group)"
-            @dragenter="onGroupDragEnter($event, group)"
-            @dragover="onGroupDragOver($event, group)"
-            @dragleave="onGroupDragLeave($event, group)"
-            @drop="onGroupDrop($event, group)"
+        <div class="chips-groups" :ref="(el) => setGroupContainer('chips:', '', el)">
+          <div
+            v-for="group in topGroups"
+            :key="group.path"
+            class="chip-block"
+            data-group-block
+            :data-group-name="group.name"
+            :class="{ 'is-drop-target': groupDropTarget === group.path }"
+            @dragenter="onGroupDragEnter($event, group.path)"
+            @dragover="onGroupDragOver($event, group.path)"
+            @dragleave="onGroupDragLeave($event, group.path)"
+            @drop="onGroupDrop($event, group.path)"
           >
-            <span class="chip-icon" v-html="ICONS.folder"></span>
-            <span class="chip-label">{{ group }}</span>
-          </button>
+            <button
+              type="button"
+              class="chip"
+              role="tab"
+              :class="{ active: isGroupActive(group.path) }"
+              :aria-selected="isGroupActive(group.path)"
+              @click="showGroup(group.path)"
+            >
+              <span class="chip-icon" v-html="ICONS.folder"></span>
+              <span class="chip-label">{{ group.name }}</span>
+            </button>
+          </div>
           <button
             type="button"
             class="chip chip-new"
@@ -852,6 +936,37 @@ onBeforeUnmount(() => {
           <span class="chip-icon" v-html="ICONS.inbox"></span>
           <span class="chip-label">{{ t("nav.ungrouped") }}</span>
         </button>
+      </div>
+      <div
+        v-if="currentChildren.length"
+        class="chips chips-subgroups"
+        role="tablist"
+        :aria-label="t('nav.groups')"
+      >
+        <div
+          class="chips-groups"
+          :ref="(el) => setGroupContainer(`chips:${currentTopGroup}`, currentTopGroup, el)"
+        >
+          <button
+            v-for="child in currentChildren"
+            :key="child.path"
+            type="button"
+            class="chip chip-subgroup"
+            role="tab"
+            data-subgroup
+            :data-group-name="child.name"
+            :class="{ active: isGroupActive(child.path), 'is-drop-target': groupDropTarget === child.path }"
+            :aria-selected="isGroupActive(child.path)"
+            @click="showGroup(child.path)"
+            @dragenter.stop="onGroupDragEnter($event, child.path)"
+            @dragover.stop="onGroupDragOver($event, child.path)"
+            @dragleave.stop="onGroupDragLeave($event, child.path)"
+            @drop.stop="onGroupDrop($event, child.path)"
+          >
+            <span class="chip-icon" v-html="ICONS.folder"></span>
+            <span class="chip-label">{{ child.name }}</span>
+          </button>
+        </div>
       </div>
 
       <section class="content">

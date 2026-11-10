@@ -43,6 +43,13 @@ func detailOf(t *testing.T, recorder *httptest.ResponseRecorder) string {
 	return payload.Detail
 }
 
+// groupRow 是 /api/files 里一条分组的形状。
+type groupRow struct {
+	Path   string `json:"path"`
+	Parent string `json:"parent"`
+	Name   string `json:"name"`
+}
+
 func assertJSONError(t *testing.T, recorder *httptest.ResponseRecorder, status int, detail string) {
 	t.Helper()
 	if recorder.Code != status {
@@ -225,7 +232,7 @@ func TestListFiles(t *testing.T) {
 
 	recorder = testenv.Do(handler, http.MethodGet, "/api/files", token)
 	var payload struct {
-		Groups []string `json:"groups"`
+		Groups []groupRow `json:"groups"`
 		Files  []struct {
 			ID         string `json:"id"`
 			Filename   string `json:"filename"`
@@ -234,7 +241,7 @@ func TestListFiles(t *testing.T) {
 			IsFavorite bool   `json:"is_favorite"`
 			IsPublic   bool   `json:"is_public"`
 			CreatedAt  int64  `json:"created_at"`
-			GroupName  string `json:"group_name"`
+			GroupPath  string `json:"group_path"`
 			SortOrder  int64  `json:"sort_order"`
 		} `json:"files"`
 	}
@@ -250,8 +257,8 @@ func TestListFiles(t *testing.T) {
 		if file.SortOrder != int64(i+1) {
 			t.Errorf("%s sort_order = %d，想要 %d", file.ID, file.SortOrder, i+1)
 		}
-		if file.GroupName != "" {
-			t.Errorf("%s group_name = %q，想要空串", file.ID, file.GroupName)
+		if file.GroupPath != "" {
+			t.Errorf("%s group_path = %q，想要空串", file.ID, file.GroupPath)
 		}
 	}
 	if last := payload.Files[len(payload.Files)-1]; last.CreatedAt != 200 || last.Filename != "c.txt" || last.Size != 3 {
@@ -1045,7 +1052,7 @@ type fileJSON struct {
 	IsFavorite bool   `json:"is_favorite"`
 	IsPublic   bool   `json:"is_public"`
 	CreatedAt  int64  `json:"created_at"`
-	GroupName  string `json:"group_name"`
+	GroupPath  string `json:"group_path"`
 	SortOrder  int64  `json:"sort_order"`
 }
 
@@ -1074,7 +1081,7 @@ func TestUpdateFileRoute(t *testing.T) {
 	second := testenv.SeedUpload(t, instance, "second.txt", []byte("second"))
 
 	recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
-		map[string]any{"group_name": "  工作  "}, token)
+		map[string]any{"group_path": "  工作  "}, token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
@@ -1083,8 +1090,8 @@ func TestUpdateFileRoute(t *testing.T) {
 	if updated.ID != first.ID || updated.Filename != "first.txt" || updated.SHA256 != first.SHA256 || updated.Size != first.Size {
 		t.Errorf("PATCH 应当返回完整记录: %+v", updated)
 	}
-	if updated.GroupName != "工作" {
-		t.Errorf("group_name = %q，想要 trim 后的「工作」", updated.GroupName)
+	if updated.GroupPath != "工作" {
+		t.Errorf("group_path = %q，想要 trim 后的「工作」", updated.GroupPath)
 	}
 	// 两条记录 sort_order 是 1、2；改分组后 first 被移到末尾，应当是 3。
 	if updated.SortOrder != 3 {
@@ -1096,13 +1103,13 @@ func TestUpdateFileRoute(t *testing.T) {
 
 	// 空串 = 未分组，仍然移到末尾。
 	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
-		map[string]any{"group_name": ""}, token)
+		map[string]any{"group_path": ""}, token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("清空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	testenv.DecodeInto(t, recorder, &updated)
-	if updated.GroupName != "" {
-		t.Errorf("清空分组后 group_name = %q，想要空串", updated.GroupName)
+	if updated.GroupPath != "" {
+		t.Errorf("清空分组后 group_path = %q，想要空串", updated.GroupPath)
 	}
 
 	// 只改名：文件名变了，顺序（sort_order）不动。
@@ -1113,18 +1120,18 @@ func TestUpdateFileRoute(t *testing.T) {
 		t.Fatalf("改名状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	testenv.DecodeInto(t, recorder, &updated)
-	if updated.Filename != "改名后.txt" || updated.GroupName != "" || updated.SortOrder != beforeRename {
+	if updated.Filename != "改名后.txt" || updated.GroupPath != "" || updated.SortOrder != beforeRename {
 		t.Errorf("改名后 = %+v，想要新文件名、未分组且顺序不变", updated)
 	}
 
 	// 两个字段一起改：名字与分组都生效，记录移到末尾。
 	recorder = testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+second.ID,
-		map[string]any{"filename": "second-new.txt", "group_name": "归档"}, token)
+		map[string]any{"filename": "second-new.txt", "group_path": "归档"}, token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("同时改名与分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	testenv.DecodeInto(t, recorder, &updated)
-	if updated.Filename != "second-new.txt" || updated.GroupName != "归档" || updated.SortOrder != beforeRename+1 {
+	if updated.Filename != "second-new.txt" || updated.GroupPath != "归档" || updated.SortOrder != beforeRename+1 {
 		t.Errorf("同时改两个字段后 = %+v，想要新名字、分组「归档」且移到末尾", updated)
 	}
 
@@ -1135,8 +1142,8 @@ func TestUpdateFileRoute(t *testing.T) {
 	// 非法分组名（超长 / 控制字符）。
 	longName := strings.Repeat("a", core.MaxGroupNameBytes+1)
 	for name, body := range map[string]map[string]any{
-		"超长":   {"group_name": longName},
-		"控制字符": {"group_name": "a\nb"},
+		"超长":   {"group_path": longName},
+		"控制字符": {"group_path": "a\nb"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID, body, token)
@@ -1412,14 +1419,14 @@ func TestRenameGroupRoute(t *testing.T) {
 		{kept.ID, "保留组"},
 	} {
 		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+body.id,
-			map[string]any{"group_name": body.group}, token)
+			map[string]any{"group_path": body.group}, token)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
 		}
 	}
 
 	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
-		map[string]any{"name": " 旧组 ", "new_name": " 新组 "}, token)
+		map[string]any{"path": " 旧组 ", "new_name": " 新组 "}, token)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
@@ -1430,7 +1437,7 @@ func TestRenameGroupRoute(t *testing.T) {
 	groups := map[string]string{}
 	for _, item := range list["files"].([]any) {
 		file := item.(map[string]any)
-		groups[file["id"].(string)] = file["group_name"].(string)
+		groups[file["id"].(string)] = file["group_path"].(string)
 	}
 	if groups[first.ID] != "新组" || groups[second.ID] != "新组" || groups[kept.ID] != "保留组" {
 		t.Fatalf("重命名后分组 = %+v", groups)
@@ -1438,21 +1445,21 @@ func TestRenameGroupRoute(t *testing.T) {
 
 	t.Run("目标分组已存在", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
-			map[string]any{"name": "新组", "new_name": "保留组"}, token)
+			map[string]any{"path": "新组", "new_name": "保留组"}, token)
 		assertJSONError(t, recorder, http.StatusConflict, "分组名已存在")
 	})
 
 	t.Run("源分组不存在", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
-			map[string]any{"name": "不存在", "new_name": "任意"}, token)
+			map[string]any{"path": "不存在", "new_name": "任意"}, token)
 		assertJSONError(t, recorder, http.StatusNotFound, "分组不存在")
 	})
 
 	t.Run("非法分组名", func(t *testing.T) {
 		for name, payload := range map[string]map[string]any{
-			"旧名为空": {"name": "", "new_name": "新组"},
-			"新名为空": {"name": "新组", "new_name": ""},
-			"超长":   {"name": "新组", "new_name": strings.Repeat("a", core.MaxGroupNameBytes+1)},
+			"旧名为空": {"path": "", "new_name": "新组"},
+			"新名为空": {"path": "新组", "new_name": ""},
+			"超长":   {"path": "新组", "new_name": strings.Repeat("a", core.MaxGroupNameBytes+1)},
 		} {
 			t.Run(name, func(t *testing.T) {
 				recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename", payload, token)
@@ -1464,14 +1471,14 @@ func TestRenameGroupRoute(t *testing.T) {
 	t.Run("错误文案走 Accept-Language", func(t *testing.T) {
 		// DoJSON 不带自定义头，这里用原始请求补 Accept-Language。
 		recorder := testenv.DoRequest(handler, http.MethodPost, "/api/groups/rename",
-			bytes.NewReader([]byte(`{"name":"新组","new_name":"保留组"}`)), "application/json", token,
+			bytes.NewReader([]byte(`{"path":"新组","new_name":"保留组"}`)), "application/json", token,
 			map[string]string{"Accept-Language": "en"})
 		assertJSONError(t, recorder, http.StatusConflict, "A group with this name already exists")
 	})
 
 	t.Run("未登录", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
-			map[string]any{"name": "新组", "new_name": "另一个"}, "")
+			map[string]any{"path": "新组", "new_name": "另一个"}, "")
 		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
 	})
 
@@ -1500,7 +1507,7 @@ func TestGroupOrderRoute(t *testing.T) {
 		{second.ID, "二组"},
 	} {
 		recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+item.id,
-			map[string]any{"group_name": item.group}, token)
+			map[string]any{"group_path": item.group}, token)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("设置分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
 		}
@@ -1509,17 +1516,21 @@ func TestGroupOrderRoute(t *testing.T) {
 	listGroups := func() []string {
 		t.Helper()
 		var payload struct {
-			Groups []string `json:"groups"`
+			Groups []groupRow `json:"groups"`
 		}
 		testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &payload)
-		return payload.Groups
+		paths := make([]string, 0, len(payload.Groups))
+		for _, group := range payload.Groups {
+			paths = append(paths, group.Path)
+		}
+		return paths
 	}
 	if groups := listGroups(); len(groups) != 2 || groups[0] != "一组" || groups[1] != "二组" {
 		t.Fatalf("初始 groups = %v，想要 [一组 二组]", groups)
 	}
 
 	recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
-		map[string]any{"names": []string{"二组", "一组"}}, token)
+		map[string]any{"parent": "", "names": []string{"二组", "一组"}}, token)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
@@ -1529,7 +1540,7 @@ func TestGroupOrderRoute(t *testing.T) {
 
 	t.Run("集合对不上", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
-			map[string]any{"names": []string{"二组"}}, token)
+			map[string]any{"parent": "", "names": []string{"二组"}}, token)
 		assertJSONError(t, recorder, http.StatusConflict, "分组已变化，请刷新后重试")
 		// 失败时原顺序不变。
 		if groups := listGroups(); groups[0] != "二组" {
@@ -1545,7 +1556,7 @@ func TestGroupOrderRoute(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
-					map[string]any{"names": names}, token)
+					map[string]any{"parent": "", "names": names}, token)
 				assertJSONError(t, recorder, http.StatusBadRequest, "排序数据无效")
 			})
 		}
@@ -1553,7 +1564,7 @@ func TestGroupOrderRoute(t *testing.T) {
 
 	t.Run("未登录", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
-			map[string]any{"names": []string{"二组", "一组"}}, "")
+			map[string]any{"parent": "", "names": []string{"二组", "一组"}}, "")
 		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
 	})
 
@@ -1568,41 +1579,120 @@ func TestGroupOrderRoute(t *testing.T) {
 	})
 }
 
+// 两级分组：子分组挂在父分组下，同级独立排序；父分组改名时子分组与文件路径一起改。
+func TestNestedGroupRoute(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+	first := testenv.SeedUpload(t, instance, "first.txt", []byte("first"))
+
+	if recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+first.ID,
+		map[string]any{"group_path": "工作/项目A"}, token); recorder.Code != http.StatusOK {
+		t.Fatalf("设置二级分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+
+	listGroups := func() []groupRow {
+		t.Helper()
+		var payload struct {
+			Groups []groupRow `json:"groups"`
+		}
+		testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &payload)
+		return payload.Groups
+	}
+	groups := listGroups()
+	if len(groups) != 2 || groups[0].Path != "工作" || groups[1].Path != "工作/项目A" ||
+		groups[1].Parent != "工作" || groups[1].Name != "项目A" {
+		t.Fatalf("groups = %+v，想要顶层「工作」+ 子分组「工作/项目A」", groups)
+	}
+
+	// 三级路径拒绝。
+	if recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+		map[string]any{"path": "a/b/c"}, token); recorder.Code != http.StatusBadRequest {
+		t.Errorf("三级路径状态码 = %d，想要 400", recorder.Code)
+	}
+
+	// 新建子分组：追加到父级末尾。
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+		map[string]any{"path": "工作/项目B"}, token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("新建子分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Path string `json:"path"`
+	}
+	testenv.DecodeInto(t, recorder, &created)
+	if created.Path != "工作/项目B" {
+		t.Errorf("path = %q，想要 工作/项目B", created.Path)
+	}
+
+	// 同级重排：只动这个父级下的顺序。
+	recorder = testenv.DoJSON(handler, http.MethodPut, "/api/groups/order",
+		map[string]any{"parent": "工作", "names": []string{"项目B", "项目A"}}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("子分组重排状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	groups = listGroups()
+	if len(groups) != 3 || groups[1].Path != "工作/项目B" || groups[2].Path != "工作/项目A" {
+		t.Fatalf("重排后 groups = %+v", groups)
+	}
+
+	// 父分组改名：子分组路径与文件的分组路径一起改。
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
+		map[string]any{"path": "工作", "new_name": "工作区"}, token)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("父分组改名状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	groups = listGroups()
+	if len(groups) != 3 || groups[0].Path != "工作区" ||
+		groups[1].Path != "工作区/项目B" || groups[2].Path != "工作区/项目A" {
+		t.Fatalf("改名后 groups = %+v", groups)
+	}
+	var files struct {
+		Files []struct {
+			ID        string `json:"id"`
+			GroupPath string `json:"group_path"`
+		} `json:"files"`
+	}
+	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &files)
+	if len(files.Files) != 1 || files.Files[0].GroupPath != "工作区/项目A" {
+		t.Fatalf("改名后文件 = %+v，想要 group_path 工作区/项目A", files.Files)
+	}
+}
+
 // POST /api/groups：手动新建空分组，成功 201；同名 409、非法名 400。
 func TestCreateGroupRoute(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
 
 	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
-		map[string]any{"name": "  新组  "}, token)
+		map[string]any{"path": "  新组  "}, token)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	testenv.DecodeInto(t, recorder, &payload)
-	if payload.Name != "新组" {
-		t.Errorf("name = %q，想要 trim 后的「新组」", payload.Name)
+	if payload.Path != "新组" {
+		t.Errorf("path = %q，想要 trim 后的「新组」", payload.Path)
 	}
 	var list struct {
-		Groups []string `json:"groups"`
+		Groups []groupRow `json:"groups"`
 	}
 	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &list)
-	if len(list.Groups) != 1 || list.Groups[0] != "新组" {
+	if len(list.Groups) != 1 || list.Groups[0].Path != "新组" || list.Groups[0].Parent != "" || list.Groups[0].Name != "新组" {
 		t.Errorf("空分组也应当出现在 groups 里，得到 %v", list.Groups)
 	}
 
 	// 空分组可以改名。
 	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
-		map[string]any{"name": "新组", "new_name": "改名空组"}, token)
+		map[string]any{"path": "新组", "new_name": "改名空组"}, token)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("改名空分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 
 	t.Run("同名冲突", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
-			map[string]any{"name": "改名空组"}, token)
+			map[string]any{"path": "改名空组"}, token)
 		assertJSONError(t, recorder, http.StatusConflict, "分组名已存在")
 	})
 
@@ -1613,7 +1703,7 @@ func TestCreateGroupRoute(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
-					map[string]any{"name": raw}, token)
+					map[string]any{"path": raw}, token)
 				assertJSONError(t, recorder, http.StatusBadRequest, "分组名无效")
 			})
 		}
@@ -1621,7 +1711,7 @@ func TestCreateGroupRoute(t *testing.T) {
 
 	t.Run("未登录", func(t *testing.T) {
 		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
-			map[string]any{"name": "随便"}, "")
+			map[string]any{"path": "随便"}, "")
 		assertJSONError(t, recorder, http.StatusUnauthorized, "需要登录")
 	})
 

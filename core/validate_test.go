@@ -77,9 +77,9 @@ func TestErrorShape(t *testing.T) {
 	}
 }
 
-func TestNormalizeGroupName(t *testing.T) {
-	maxBytes := strings.Repeat("a", MaxGroupNameBytes)
-	tooLong := strings.Repeat("a", MaxGroupNameBytes+1)
+func TestNormalizeGroupPath(t *testing.T) {
+	segmax := strings.Repeat("a", MaxGroupNameBytes)
+	segtooLong := strings.Repeat("a", MaxGroupNameBytes+1)
 	chinese := strings.Repeat("组", 21) // 21 × 3 = 63 字节
 
 	cases := []struct {
@@ -91,18 +91,27 @@ func TestNormalizeGroupName(t *testing.T) {
 		{name: "空串", raw: "", want: "", ok: true},
 		{name: "只有空白", raw: " \t\n ", want: "", ok: true},
 		{name: "去首尾空白", raw: "  工作  ", want: "工作", ok: true},
-		{name: "64 字节", raw: maxBytes, want: maxBytes, ok: true},
-		{name: "65 字节", raw: tooLong},
+		{name: "顶级 64 字节", raw: segmax, want: segmax, ok: true},
+		{name: "顶级 65 字节", raw: segtooLong},
 		{name: "中文 63 字节", raw: chinese, want: chinese, ok: true},
+		{name: "二级", raw: "工作/项目A", want: "工作/项目A", ok: true},
+		{name: "二级各段去空白", raw: " 工作 / 项目A ", want: "工作/项目A", ok: true},
+		{name: "三级拒绝", raw: "a/b/c"},
+		{name: "空段", raw: "工作//项目A"},
+		{name: "末尾斜杠", raw: "工作/"},
+		{name: "以斜杠开头", raw: "/工作"},
+		{name: "二级段超长", raw: "工作/" + segtooLong},
+		{name: "二级段是单点", raw: "工作/."},
+		{name: "二级段是双点", raw: "工作/.."},
+		{name: "二级段以 .html 结尾", raw: "工作/a.html"},
 		{name: "含 NUL", raw: "a\x00b"},
 		{name: "含换行", raw: "a\nb"},
 		{name: "含 DEL", raw: "a\x7fb"},
 		{name: "中间带制表符", raw: "a\tb"},
 		{name: "首尾制表符被 trim 后合法", raw: "\tabc\t", want: "abc", ok: true},
-		{name: "含路径分隔符", raw: "a/b"},
-		{name: "单点", raw: "."},
-		{name: "双点", raw: ".."},
-		{name: "以 .html 结尾", raw: "a.html"},
+		{name: "顶级段是单点", raw: "."},
+		{name: "顶级段是双点", raw: ".."},
+		{name: "顶级段以 .html 结尾", raw: "a.html"},
 		{name: "页面表占用 auth", raw: "auth"},
 		{name: "接口前缀占用 api", raw: "api"},
 		{name: "下载前缀占用 d", raw: "d"},
@@ -110,19 +119,68 @@ func TestNormalizeGroupName(t *testing.T) {
 		{name: "图标占用 favicon.svg", raw: "favicon.svg"},
 		{name: "前端视图占用 favorites", raw: "favorites"},
 		{name: "前端视图占用 ungrouped", raw: "ungrouped"},
+		{name: "二级段可以是保留名", raw: "工作/assets", want: "工作/assets", ok: true},
 		{name: "含点但可路由", raw: "v1.2", want: "v1.2", ok: true},
 		{name: "含空格与井号", raw: "设计 #2", want: "设计 #2", ok: true},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			got, ok := NormalizeGroupName(item.raw)
+			got, ok := NormalizeGroupPath(item.raw)
 			if ok != item.ok {
-				t.Fatalf("NormalizeGroupName(%q) ok = %v，想要 %v", item.raw, ok, item.ok)
+				t.Fatalf("NormalizeGroupPath(%q) ok = %v，想要 %v", item.raw, ok, item.ok)
 			}
 			if ok && got != item.want {
-				t.Errorf("NormalizeGroupName(%q) = %q，想要 %q", item.raw, got, item.want)
+				t.Errorf("NormalizeGroupPath(%q) = %q，想要 %q", item.raw, got, item.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeGroupSegment(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "空串", raw: ""},
+		{name: "只有空白", raw: "  "},
+		{name: "去首尾空白", raw: " 工作 ", want: "工作", ok: true},
+		{name: "不再拆斜杠", raw: "工作/项目A"},
+		{name: "保留名在这一层不拦", raw: "assets", want: "assets", ok: true},
+		{name: "单点", raw: "."},
+		{name: "以 .html 结尾", raw: "a.html"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			got, ok := NormalizeGroupSegment(item.raw)
+			if ok != item.ok {
+				t.Fatalf("NormalizeGroupSegment(%q) ok = %v，想要 %v", item.raw, ok, item.ok)
+			}
+			if ok && got != item.want {
+				t.Errorf("NormalizeGroupSegment(%q) = %q，想要 %q", item.raw, got, item.want)
+			}
+		})
+	}
+}
+
+func TestSplitGroupPath(t *testing.T) {
+	cases := []struct {
+		path   string
+		parent string
+		name   string
+	}{
+		{"", "", ""},
+		{"工作", "", "工作"},
+		{"工作/项目A", "工作", "项目A"},
+		{"工作/项目A/子", "工作/项目A", "子"},
+	}
+	for _, item := range cases {
+		parent, name := SplitGroupPath(item.path)
+		if parent != item.parent || name != item.name {
+			t.Errorf("SplitGroupPath(%q) = (%q, %q)，想要 (%q, %q)",
+				item.path, parent, name, item.parent, item.name)
+		}
 	}
 }
 

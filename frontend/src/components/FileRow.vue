@@ -1,12 +1,16 @@
 <script setup lang="ts">
 /**
- * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 常驻操作按钮。
+ * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 操作区。
+ *
+ * 行内只保留最常用的三个动作（收藏、下载、删除），其余（重命名、复制直链、
+ * 公开/私有、移动到分组、新建分组）收进行末右对齐的「更多」菜单，避免一行里
+ * 挤满七个图标。
  *
  * 复制直链只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
- * 「移动到分组」菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的
- * 下拉菜单会被切掉；菜单定位按按钮 rect 计算并夹在视口内，滚动/缩放/Esc/点外面都关闭。
+ * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
+ * 菜单定位按按钮 rect 计算并夹在视口内，滚动/缩放/Esc/点外面都关闭。
  */
 import { computed, onBeforeUnmount, ref } from "vue";
 
@@ -14,12 +18,12 @@ import { publicLink } from "@/api";
 import { formatSize, formatTime } from "@/format";
 import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
-import type { FileItem } from "@/types";
+import type { FileItem, GroupItem } from "@/types";
 
 const props = defineProps<{
   file: FileItem;
-  /** 全部分组名（用于「移动到分组」菜单）。 */
-  groups: readonly string[];
+  /** 全部分组（含空分组），用于「移动到分组」列表。 */
+  groups: readonly GroupItem[];
   /** 可拖拽排序的列表才显示把手；搜索过滤时顺序不可提交，把手隐藏。 */
   draggable: boolean;
 }>();
@@ -30,8 +34,14 @@ const emit = defineEmits<{
   rename: [];
   visibility: [];
   delete: [];
-  "move-group": [groupName: string];
+  "move-group": [groupPath: string];
 }>();
+
+/** 顶级分组，以及某个分组下的子分组：菜单按两级缩进展示。 */
+const topGroups = computed(() => props.groups.filter((group) => group.parent === ""));
+function childrenOf(path: string): GroupItem[] {
+  return props.groups.filter((group) => group.parent === path);
+}
 
 /** 按扩展名挑选文件类型图标 + 配色，让长列表更容易用图标与颜色扫读。 */
 const kind = computed<FileKind>(() => {
@@ -134,10 +144,10 @@ async function copyLink(): Promise<void> {
   }, 1200);
 }
 
-/* ---------- 「移动到分组」菜单 ---------- */
+/* ---------- 「更多操作」菜单 ---------- */
 
-const MENU_WIDTH = 216;
-const MENU_MAX_HEIGHT = 328;
+const MENU_WIDTH = 240;
+const MENU_MAX_HEIGHT = 440;
 
 const menuOpen = ref(false);
 const menuEl = ref<HTMLElement | null>(null);
@@ -166,7 +176,7 @@ function onMenuKeydown(event: KeyboardEvent): void {
   closeMenu();
 }
 
-function toggleGroupMenu(event: MouseEvent): void {
+function toggleMenu(event: MouseEvent): void {
   triggerEl = event.currentTarget as HTMLElement;
   if (menuOpen.value) {
     closeMenu();
@@ -189,9 +199,32 @@ function toggleGroupMenu(event: MouseEvent): void {
   window.addEventListener("scroll", closeMenu, true);
 }
 
-function chooseGroup(groupName: string): void {
+function chooseGroup(path: string): void {
   closeMenu();
-  emit("move-group", groupName);
+  emit("move-group", path);
+}
+
+/** 菜单里的重命名 / 公开私有：先关菜单再交给父组件，避免弹窗压在下拉菜单上。 */
+function chooseRename(): void {
+  closeMenu();
+  emit("rename");
+}
+
+function chooseVisibility(): void {
+  closeMenu();
+  emit("visibility");
+}
+
+/** 删除是不可逆操作：先关菜单，确认弹窗由父组件负责（和收藏 / 公开保持同一处交互）。 */
+function chooseDelete(): void {
+  closeMenu();
+  emit("delete");
+}
+
+async function chooseCopyLink(): Promise<void> {
+  if (!props.file.is_public) return;
+  closeMenu();
+  await copyLink();
 }
 
 function promptNewGroup(): void {
@@ -244,54 +277,17 @@ onBeforeUnmount(() => {
         @click="emit('download')"
       ></button>
 
+      <!-- 行内只留常用动作，其余收进菜单；入口固定在行末，右对齐 -->
       <button
         type="button"
-        class="icon-btn rename"
-        :title="t('action.rename')"
-        :aria-label="t('action.rename')"
-        v-html="ICONS.pencil"
-        @click="emit('rename')"
-      ></button>
-
-      <button
-        type="button"
-        class="icon-btn link"
-        :class="{ 'is-copied': copied, 'is-disabled': !file.is_public }"
-        :disabled="!file.is_public"
-        :title="file.is_public ? (copied ? t('action.copied') : t('action.copy-link')) : t('action.copy-link-private')"
-        :aria-label="file.is_public ? t('action.copy-link') : t('action.copy-link-private')"
-        @click="copyLink"
-        v-html="copied ? ICONS.check : ICONS.link"
-      ></button>
-
-      <button
-        type="button"
-        class="icon-btn visibility"
-        :class="{ on: file.is_public }"
-        :title="file.is_public ? t('action.make-private') : t('action.make-public')"
-        :aria-label="file.is_public ? t('action.make-private') : t('action.make-public')"
-        v-html="file.is_public ? ICONS.eye : ICONS.eyeOff"
-        @click="emit('visibility')"
-      ></button>
-
-      <button
-        type="button"
-        class="icon-btn group"
-        :title="t('action.move-group')"
-        :aria-label="t('action.move-group')"
+        class="icon-btn more"
+        :class="{ on: menuOpen }"
+        :title="t('action.more')"
+        :aria-label="t('action.more')"
         aria-haspopup="menu"
         :aria-expanded="menuOpen"
-        v-html="ICONS.folder"
-        @click="toggleGroupMenu"
-      ></button>
-
-      <button
-        type="button"
-        class="icon-btn delete"
-        :title="t('action.delete')"
-        :aria-label="t('action.delete')"
-        v-html="ICONS.trash"
-        @click="emit('delete')"
+        v-html="ICONS.more"
+        @click="toggleMenu"
       ></button>
     </div>
 
@@ -299,47 +295,100 @@ onBeforeUnmount(() => {
       <div
         v-if="menuOpen"
         ref="menuEl"
-        class="group-menu"
+        class="row-menu"
         :style="menuStyle"
         role="menu"
-        :aria-label="t('action.move-group')"
+        :aria-label="t('action.more')"
       >
+        <button type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
+          <span class="row-menu-icon" v-html="ICONS.pencil"></span>
+          <span class="row-menu-label">{{ t("action.rename") }}</span>
+        </button>
+
         <button
           type="button"
-          class="group-menu-item"
+          class="row-menu-item"
+          role="menuitem"
+          :disabled="!file.is_public"
+          :title="file.is_public ? undefined : t('action.copy-link-private')"
+          @click="chooseCopyLink"
+        >
+          <span class="row-menu-icon" v-html="copied ? ICONS.check : ICONS.link"></span>
+          <span class="row-menu-label">{{ copied ? t("action.copied") : t("action.copy-link") }}</span>
+        </button>
+
+        <button type="button" class="row-menu-item" role="menuitem" @click="chooseVisibility">
+          <span class="row-menu-icon" v-html="file.is_public ? ICONS.eyeOff : ICONS.eye"></span>
+          <span class="row-menu-label">
+            {{ file.is_public ? t("action.make-private") : t("action.make-public") }}
+          </span>
+        </button>
+
+        <div class="row-menu-sep" role="separator"></div>
+        <p class="row-menu-title">{{ t("action.move-group") }}</p>
+
+        <!-- 分组多时只让这一段滚动：重命名 / 公开 / 删除始终在视野里 -->
+        <div class="row-menu-groups">
+        <button
+          type="button"
+          class="row-menu-item"
           role="menuitemradio"
-          :aria-checked="file.group_name === ''"
+          :aria-checked="file.group_path === ''"
           @click="chooseGroup('')"
         >
-          <span class="group-menu-check">
-            <span v-if="file.group_name === ''" v-html="ICONS.check"></span>
+          <span class="row-menu-check">
+            <span v-if="file.group_path === ''" v-html="ICONS.check"></span>
           </span>
-          <span class="group-menu-icon" v-html="ICONS.inbox"></span>
-          <span class="group-menu-label">{{ t("nav.ungrouped") }}</span>
+          <span class="row-menu-icon" v-html="ICONS.inbox"></span>
+          <span class="row-menu-label">{{ t("nav.ungrouped") }}</span>
         </button>
 
-        <button
-          v-for="group in groups"
-          :key="group"
-          type="button"
-          class="group-menu-item"
-          role="menuitemradio"
-          :aria-checked="file.group_name === group"
-          @click="chooseGroup(group)"
-        >
-          <span class="group-menu-check">
-            <span v-if="file.group_name === group" v-html="ICONS.check"></span>
-          </span>
-          <span class="group-menu-icon" v-html="ICONS.folder"></span>
-          <span class="group-menu-label">{{ group }}</span>
+        <template v-for="group in topGroups" :key="group.path">
+          <button
+            type="button"
+            class="row-menu-item"
+            role="menuitemradio"
+            :aria-checked="file.group_path === group.path"
+            @click="chooseGroup(group.path)"
+          >
+            <span class="row-menu-check">
+              <span v-if="file.group_path === group.path" v-html="ICONS.check"></span>
+            </span>
+            <span class="row-menu-icon" v-html="ICONS.folder"></span>
+            <span class="row-menu-label">{{ group.name }}</span>
+          </button>
+          <button
+            v-for="child in childrenOf(group.path)"
+            :key="child.path"
+            type="button"
+            class="row-menu-item is-child"
+            role="menuitemradio"
+            :aria-checked="file.group_path === child.path"
+            @click="chooseGroup(child.path)"
+          >
+            <span class="row-menu-check">
+              <span v-if="file.group_path === child.path" v-html="ICONS.check"></span>
+            </span>
+            <span class="row-menu-icon" v-html="ICONS.folder"></span>
+            <span class="row-menu-label">{{ child.name }}</span>
+          </button>
+        </template>
+        </div>
+
+        <div class="row-menu-sep" role="separator"></div>
+
+        <button type="button" class="row-menu-item is-new" role="menuitem" @click="promptNewGroup">
+          <span class="row-menu-check"></span>
+          <span class="row-menu-icon" v-html="ICONS.plus"></span>
+          <span class="row-menu-label">{{ t("action.new-group") }}</span>
         </button>
 
-        <div class="group-menu-sep" role="separator"></div>
+        <div class="row-menu-sep" role="separator"></div>
 
-        <button type="button" class="group-menu-item is-new" role="menuitem" @click="promptNewGroup">
-          <span class="group-menu-check"></span>
-          <span class="group-menu-icon" v-html="ICONS.plus"></span>
-          <span class="group-menu-label">{{ t("action.new-group") }}</span>
+        <button type="button" class="row-menu-item is-danger" role="menuitem" @click="chooseDelete">
+          <span class="row-menu-check"></span>
+          <span class="row-menu-icon" v-html="ICONS.trash"></span>
+          <span class="row-menu-label">{{ t("action.delete") }}</span>
         </button>
       </div>
     </Teleport>

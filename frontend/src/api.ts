@@ -94,7 +94,7 @@ export function login(token: string): Promise<AuthResponse> {
   });
 }
 
-/** GET /api/files：文件列表 + 分组展示顺序。 */
+/** GET /api/files：文件列表 + 全部分组（含空分组）。 */
 export async function listFiles(): Promise<FileListResponse> {
   const payload = await request<FileListResponse>("/api/files");
   return {
@@ -206,12 +206,12 @@ export function deleteFile(id: string): Promise<void> {
   return request<void>(`/api/files/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-/** PATCH /api/files/{id}：修改一级分组（空串 = 移出分组），返回更新后的完整记录。 */
-export function updateFileGroup(id: string, groupName: string): Promise<FileItem> {
+/** PATCH /api/files/{id}：修改分组路径（空串 = 移出分组），返回更新后的完整记录。 */
+export function updateFileGroup(id: string, groupPath: string): Promise<FileItem> {
   return request<FileItem>(`/api/files/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ group_name: groupName }),
+    body: JSON.stringify({ group_path: groupPath }),
   });
 }
 
@@ -224,30 +224,30 @@ export function renameFile(id: string, filename: string): Promise<FileItem> {
   });
 }
 
-/** PUT /api/groups/order：按拖拽后的顺序重写分组顺序（需覆盖当前全部分组，成功 204）。 */
-export function reorderGroups(names: string[]): Promise<void> {
+/** PUT /api/groups/order：重写某个父级下子分组的顺序（需覆盖该父级下全部分组，成功 204）。 */
+export function reorderGroups(parent: string, names: string[]): Promise<void> {
   return request<void>("/api/groups/order", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names }),
+    body: JSON.stringify({ parent, names }),
   });
 }
 
-/** POST /api/groups：手动新建一个空分组，成功返回规范化后的分组名。 */
-export function createGroup(name: string): Promise<{ name: string }> {
-  return request<{ name: string }>("/api/groups", {
+/** POST /api/groups：手动新建一个空分组（"父/子" 表示二级分组），成功返回规范化后的路径。 */
+export function createGroup(path: string): Promise<{ path: string }> {
+  return request<{ path: string }>("/api/groups", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ path }),
   });
 }
 
-/** POST /api/groups/rename：批量把 oldName 分组下的文件改名为 newName（成功 204）。 */
-export function renameGroup(name: string, newName: string): Promise<void> {
+/** POST /api/groups/rename：改写分组路径的最后一段（子分组与组内文件一起改名，成功 204）。 */
+export function renameGroup(path: string, newName: string): Promise<void> {
   return request<void>("/api/groups/rename", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, new_name: newName }),
+    body: JSON.stringify({ path, new_name: newName }),
   });
 }
 

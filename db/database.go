@@ -18,7 +18,7 @@ import (
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
 // 旧版本会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -29,15 +29,18 @@ CREATE TABLE IF NOT EXISTS file (
     is_favorite INTEGER NOT NULL DEFAULT 0,
     is_public   INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL,      -- unix 秒
-    group_name  TEXT    NOT NULL DEFAULT '', -- 一级分组名，空串表示未分组
+    group_path  TEXT    NOT NULL DEFAULT '', -- 分组路径（"顶级" 或 "顶级/二级"），空串表示未分组
     sort_order  INTEGER NOT NULL DEFAULT 0   -- 升序，越小越靠前
 );
 
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 CREATE TABLE IF NOT EXISTS groups (
-    name       TEXT    PRIMARY KEY,   -- 分组名（空分组也保留，可手动新建）
-    sort_order INTEGER NOT NULL       -- 分组展示顺序，升序，越小越靠前
+    path       TEXT    PRIMARY KEY,   -- 分组完整路径（空分组也保留，可手动新建）
+    parent     TEXT    NOT NULL,      -- 父分组路径，空串表示顶级
+    name       TEXT    NOT NULL,      -- 路径最后一段
+    sort_order INTEGER NOT NULL,      -- 同一父级内的顺序，升序，越小越靠前
+    UNIQUE (parent, name)
 );
 `
 
@@ -89,38 +92,29 @@ func Open(path string) (*Store, error) {
 			handle.Close()
 			return nil, err
 		}
-		switch version {
-		case schemaVersion:
-		case 3:
-			if err := store.migrateV3ToV4(); err != nil {
-				handle.Close()
-				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
+		// 逐级迁移：每一步只认下一版，缺哪级就从哪级补起。
+		steps := []struct {
+			from  int
+			apply func() error
+		}{
+			{1, store.migrateV1ToV2},
+			{2, store.migrateV2ToV3},
+			{3, store.migrateV3ToV4},
+			{4, store.migrateV4ToV5},
+		}
+		for _, step := range steps {
+			if version != step.from {
+				continue
 			}
-		case 2:
-			if err := store.migrateV2ToV3(); err != nil {
+			if err := step.apply(); err != nil {
 				handle.Close()
-				return nil, fmt.Errorf("migrate database v2 to v3: %w", err)
+				return nil, fmt.Errorf("migrate database v%d to v%d: %w", step.from, step.from+1, err)
 			}
-			if err := store.migrateV3ToV4(); err != nil {
-				handle.Close()
-				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
-			}
-		case 1:
-			if err := store.migrateV1ToV2(); err != nil {
-				handle.Close()
-				return nil, fmt.Errorf("migrate database v1 to v2: %w", err)
-			}
-			if err := store.migrateV2ToV3(); err != nil {
-				handle.Close()
-				return nil, fmt.Errorf("migrate database v2 to v3: %w", err)
-			}
-			if err := store.migrateV3ToV4(); err != nil {
-				handle.Close()
-				return nil, fmt.Errorf("migrate database v3 to v4: %w", err)
-			}
-		default:
+			version++
+		}
+		if version != schemaVersion {
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3 to migrate): remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3/4 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -238,7 +232,44 @@ func (s *Store) migrateV3ToV4() error {
 	if _, err := tx.Exec("DROP TABLE group_order"); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+	if _, err := tx.Exec("PRAGMA user_version = 4"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV4ToV5 把一级分组升级成两级：groups 增加 parent / name 两列（path 作主键），
+// file.group_name 改名为 group_path。v4 的分组名不含 "/"，所以旧值本身就是合法路径。
+func (s *Store) migrateV4ToV5() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE file RENAME COLUMN group_name TO group_path"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE groups_v5 (
+		path       TEXT    PRIMARY KEY,
+		parent     TEXT    NOT NULL,
+		name       TEXT    NOT NULL,
+		sort_order INTEGER NOT NULL,
+		UNIQUE (parent, name)
+	)`); err != nil {
+		return err
+	}
+	// 旧分组全是顶级分组：路径就是原来的名字，父路径为空。
+	if _, err := tx.Exec(`INSERT INTO groups_v5 (path, parent, name, sort_order)
+		SELECT name, '', name, sort_order FROM groups`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DROP TABLE groups"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("ALTER TABLE groups_v5 RENAME TO groups"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 5"); err != nil {
 		return err
 	}
 	return tx.Commit()

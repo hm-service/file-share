@@ -8,8 +8,8 @@ export interface FileItem {
   size: number;
   is_favorite: boolean;
   is_public: boolean;
-  /** 一级分组名；空串表示未分组。 */
-  group_name: string;
+  /** 分组路径（"顶级" 或 "顶级/二级"）；空串表示未分组。 */
+  group_path: string;
   /** 所在分组（或未分组段）内的排序序号，0..n-1。 */
   sort_order: number;
   /** unix 秒 */
@@ -22,10 +22,20 @@ export interface FileOrderItem {
   sort_order: number;
 }
 
+/** GET /api/files 里的一条分组。 */
+export interface GroupItem {
+  /** 完整路径，最多两段，段之间用 "/" 分隔。 */
+  path: string;
+  /** 父分组路径；顶级分组为空串。 */
+  parent: string;
+  /** 路径最后一段。 */
+  name: string;
+}
+
 export interface FileListResponse {
   files: FileItem[];
-  /** 当前有文件的分组名；顺序就是侧栏 / 移动端 chips 的展示顺序。 */
-  groups: string[];
+  /** 全部分组（含空分组）；同一父级内按展示顺序排列。 */
+  groups: GroupItem[];
 }
 
 /** POST /api/files/{id}/download-ticket 与分组票据的响应：浏览器可直接导航的短期地址。 */

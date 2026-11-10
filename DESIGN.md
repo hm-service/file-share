@@ -65,25 +65,30 @@ CREATE TABLE IF NOT EXISTS file (
   size        INTEGER NOT NULL,             -- 字节数
   is_favorite INTEGER NOT NULL DEFAULT 0,   -- 0/1，全局收藏
   is_public   INTEGER NOT NULL DEFAULT 0,   -- 0/1，公开后 /s/{id} 可匿名下载
-  group_name  TEXT    NOT NULL DEFAULT '',  -- 一级分组名，空串 = 未分组
+  group_path  TEXT    NOT NULL DEFAULT '',  -- 分组路径（"顶级" 或 "顶级/二级"），空串 = 未分组
   sort_order  INTEGER NOT NULL DEFAULT 0,   -- 列表顺序，升序，越小越靠前
   created_at  INTEGER NOT NULL              -- unix 秒
 );
 CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
 
 CREATE TABLE IF NOT EXISTS groups (
-  name       TEXT    PRIMARY KEY,          -- 分组名（空分组也保留，可手动新建）
-  sort_order INTEGER NOT NULL              -- 分组展示顺序，升序，越小越靠前
+  path       TEXT    PRIMARY KEY,          -- 分组完整路径（空分组也保留，可手动新建）
+  parent     TEXT    NOT NULL,             -- 父分组路径，空串 = 顶级
+  name       TEXT    NOT NULL,             -- 路径最后一段
+  sort_order INTEGER NOT NULL,             -- 同一父级内的顺序，升序，越小越靠前
+  UNIQUE (parent, name)
 );
 ```
 
 - 单库文件、单连接（`SetMaxOpenConns(1)`），无外键；一致性由代码保证。
-- `PRAGMA user_version = 4` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
-  v2 → v3 建分组顺序表并按分组名补初始顺序，v3 → v4 把 `group_order` 升级为分组注册表 `groups`），
-  新库直接建 v4；更高版本 fail-fast。
+- `PRAGMA user_version = 5` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
+  v2 → v3 建分组顺序表并按分组名补初始顺序，v3 → v4 把 `group_order` 升级为分组注册表 `groups`，
+  v4 → v5 给 `groups` 补 `parent` / `name` 并把 `file.group_name` 改名 `group_path`），
+  新库直接建 v5；更高版本 fail-fast。
 - 列表排序：`ORDER BY sort_order ASC, created_at DESC, id ASC`；上传/秒传插入时 `sort_order = MAX+1`。
-- 分组名与展示顺序存在 `groups` 表（空分组也是合法分组：新分组追加到末尾，改名保持位置，
-  删掉组内最后一个文件不会删除分组）；文件上的 `group_name` 指向分组名，空串表示未分组。
+- 分组最多两级：`groups` 表存路径、父路径与同级顺序（空分组也是合法分组：新分组追加到同一父级
+  末尾，改名保持位置，删掉组内最后一个文件不会删除分组）；文件上的 `group_path` 指向分组路径，
+  空串表示未分组。父分组改名时，它的子分组与组内文件路径在同一个事务里一起改写。
 - 收藏与公开状态是全局的（本服务只有一个凭据身份）。
 - 删除记录时，若同一 `sha256` 已无其他记录引用，则删除物理文件。
 - **数据升级策略**：结构变更在启动时一次性迁移（不做运行期兼容分支）；检测到更旧的 Python 版本数据
@@ -97,13 +102,14 @@ CREATE TABLE IF NOT EXISTS groups (
 | `/` | 主应用（全部） | 桌面：侧栏（全部/收藏/分组 + 上传入口）+ 内容区（搜索、文件列表、行内操作、分组内拖拽排序、分组全部下载）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
 | `/favorites` | 主应用（收藏） | 同一份应用页面，按路径还原视图 |
 | `/ungrouped` | 主应用（未分组） | 同上 |
-| `/<分组名>` | 主应用（单分组） | 分组名按 URL 转义（`encodeURIComponent` / `decodeURIComponent`）；未知分组回退「全部」并修正地址 |
+| `/<顶级>` | 主应用（顶级分组） | 路径段按 URL 转义（`encodeURIComponent` / `decodeURIComponent`） |
+| `/<顶级>/<二级>` | 主应用（二级分组） | 逐段转义；超过两段的路径 404；未知分组回退「全部」并修正地址 |
 | `/auth` | 登录页 | 输入 `AUTH_TOKEN` 换取会话；成功后进入主应用 |
 
 前端为两个独立 HTML 入口（`index.html` / `auth.html`），不引入路由库：视图与路径是一张手写映射，
-切换视图用 `history.pushState`，监听 `popstate` 还原前进 / 后退。服务端把单段路径
-（`/favorites`、`/ungrouped`、`/<分组名>`）交给同一个 `index.html`；多段路径与 `*.html`
-仍只认构建产物里的真实文件，其余 404。
+切换视图用 `history.pushState`，监听 `popstate` 还原前进 / 后退。服务端把一到两段路径
+（`/favorites`、`/ungrouped`、`/<顶级>`、`/<顶级>/<二级>`）交给同一个 `index.html`；
+`/assets/*` 与 `/auth/*` 下的路径、`*.html`、超过两段的路径仍只认构建产物里的真实文件，其余 404。
 所有文案走前端 i18n（简体中文 / English），语言选择存 `localStorage`，请求通过
 `Accept-Language` 传给后端。页面不含内联脚本、不引用外部资源。
 
@@ -118,17 +124,20 @@ CREATE TABLE IF NOT EXISTS groups (
   `2026年11月7号` / `November 7, 2026`；不参与拖拽。
   收藏 / 单分组 / 未分组视图按 `sort_order` 排序，可拖拽调整顺序。
   搜索按文件名过滤；过滤期间禁用拖拽，避免提交子集顺序打乱隐藏文件。
-- 行内操作：收藏、下载、重命名（`window.prompt`，与新建分组同一交互）、复制直链、公开/私有、
-  移动到分组、删除。重命名只改展示名 / 下载名，不动顺序。每行同时显示完整 SHA-256（等宽字体、
-  单行省略，文本可选中复制）；搜索框旁有独立刷新按钮，手动与自动刷新按请求序号取最新结果。
-- 分组是文件上的一级字符串字段：行内菜单可移动到已有分组或新建分组（`window.prompt`），
-  也可以直接把文件拖到侧栏分组标签 / 移动端 chips 上（落点虚线高亮，松手即改分组）；
-  侧栏 / 移动端 chips 同时用于按分组过滤，切换时同步地址栏（`/<分组名>`，名字转义）；
-  分组本身可直接拖拽排序（顺序存 `groups`，
-  松手提交 `PUT /api/groups/order`，失败回滚到服务端顺序）；侧栏与 chips 都能手动新建空分组，
-  单分组视图标题旁可重命名分组（空分组也可，批量改写组内 `group_name`，保持组内顺序；
-  目标分组已存在时拒绝，不做隐式合并）；在分组视图里上传的文件会直接归入该分组。
-  不提供分组删除与跨组拖拽。
+- 行内只留三个按钮：收藏、下载、右对齐的「更多」菜单。菜单里是重命名（`window.prompt`）、
+  复制直链（仅公开文件可用）、公开/私有、移动到分组（两级缩进，分组多时该段自己滚动）、
+  新建分组与删除（红色，二次确认）。重命名只改展示名 / 下载名，不动顺序。每行同时显示完整
+  SHA-256（等宽字体、单行省略，文本可选中复制）；搜索框旁有独立刷新按钮，手动与自动刷新按请求序号取最新结果。
+- 分组最多两级。桌面侧栏缩进展示子分组，窄屏 chips 分两行：第一行顶级分组，第二行是当前
+  顶级分组的子分组。每层是独立的拖拽容器（父分组连同子分组整体移动，子分组只在自己父级内排序），
+  松手提交 `PUT /api/groups/order`，失败回滚到服务端顺序。分组项是 `<button>`，Chrome 的原生
+  DnD 对按钮不生效，所以分组排序统一用 SortableJS 的 fallback 拖拽。
+- 新建分组只有一个入口（`window.prompt`），输入 `父/子` 即建二级分组；父级不存在时由服务端一并创建。
+  单分组视图标题旁可重命名分组：只改路径最后一段，顶级分组改名时子分组与文件路径一起改；
+  目标分组已存在时拒绝，不做隐式合并。
+- 行内菜单可移动到任意一级分组或新建分组（`window.prompt`），也可以直接把文件拖到侧栏分组标签 /
+  移动端 chips 上（落点虚线高亮，松手即改分组）；在分组视图里上传的文件会直接归入该分组。
+  不提供分组删除与跨层拖拽。
 - 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态换 60 秒票据、逐个触发 `/d?t=…` 下载，
   每个文件是浏览器里独立的一次下载（不打包成 zip）；浏览器可能询问是否允许下载多个文件。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
@@ -206,7 +215,8 @@ CREATE TABLE IF NOT EXISTS groups (
   `X-Frame-Options: DENY`、严格 CSP
   （`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';`）。
 - 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、排序接口 256 KiB（最多 2000 项）、秒传表单 1 MiB、上传 `MAX_FILE_SIZE`；
-  文件名只取 basename 并做长度/字符校验；分组名 trim 后 ≤64 字节、不含控制字符与 `/`、不以 `.html` 结尾、不与站点已有路径（`api`、`auth`、`favorites` 等）重名。
+  文件名只取 basename 并做长度/字符校验；分组路径最多两级，每段 trim 后 ≤64 字节、不含控制字符与 `/`、
+  不是 `.` / `..`、不以 `.html` 结尾，顶级段不与站点已有路径（`api`、`auth`、`favorites` 等）重名。
 - 并发闸门：认证、业务 API、静态资源/公开下载各自独立信号量；Argon2id 计算并发受认证闸门约束。
 - 反代职责：TLS、限流、访问控制在反向代理完成；应用只信任 `TRUSTED_PROXIES` 内的转发头。
 - 日志：结构化 JSON 到 stdout，一条请求一行，含真实客户端 IP 与 RFC 3339 时间戳；
@@ -228,6 +238,6 @@ CREATE TABLE IF NOT EXISTS groups (
 - 无多用户/权限模型：`AUTH_TOKEN` 是唯一身份，收藏与公开状态全局共享。
 - 会话不可单独撤销；轮换 `SESSION_SIGNING_KEY` 会让所有设备下线。
 - 公开直链无过期时间/访问计数；需要更细粒度分享控制时再引入独立分享表。
-- 分组只有一级，且不能删除分组；移动文件只能通过行内菜单或把行拖到分组标签上，跨分组拖拽排序未实现。
+- 分组最多两级，且不能删除分组；移动文件只能通过行内菜单或把行拖到分组标签上，跨父级拖拽排序未实现。
 - 拖拽只按段提交相对顺序；搜索过滤时禁用拖拽。收藏视图的拖拽只调整收藏项之间的 `sort_order`。
 - 旧 Python 版本数据不迁移；v1 起的 SQLite 结构会在启动时自动迁移，升级前仍需备份 `DATA_DIR`。

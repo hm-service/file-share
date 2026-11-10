@@ -106,7 +106,8 @@ func TestSiteServesBuiltFiles(t *testing.T) {
 func TestSiteServesViewRoutes(t *testing.T) {
 	handler := siteHandler(testSite())
 
-	for _, path := range []string{"/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026"} {
+	for _, path := range []string{"/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026",
+		"/cso2/%E5%AD%90%E7%BB%84"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusOK {
@@ -131,7 +132,8 @@ func TestSiteHasNoDirectoryListing(t *testing.T) {
 	handler := siteHandler(testSite())
 
 	for _, path := range []string{"/assets/", "/assets/nested", "/assets/nested/", "/assets/nope.js",
-		"/index.html", "/auth.html", "/nope/deep.js", "/a/b/"} {
+		"/assets/app-abc123.js/deep", "/index.html", "/auth.html", "/auth/deep",
+		"/nope/deep/deeper", "/cso2/子组/三级"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusNotFound {
@@ -161,6 +163,15 @@ func TestSiteRedirectsViewRouteTrailingSlash(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Location"); got != "/cso2" {
 		t.Errorf("/cso2/ Location = %q，想要 /cso2", got)
+	}
+
+	sub := testenv.Do(handler, http.MethodGet, "/cso2/%E5%AD%90%E7%BB%84/", "")
+	if sub.Code != http.StatusMovedPermanently {
+		t.Fatalf("二级分组带尾斜杠状态码 = %d，想要 301", sub.Code)
+	}
+	// http.Redirect 会把转义序列规范成小写十六进制，比较时忽略大小写。
+	if got := sub.Header().Get("Location"); !strings.EqualFold(got, "/cso2/%E5%AD%90%E7%BB%84") {
+		t.Errorf("二级分组尾斜杠 Location = %q", got)
 	}
 
 	assets := testenv.Do(handler, http.MethodGet, "/assets/", "")

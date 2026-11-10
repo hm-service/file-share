@@ -14,8 +14,8 @@ import (
 	"file-share/httpx"
 )
 
-// handleListFiles 返回全部记录与当前分组顺序：文件按 sort_order 与创建时间排序，
-// groups 是分组名列表，顺序即侧栏 / 移动端 chips 的展示顺序。
+// handleListFiles 返回全部记录与全部分组：文件按 sort_order 与创建时间排序，
+// groups 带完整路径与父路径，顺序即侧栏 / 移动端 chips 的展示顺序。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	files, err := s.App.ListFiles()
 	if err != nil {
@@ -166,16 +166,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"id": record.ID, "sha256": record.SHA256})
 }
 
-// handleUpdateFile 按需改写文件名（重命名）与分组名；成功后响应更新后的完整记录。
+// handleUpdateFile 按需改写文件名（重命名）与分组路径；成功后响应更新后的完整记录。
 func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Filename  *string `json:"filename"`
-		GroupName *string `json:"group_name"`
+		GroupPath *string `json:"group_path"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	record, err := s.App.UpdateFile(r.PathValue("file_id"), payload.Filename, payload.GroupName)
+	record, err := s.App.UpdateFile(r.PathValue("file_id"), payload.Filename, payload.GroupPath)
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -183,47 +183,48 @@ func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, record)
 }
 
-// handleSetGroupOrder 按拖拽后的顺序重写分组顺序；成功回 204。
+// handleSetGroupOrder 按拖拽后的顺序重写某个父级下子分组的顺序；成功回 204。
 func (s *Server) handleSetGroupOrder(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Names []string `json:"names"`
+		Parent string   `json:"parent"`
+		Names  []string `json:"names"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	if err := s.App.SetGroupOrder(payload.Names); err != nil {
+	if err := s.App.SetGroupOrder(payload.Parent, payload.Names); err != nil {
 		businessFail(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleCreateGroup 手动新建一个空分组；成功 201 并返回规范化后的分组名。
+// handleCreateGroup 手动新建一个空分组；成功 201 并返回规范化后的分组路径。
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	name, err := s.App.CreateGroup(payload.Name)
+	path, err := s.App.CreateGroup(payload.Path)
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	httpx.Write(w, http.StatusCreated, map[string]any{"name": name})
+	httpx.Write(w, http.StatusCreated, map[string]any{"path": path})
 }
 
-// handleRenameGroup 批量改写一个分组的名字；组内顺序不变，成功回 204。
+// handleRenameGroup 改写一个分组路径的最后一段；同级位置不变，成功回 204。
 func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Name    string `json:"name"`
+		Path    string `json:"path"`
 		NewName string `json:"new_name"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	if err := s.App.RenameGroup(payload.Name, payload.NewName); err != nil {
+	if err := s.App.RenameGroup(payload.Path, payload.NewName); err != nil {
 		businessFail(w, r, err)
 		return
 	}

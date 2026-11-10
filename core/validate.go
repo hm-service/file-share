@@ -8,8 +8,11 @@ import (
 // MaxFilenameBytes 是展示 / 下载文件名的上限：多数文件系统单个组件的上限就是 255 字节。
 const MaxFilenameBytes = 255
 
-// MaxGroupNameBytes 是分组名的上限（UTF-8 字节数）：分组只是一级标签，64 字节够用。
+// MaxGroupNameBytes 是分组名（路径里的一段）的上限（UTF-8 字节数）：分组只是标签，64 字节够用。
 const MaxGroupNameBytes = 64
+
+// MaxGroupDepth 是分组层数上限：只支持顶级与二级（"父/子"），三级及以上一律拒绝。
+const MaxGroupDepth = 2
 
 // 批量排序输入的边界：一次最多重排 2000 条，sort_order 落在 [0, 1e9]。
 const (
@@ -72,16 +75,44 @@ var reservedGroupNames = map[string]struct{}{
 	"favicon.svg": {},
 }
 
-// NormalizeGroupName 校验并规范化分组名：去掉首尾空白，空串表示未分组；
-// 规范化后不允许超过 64 字节、含控制字符或路径分隔符。第二个返回值表示是否合法。
+// NormalizeGroupPath 校验并规范化分组路径：空串表示未分组，其余形如 "顶级" 或 "顶级/二级"。
+// 每段按 NormalizeGroupSegment 规则规范化（去掉首尾空白），层数不超过 MaxGroupDepth。
+// 第二段起不参与顶层路由，因此只有第一段受 reservedGroupNames 约束。
+func NormalizeGroupPath(raw string) (string, bool) {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return "", true
+	}
+	segments := strings.Split(path, "/")
+	if len(segments) > MaxGroupDepth {
+		return "", false
+	}
+	for i, segment := range segments {
+		name, ok := NormalizeGroupSegment(segment)
+		if !ok {
+			return "", false
+		}
+		if i == 0 {
+			if _, reserved := reservedGroupNames[name]; reserved {
+				return "", false
+			}
+		}
+		segments[i] = name
+	}
+	return strings.Join(segments, "/"), true
+}
+
+// NormalizeGroupSegment 校验并规范化路径里的一段名字：去掉首尾空白，不允许超过
+// MaxGroupNameBytes 字节、含控制字符或 "/"。
 //
-// 分组名同时是页面路径的一段，所以 "." / ".."、以 .html 结尾（这些路径由页面表与产物文件
-// 占用）和 reservedGroupNames 里的名字都不能用。
-//
-// 先 trim 再判长度：客户端在输入框里多敲的空白不该被当成名字的一部分。
-func NormalizeGroupName(raw string) (string, bool) {
+// 分组名同时是页面路径的一段，所以 "." / ".." 和以 .html 结尾的名字也不能用
+// （这些路径由 ServeMux 清理规则与页面表占用）。
+func NormalizeGroupSegment(raw string) (string, bool) {
 	name := strings.TrimSpace(raw)
-	if len(name) > MaxGroupNameBytes || !utf8.ValidString(name) {
+	if name == "" || len(name) > MaxGroupNameBytes || !utf8.ValidString(name) {
+		return "", false
+	}
+	if name == "." || name == ".." || strings.HasSuffix(name, ".html") {
 		return "", false
 	}
 	for _, r := range name {
@@ -89,13 +120,21 @@ func NormalizeGroupName(raw string) (string, bool) {
 			return "", false
 		}
 	}
-	if name == "." || name == ".." || strings.HasSuffix(name, ".html") {
-		return "", false
-	}
-	if _, reserved := reservedGroupNames[name]; reserved {
-		return "", false
-	}
 	return name, true
+}
+
+// SplitGroupPath 把规范化路径拆成父路径与最后一段；顶级分组的父路径是空串。
+func SplitGroupPath(path string) (parent, name string) {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[:i], path[i+1:]
+	}
+	return "", path
+}
+
+// ReservedGroupRoot 判断某个名字是不是站点已占用的一级路径（不能拿来当顶级分组名）。
+func ReservedGroupRoot(name string) bool {
+	_, reserved := reservedGroupNames[name]
+	return reserved
 }
 
 // ValidOrderItems 校验批量排序输入：1..2000 项、每条 id 非空且不重复、
