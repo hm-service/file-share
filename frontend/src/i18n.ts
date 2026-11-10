@@ -82,6 +82,8 @@ export type MessageKey =
   | "action.rename-group"
   | "action.copy-link"
   | "action.copy-link-private"
+  | "action.copy-curl"
+  | "action.copy-curl-private"
   | "action.copied"
   | "action.delete"
   | "action.make-public"
@@ -183,6 +185,11 @@ const messages: Record<MessageKey, Message> = {
   "action.refresh": { zh: "刷新列表", en: "Refresh" },
   "action.copy-link": { zh: "复制直链", en: "Copy link" },
   "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
+  "action.copy-curl": { zh: "复制 curl 命令", en: "Copy curl command" },
+  "action.copy-curl-private": {
+    zh: "公开后才能复制 curl 命令",
+    en: "Make it public to copy the curl command",
+  },
   "action.copied": { zh: "已复制", en: "Copied" },
   "action.delete": { zh: "删除", en: "Delete" },
   "action.make-public": { zh: "设为公开", en: "Make public" },

@@ -3,9 +3,9 @@
  * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 操作区。
  *
  * 行内只留「下载、收藏、分组、更多」四个按钮：分组是高频操作，单独开「移动到分组」菜单；
- * 重命名、复制直链、公开/私有、删除收进最右的「更多」菜单，避免一行里挤满七个图标。
+ * 重命名、复制直链与 curl 命令、公开/私有、删除收进最右的「更多」菜单，避免一行里挤满七个图标。
  *
- * 复制直链只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
+ * 复制直链与 curl 命令只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
  * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
@@ -99,9 +99,10 @@ const kind = computed<FileKind>(() => {
   return "other";
 });
 
-/* ---------- 复制直链 ---------- */
+/* ---------- 复制直链 / curl 命令 ---------- */
 
-const copied = ref(false);
+/** 刚复制过的动作：只有那一项短暂显示「已复制」，两个复制入口互不影响。 */
+const copied = ref<"link" | "curl" | null>(null);
 let copiedTimer = 0;
 
 /** 复制成功返回 true；失败不弹窗，只是不显示「已复制」。 */
@@ -132,15 +133,36 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-async function copyLink(): Promise<void> {
+/** 单引号包住一个 shell 参数：值里的单引号写成 '\'' 收尾再续，其余字符原样保留。 */
+function shellQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`;
+}
+
+/**
+ * 公开文件的 curl 命令：`-f` 让 404 / 5xx 直接失败（免得把错误 JSON 存成文件），
+ * `-o` 把文件按原名落到当前目录。文件名与地址都套单引号，空格、$ 之类不用额外转义。
+ */
+function curlCommand(): string {
+  return `curl -f -o ${shellQuote(props.file.filename)} ${shellQuote(publicLink(props.file.id))}`;
+}
+
+/** 复制成功后菜单保持打开，对应的那一项显示「已复制」。 */
+async function copyAction(kind: "link" | "curl", text: string): Promise<void> {
   if (!props.file.is_public) return;
-  const ok = await copyText(publicLink(props.file.id));
-  if (!ok) return;
-  copied.value = true;
+  if (!(await copyText(text))) return;
+  copied.value = kind;
   window.clearTimeout(copiedTimer);
   copiedTimer = window.setTimeout(() => {
-    copied.value = false;
+    copied.value = null;
   }, 1200);
+}
+
+function copyLink(): void {
+  void copyAction("link", publicLink(props.file.id));
+}
+
+function copyCurl(): void {
+  void copyAction("curl", curlCommand());
 }
 
 /* ---------- 行内菜单（分组 / 更多） ---------- */
@@ -261,12 +283,6 @@ function chooseVisibility(): void {
 function chooseDelete(): void {
   closeMenu();
   emit("delete");
-}
-
-async function chooseCopyLink(): Promise<void> {
-  if (!props.file.is_public) return;
-  closeMenu();
-  await copyLink();
 }
 
 function promptNewGroup(): void {
@@ -429,10 +445,26 @@ onBeforeUnmount(() => {
           role="menuitem"
           :disabled="!file.is_public"
           :title="file.is_public ? undefined : t('action.copy-link-private')"
-          @click="chooseCopyLink"
+          @click="copyLink"
         >
-          <span class="row-menu-icon" v-html="copied ? ICONS.check : ICONS.link"></span>
-          <span class="row-menu-label">{{ copied ? t("action.copied") : t("action.copy-link") }}</span>
+          <span class="row-menu-icon" v-html="copied === 'link' ? ICONS.check : ICONS.link"></span>
+          <span class="row-menu-label">
+            {{ copied === "link" ? t("action.copied") : t("action.copy-link") }}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          :disabled="!file.is_public"
+          :title="file.is_public ? undefined : t('action.copy-curl-private')"
+          @click="copyCurl"
+        >
+          <span class="row-menu-icon" v-html="copied === 'curl' ? ICONS.check : ICONS.terminal"></span>
+          <span class="row-menu-label">
+            {{ copied === "curl" ? t("action.copied") : t("action.copy-curl") }}
+          </span>
         </button>
 
         <button type="button" class="row-menu-item" role="menuitem" @click="chooseVisibility">
