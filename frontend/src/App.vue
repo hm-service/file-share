@@ -473,18 +473,26 @@ async function onCreateGroup(): Promise<void> {
 }
 
 /** 重命名当前分组：只改最后一段，父路径不变；成功后地址同步改名。 */
-async function onRenameGroup(): Promise<void> {
-  if (view.value.kind !== "group") return;
-  const path = view.value.group;
-  const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-  const currentName = path.slice(path.lastIndexOf("/") + 1);
+/**
+ * 重命名分组：只改路径最后一段。
+ * 当前视图正看着这个分组（或它的子分组）时，地址按新路径同步改名 —— 改名顶级分组会
+ * 级联改子分组路径，所以当前停在子分组上也要跟着走。
+ */
+async function onRenameGroup(path: string, currentName: string): Promise<void> {
   const input = window.prompt(t("group.rename-prompt"), currentName);
   if (input === null) return;
   const newName = input.trim();
   if (!newName || newName === currentName) return;
+  const slash = path.lastIndexOf("/");
+  const parent = slash < 0 ? "" : path.slice(0, slash);
+  const nextPath = parent ? `${parent}/${newName}` : newName;
   try {
     await renameGroup(path, newName);
-    applyView({ kind: "group", group: parent ? `${parent}/${newName}` : newName }, "replace");
+    const current = view.value;
+    if (current.kind === "group" && (current.group === path || current.group.startsWith(`${path}/`))) {
+      const rest = current.group.slice(path.length);
+      applyView({ kind: "group", group: `${nextPath}${rest}` }, "replace");
+    }
     await refresh();
   } catch (error) {
     showActionError(error);
@@ -578,6 +586,13 @@ const deleteFallbackName = computed(() => {
   const parent = path.slice(0, slash);
   return groups.value.find((group) => group.path === parent)?.name ?? t("nav.ungrouped");
 });
+
+function onRenameGroupFromMenu(): void {
+  const target = groupMenu.value;
+  closeGroupMenu();
+  if (!target) return;
+  void onRenameGroup(target.path, target.name);
+}
 
 function onDeleteGroup(): void {
   const target = groupMenu.value;
@@ -920,16 +935,6 @@ onBeforeUnmount(() => {
         <div class="page-titles">
           <div class="page-title-line">
             <h1 class="page-title">{{ pageTitle }}</h1>
-            <button
-              v-if="isGroupView"
-              type="button"
-              class="title-action"
-              :title="t('action.rename-group')"
-              :aria-label="t('action.rename-group')"
-              @click="onRenameGroup"
-            >
-              <span v-html="ICONS.pencil"></span>
-            </button>
             <!-- 分组操作：桌面主要走侧栏右键，这里给窄屏（没有右键）留入口 -->
             <button
               v-if="isGroupView"
@@ -1160,6 +1165,10 @@ onBeforeUnmount(() => {
         role="menu"
         :aria-label="groupMenu.name"
       >
+        <button type="button" class="row-menu-item" role="menuitem" @click="onRenameGroupFromMenu">
+          <span class="row-menu-icon" v-html="ICONS.pencil"></span>
+          <span class="row-menu-label">{{ t("action.rename-group") }}</span>
+        </button>
         <button type="button" class="row-menu-item" role="menuitem" @click="onCreateSubgroup">
           <span class="row-menu-icon" v-html="ICONS.folder"></span>
           <span class="row-menu-label">{{ t("action.create-subgroup") }}</span>
