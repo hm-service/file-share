@@ -222,7 +222,8 @@ ul {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 11px;
+  /* 右侧多留 19px：一级分组行在那放折叠箭头，其余行留白，保证徽标对齐一竖列 */
+  padding: 9px 30px 9px 11px;
   border-radius: 10px;
   color: var(--ink-2);
   font-size: 13px;
@@ -289,15 +290,15 @@ ul {
   color: var(--accent-strong);
 }
 
-/* 顶级分组把落点高亮画在它自己的按钮上（wrapper 还包着子分组列表） */
-.nav-group-block.is-drop-target > .nav-item-group {
+/* 顶级分组把落点高亮画在它自己那一行上（wrapper 还包着子分组列表） */
+.nav-group-block.is-drop-target > .nav-group-row > .nav-item-group {
   outline: 2px dashed var(--accent);
   outline-offset: -3px;
   background: var(--accent-soft);
   color: var(--accent-strong);
 }
 
-/* 分组导航：全部/收藏之下，分组多时自己滚动 */
+/* 分组导航：最近/收藏之下，分组多时自己滚动 */
 .nav-sep {
   margin: 10px 4px 8px;
   border-top: 1px solid var(--line);
@@ -315,7 +316,6 @@ ul {
 .nav-groups {
   flex: 0 1 auto;
   min-height: 0;
-  padding-right: 2px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -324,11 +324,54 @@ ul {
   opacity: 0.7;
 }
 
-/* 顶级分组的一项：自己的按钮 + 它的子分组列表，整体参与顶层拖拽 */
+/* 顶级分组的一项：自己的一行 + 它的子分组列表，整体参与顶层拖拽 */
 .nav-group-block {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+/* 顶级分组的一行：分组按钮 + 右侧折叠箭头（箭头压在按钮右侧留白上） */
+.nav-group-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-fold {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: var(--ink-3);
+  transform: translateY(-50%);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-fold:hover {
+  background: rgb(20 23 44 / 0.07);
+  color: var(--ink-2);
+}
+
+.nav-fold-icon {
+  display: inline-flex;
+  transition: transform 0.15s;
+}
+
+.nav-fold-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 折叠时箭头从「朝下（展开）」转到「朝右（收起）」 */
+.nav-fold.is-folded .nav-fold-icon {
+  transform: rotate(-90deg);
 }
 
 /* 二级分组缩进一层，只在本层内拖拽排序 */
@@ -338,7 +381,7 @@ ul {
 }
 
 .nav-item-subgroup {
-  padding: 7px 11px;
+  padding: 7px 30px 7px 11px;
   font-size: 12.5px;
   font-weight: 500;
 }
@@ -663,7 +706,7 @@ ul {
 
 /* ================= 文件列表 ================= */
 
-/* 「全部」按日期分段：每段一个标题 + 一张卡片，段与段之间留出呼吸空间 */
+/* 「最近」按日期分段：每段一个标题 + 一张卡片，段与段之间留出呼吸空间 */
 .file-sections {
   display: flex;
   flex-direction: column;

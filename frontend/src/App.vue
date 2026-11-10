@@ -1,16 +1,17 @@
 <script setup lang="ts">
 /**
- * 主页面（/）的界面壳：左侧导航（全部 / 收藏 / 分组） + 文件列表 + 浮动上传坞。
+ * 主页面（/）的界面壳：左侧导航（最近 / 收藏 / 分组） + 文件列表 + 浮动上传坞。
  *
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
  * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
  *
- * 视图与地址栏一一对应：`/`「全部」、`/favorites`「收藏」、`/ungrouped`「未分组」、
+ * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/ungrouped`「未分组」、
  * `/<分组名>`「单个分组」（名字按 URL 转义）。切换视图用 pushState 进历史，
  * 浏览器前进 / 后退与直接打开链接都通过 routes.ts 还原。
  *
- * 分组是服务端的独立记录（不再由文件集合现算），空分组也保留；「全部」视图按上传时间
- * 倒序、按本地日期分段，其余视图按 sort_order 平铺，只有后者参与拖拽排序。
+ * 分组是服务端的独立记录（不再由文件集合现算），空分组也保留；「最近」视图按上传时间
+ * 倒序、按本地日期分段、只列最近 20 个文件（搜索时在全部文件里匹配），其余视图按
+ * sort_order 平铺，只有后者参与拖拽排序。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Sortable from "sortablejs";
@@ -49,8 +50,8 @@ const loadError = ref("");
 const actionError = ref("");
 let actionErrorTimer = 0;
 
-/** 当前视图：全部 / 收藏 / 单个分组 / 未分组。 */
-const view = ref<View>({ kind: "all" });
+/** 当前视图：最近 / 收藏 / 单个分组 / 未分组。 */
+const view = ref<View>({ kind: "recent" });
 const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
@@ -66,6 +67,42 @@ const topGroups = computed(() => groups.value.filter((group) => group.parent ===
 /** 某个分组下的子分组。 */
 function childrenOf(path: string): GroupItem[] {
   return groups.value.filter((group) => group.parent === path);
+}
+
+/**
+ * 折叠起来的一级分组路径：只影响侧栏是否展开它的子分组，
+ * 不写进地址栏、不落盘，刷新后恢复全部展开。
+ */
+const foldedGroups = ref<Set<string>>(new Set());
+
+function isGroupFolded(path: string): boolean {
+  return foldedGroups.value.has(path);
+}
+
+function toggleGroupFold(path: string): void {
+  const next = new Set(foldedGroups.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  foldedGroups.value = next;
+}
+
+/** 分组改名 / 删除后同步折叠集合，免得旧路径一直留在里面。 */
+function renameFoldedGroup(oldPath: string, newPath: string): void {
+  if (!foldedGroups.value.has(oldPath)) return;
+  const next = new Set(foldedGroups.value);
+  next.delete(oldPath);
+  next.add(newPath);
+  foldedGroups.value = next;
+}
+
+function forgetFoldedGroup(path: string): void {
+  let changed = false;
+  const next = new Set<string>();
+  for (const entry of foldedGroups.value) {
+    if (entry === path || entry.startsWith(`${path}/`)) changed = true;
+    else next.add(entry);
+  }
+  if (changed) foldedGroups.value = next;
 }
 
 /** 每个分组的直属文件数（父分组的 badge 不含子分组，和分组视图里看到的列表一致）。 */
@@ -102,7 +139,13 @@ function matchesQuery(file: FileItem): boolean {
   return !keyword.value || file.filename.toLowerCase().includes(keyword.value);
 }
 
-/** 「全部」视图的固定顺序：上传时间倒序，同一秒按 id 稳定排序；不参与拖拽。 */
+/** 「最近」视图最多列出的文件数。 */
+const RECENT_LIMIT = 20;
+
+/** 侧栏「最近」的徽标：和列表一致，最多显示 20。 */
+const recentCount = computed(() => Math.min(files.value.length, RECENT_LIMIT));
+
+/** 「最近」视图的固定顺序：上传时间倒序，同一秒按 id 稳定排序；不参与拖拽。 */
 const timeOrderedFiles = computed(() => {
   return [...files.value].sort((a, b) => {
     if (a.created_at !== b.created_at) return b.created_at - a.created_at;
@@ -110,9 +153,12 @@ const timeOrderedFiles = computed(() => {
   });
 });
 
-/** 当前视图的可见文件：全部按时间倒序，其余按用户排定的 sort_order，再按关键词过滤。 */
+/**
+ * 当前视图的可见文件：最近按时间倒序、只取前 20 个（有关键词时在全部文件里匹配，
+ * 不再截断，免得旧文件搜不到）；其余视图按用户排定的 sort_order，最后统一按关键词过滤。
+ */
 const visibleFiles = computed(() => {
-  const base = (isAll.value ? timeOrderedFiles.value : sortedFiles.value).filter(matchesQuery);
+  const base = (isRecent.value ? timeOrderedFiles.value : sortedFiles.value).filter(matchesQuery);
   const current = view.value;
   switch (current.kind) {
     case "favorites":
@@ -122,7 +168,7 @@ const visibleFiles = computed(() => {
     case "ungrouped":
       return base.filter((file) => !file.group_path);
     default:
-      return base;
+      return keyword.value ? base : base.slice(0, RECENT_LIMIT);
   }
 });
 
@@ -134,12 +180,12 @@ interface FileSection {
 }
 
 /**
- * 「全部」按本地日期分段，新的在上：列表已按上传时间倒序，同一天的文件天然相邻，
+ * 「最近」按本地日期分段，新的在上：列表已按上传时间倒序，同一天的文件天然相邻，
  * 顺序扫一遍即可切段；其余视图返回单段，不显示标题。
  */
 const visibleSections = computed<FileSection[]>(() => {
   const list = visibleFiles.value;
-  if (!isAll.value) return [{ key: "all", title: "", files: list }];
+  if (!isRecent.value) return [{ key: "single", title: "", files: list }];
   const sections: FileSection[] = [];
   let current: FileSection | null = null;
   for (const file of list) {
@@ -163,13 +209,17 @@ const pageTitle = computed(() => {
     case "group":
       return view.value.group;
     default:
-      return t("nav.all-files");
+      return t("nav.recent");
   }
 });
 const pageCount = computed(() => visibleFiles.value.length);
+/** 「最近」列表被截断：只有这时副标题才解释「20 个 / 共 N 个」。 */
+const recentCapped = computed(
+  () => isRecent.value && keyword.value.length === 0 && files.value.length > RECENT_LIMIT,
+);
 const emptyKey = computed(() => {
   if (keyword.value) return "nav.no-results" as const;
-  return view.value.kind === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-all" as const);
+  return view.value.kind === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-recent" as const);
 });
 const emptyIcon = computed(() => {
   if (view.value.kind === "favorites") return ICONS.star;
@@ -177,12 +227,22 @@ const emptyIcon = computed(() => {
   return ICONS.file;
 });
 
-const isAll = computed(() => view.value.kind === "all");
+const isRecent = computed(() => view.value.kind === "recent");
 const isFavorites = computed(() => view.value.kind === "favorites");
 const isUngrouped = computed(() => view.value.kind === "ungrouped");
 const isGroupView = computed(() => view.value.kind === "group");
 const isGroupActive = (path: string): boolean =>
   view.value.kind === "group" && view.value.group === path;
+/** 当前视图正停在 path 自身或它的子分组里。 */
+function groupHoldsView(path: string): boolean {
+  const current = view.value;
+  if (current.kind !== "group") return false;
+  return current.group === path || current.group.startsWith(`${path}/`);
+}
+/** 折叠时子分组不可见，让父行替它显示「当前位置」；展开时各高亮各自的行。 */
+function isGroupRowActive(path: string): boolean {
+  return isGroupActive(path) || (isGroupFolded(path) && groupHoldsView(path));
+}
 
 /** 当前视图所属的顶级分组；不在分组视图时为空串。 */
 const currentTopGroup = computed(() => {
@@ -197,8 +257,8 @@ const currentChildren = computed(() =>
   currentTopGroup.value ? childrenOf(currentTopGroup.value) : [],
 );
 
-/** 只有按 sort_order 排列的视图才开放拖拽；「全部」是固定时间序，搜索时 DOM 只是子集。 */
-const canSort = computed(() => !sortingDisabled.value && !isAll.value);
+/** 只有按 sort_order 排列的视图才开放拖拽；「最近」是固定时间序，搜索时 DOM 只是子集。 */
+const canSort = computed(() => !sortingDisabled.value && !isRecent.value);
 
 /** 当前分组内的文件数（与搜索过滤无关）：为 0 时不显示「全部下载」。 */
 const currentGroupCount = computed(() => {
@@ -218,11 +278,11 @@ function applyView(next: View, mode: "push" | "replace" = "push"): void {
   else history.replaceState(null, "", path);
 }
 
-/** 按地址栏还原视图（首次加载与前进 / 后退都走这里）；解不开的路径回退到「全部」。 */
+/** 按地址栏还原视图（首次加载与前进 / 后退都走这里）；解不开的路径回退到「最近」。 */
 function syncViewFromLocation(): void {
   const next = viewFromPath(location.pathname);
   if (!next) {
-    applyView({ kind: "all" }, "replace");
+    applyView({ kind: "recent" }, "replace");
     return;
   }
   view.value = next;
@@ -230,8 +290,8 @@ function syncViewFromLocation(): void {
   if (location.pathname !== canonical) history.replaceState(null, "", canonical);
 }
 
-function showAll(): void {
-  applyView({ kind: "all" });
+function showRecent(): void {
+  applyView({ kind: "recent" });
 }
 
 function showFavorites(): void {
@@ -248,13 +308,13 @@ function showUngrouped(): void {
   applyView({ kind: "ungrouped" });
 }
 
-/** 分组 / 未分组视图失去存在依据时回退「全部」：同步地址栏，刷新后不会停在空视图。 */
+/** 分组 / 未分组视图失去存在依据时回退「最近」：同步地址栏，刷新后不会停在空视图。 */
 function validateView(): void {
   const current = view.value;
   if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
-    applyView({ kind: "all" }, "replace");
+    applyView({ kind: "recent" }, "replace");
   } else if (current.kind === "ungrouped" && ungroupedCount.value === 0) {
-    applyView({ kind: "all" }, "replace");
+    applyView({ kind: "recent" }, "replace");
   }
 }
 
@@ -281,7 +341,8 @@ function createGroupSortable(parent: string, container: HTMLElement): Sortable {
     fallbackOnBody: true,
     fallbackTolerance: 2,
     draggable: topLevel ? "[data-group-block]" : "[data-subgroup]",
-    filter: topLevel ? "[data-subgroup]" : undefined,
+    // 折叠箭头是行内的独立按钮，别让它启动分组拖拽
+    filter: topLevel ? "[data-subgroup], .nav-fold" : undefined,
     preventOnFilter: false,
     ghostClass: "group-drag-ghost",
     chosenClass: "group-drag-chosen",
@@ -488,6 +549,7 @@ async function onRenameGroup(path: string, currentName: string): Promise<void> {
   const nextPath = parent ? `${parent}/${newName}` : newName;
   try {
     await renameGroup(path, newName);
+    renameFoldedGroup(path, nextPath);
     const current = view.value;
     if (current.kind === "group" && (current.group === path || current.group.startsWith(`${path}/`))) {
       const rest = current.group.slice(path.length);
@@ -607,11 +669,12 @@ async function confirmDeleteGroup(deleteFiles: boolean): Promise<void> {
   deleteTarget.value = null;
   try {
     await deleteGroup(target.path, deleteFiles);
-    // 视图停在被删分组（或它的子分组）里时，先回退到上级，避免刷新后闪一下「全部」。
+    forgetFoldedGroup(target.path);
+    // 视图停在被删分组（或它的子分组）里时，先回退到上级，避免刷新后闪一下「最近」。
     const current = view.value;
     if (current.kind === "group" && (current.group === target.path || current.group.startsWith(`${target.path}/`))) {
       const slash = target.path.lastIndexOf("/");
-      applyView(slash < 0 ? { kind: "all" } : { kind: "group", group: target.path.slice(0, slash) }, "replace");
+      applyView(slash < 0 ? { kind: "recent" } : { kind: "group", group: target.path.slice(0, slash) }, "replace");
     }
     await refresh();
   } catch (error) {
@@ -784,11 +847,11 @@ onBeforeUnmount(() => {
       </button>
       <p class="upload-hint">{{ t("upload.hint") }}</p>
 
-      <nav class="nav" :aria-label="t('nav.all-files')">
-        <button type="button" class="nav-item" :class="{ active: isAll }" :aria-current="isAll ? 'page' : undefined" @click="showAll">
+      <nav class="nav" :aria-label="t('nav.views')">
+        <button type="button" class="nav-item" :class="{ active: isRecent }" :aria-current="isRecent ? 'page' : undefined" @click="showRecent">
           <span class="nav-icon" v-html="ICONS.file"></span>
-          <span class="nav-label">{{ t("nav.all-files") }}</span>
-          <span class="nav-count">{{ files.length }}</span>
+          <span class="nav-label">{{ t("nav.recent") }}</span>
+          <span class="nav-count">{{ recentCount }}</span>
         </button>
         <button
           type="button"
@@ -820,22 +883,35 @@ onBeforeUnmount(() => {
           @dragleave="onGroupDragLeave($event, group.path)"
           @drop="onGroupDrop($event, group.path)"
         >
-          <button
-            type="button"
-            class="nav-item nav-item-group"
-            :class="{ active: isGroupActive(group.path) }"
-            :aria-current="isGroupActive(group.path) ? 'page' : undefined"
-            @click="showGroup(group.path)"
-            @contextmenu="openGroupMenu($event, group)"
-          >
-            <span class="nav-icon" v-html="ICONS.folder"></span>
-            <span class="nav-label">{{ group.name }}</span>
-            <span class="nav-count">{{ groupCounts.get(group.path) ?? 0 }}</span>
-          </button>
+          <div class="nav-group-row" @contextmenu="openGroupMenu($event, group)">
+            <button
+              type="button"
+              class="nav-item nav-item-group"
+              :class="{ active: isGroupRowActive(group.path) }"
+              :aria-current="isGroupRowActive(group.path) ? 'page' : undefined"
+              @click="showGroup(group.path)"
+            >
+              <span class="nav-icon" v-html="ICONS.folder"></span>
+              <span class="nav-label">{{ group.name }}</span>
+              <span class="nav-count">{{ groupCounts.get(group.path) ?? 0 }}</span>
+            </button>
+            <button
+              v-if="childrenOf(group.path).length"
+              type="button"
+              class="nav-fold"
+              :class="{ 'is-folded': isGroupFolded(group.path) }"
+              :aria-expanded="!isGroupFolded(group.path)"
+              :aria-label="t(isGroupFolded(group.path) ? 'action.expand-group' : 'action.collapse-group')"
+              :title="t(isGroupFolded(group.path) ? 'action.expand-group' : 'action.collapse-group')"
+              @click="toggleGroupFold(group.path)"
+            >
+              <span class="nav-fold-icon" v-html="ICONS.chevron"></span>
+            </button>
+          </div>
 
           <!-- 二级分组：缩进一层，只在本层内拖拽排序 -->
           <div
-            v-if="childrenOf(group.path).length"
+            v-if="childrenOf(group.path).length && !isGroupFolded(group.path)"
             class="nav nav-subgroups"
             :ref="(el) => setGroupContainer(`nav:${group.path}`, group.path, el)"
           >
@@ -950,10 +1026,16 @@ onBeforeUnmount(() => {
               <span v-html="ICONS.more"></span>
             </button>
           </div>
-          <p class="page-sub">{{ t("nav.file-count", { count: pageCount }) }}</p>
+          <p class="page-sub">
+            {{
+              recentCapped
+                ? t("nav.recent-count", { shown: pageCount, total: files.length })
+                : t("nav.file-count", { count: pageCount })
+            }}
+          </p>
         </div>
         <div class="page-actions">
-          <!-- 只看单个分组时提供「全部下载」；「全部 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
+          <!-- 只看单个分组时提供「全部下载」；「最近 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
           <button
             v-if="isGroupView && currentGroupCount > 0"
             type="button"
@@ -989,17 +1071,17 @@ onBeforeUnmount(() => {
       </header>
 
       <!-- 窄屏用标签页切换视图；桌面端用侧栏导航 -->
-      <div class="tabs" role="tablist" :aria-label="t('nav.all-files')">
+      <div class="tabs" role="tablist" :aria-label="t('nav.views')">
         <button
           type="button"
           class="tab"
           role="tab"
-          :class="{ active: isAll }"
-          :aria-selected="isAll"
-          @click="showAll"
+          :class="{ active: isRecent }"
+          :aria-selected="isRecent"
+          @click="showRecent"
         >
-          {{ t("nav.all-files") }}
-          <span class="tab-count">{{ files.length }}</span>
+          {{ t("nav.recent") }}
+          <span class="tab-count">{{ recentCount }}</span>
         </button>
         <button
           type="button"
@@ -1113,7 +1195,7 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <!-- 全部视图按上传时间倒序、按本地日期分段；其余视图按 sort_order 平铺成一张卡片 -->
+        <!-- 最近视图按上传时间倒序、按本地日期分段；其余视图按 sort_order 平铺成一张卡片 -->
         <div v-if="visibleFiles.length" class="file-sections">
           <section v-for="section in visibleSections" :key="section.key" class="file-section">
             <h2 v-if="section.title" class="file-section-title">{{ section.title }}</h2>
@@ -1136,8 +1218,8 @@ onBeforeUnmount(() => {
         <div v-else class="empty">
           <span class="empty-icon" v-html="emptyIcon"></span>
           <p class="empty-title">{{ loaded ? t(emptyKey) : t("state.loading") }}</p>
-          <template v-if="loaded && !query.trim() && (isAll || isFavorites || isGroupView)">
-            <p v-if="isAll" class="empty-text">
+          <template v-if="loaded && !query.trim() && (isRecent || isFavorites || isGroupView)">
+            <p v-if="isRecent" class="empty-text">
               <span class="desktop-only">{{ t("upload.hint") }}</span>
               <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
             </p>

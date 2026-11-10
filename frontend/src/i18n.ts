@@ -40,15 +40,17 @@ export type MessageKey =
   | "auth.token-placeholder"
   | "auth.submit"
   | "auth.error"
-  | "nav.all-files"
+  | "nav.recent"
+  | "nav.views"
   | "nav.favorites"
   | "nav.groups"
   | "nav.no-groups"
   | "nav.ungrouped"
   | "nav.search-placeholder"
   | "nav.file-count"
+  | "nav.recent-count"
   | "nav.no-results"
-  | "nav.empty-all"
+  | "nav.empty-recent"
   | "nav.empty-favorites"
   | "upload.button"
   | "upload.hint"
@@ -90,6 +92,8 @@ export type MessageKey =
   | "action.group-menu"
   | "action.create-subgroup"
   | "action.delete-group"
+  | "action.expand-group"
+  | "action.collapse-group"
   | "action.cancel"
   | "action.logout"
   | "badge.public"
@@ -128,15 +132,20 @@ const messages: Record<MessageKey, Message> = {
   "auth.token-placeholder": { zh: "访问令牌", en: "Access token" },
   "auth.submit": { zh: "进入", en: "Continue" },
   "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
-  "nav.all-files": { zh: "全部文件", en: "All files" },
+  "nav.recent": { zh: "最近", en: "Recent" },
+  "nav.views": { zh: "文件视图", en: "File views" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
   "nav.groups": { zh: "分组", en: "Groups" },
   "nav.no-groups": { zh: "暂无分组", en: "No groups yet" },
   "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
   "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
   "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
+  "nav.recent-count": {
+    zh: "显示最近 {shown} 个，共 {total} 个文件",
+    en: "Showing the latest {shown} of {total} files",
+  },
   "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
-  "nav.empty-all": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
+  "nav.empty-recent": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
   "nav.empty-favorites": { zh: "还没有收藏的文件", en: "No favorites yet" },
   "upload.button": { zh: "上传文件", en: "Upload files" },
   "upload.hint": { zh: "也可以把文件拖到右侧区域", en: "or drag files to this side" },
@@ -184,6 +193,8 @@ const messages: Record<MessageKey, Message> = {
   "action.group-menu": { zh: "分组操作", en: "Group actions" },
   "action.create-subgroup": { zh: "创建子分组", en: "New sub-group" },
   "action.delete-group": { zh: "删除分组", en: "Delete group" },
+  "action.expand-group": { zh: "展开子分组", en: "Expand sub-groups" },
+  "action.collapse-group": { zh: "折叠子分组", en: "Collapse sub-groups" },
   "action.cancel": { zh: "取消", en: "Cancel" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "badge.public": { zh: "公开", en: "Public" },
