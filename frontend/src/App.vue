@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * 主页面（/）的界面壳：左侧导航（最近 / 收藏 / 分组） + 文件列表 + 浮动上传坞。
+ * 主页面（/）的界面壳：左侧导航（最近 / 收藏 / 网盘 / 分组） + 文件列表 + 浮动上传坞。
  *
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
  * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
  *
- * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/ungrouped`「未分组」、
- * `/<分组名>`「单个分组」（名字按 URL 转义）。切换视图用 pushState 进历史，
+ * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/drive`「网盘」、
+ * `/ungrouped`「未分组」、`/<分组名>`「单个分组」（名字按 URL 转义）。切换视图用 pushState 进历史，
  * 浏览器前进 / 后退与直接打开链接都通过 routes.ts 还原。
  *
  * 分组是服务端的独立记录（不再由文件集合现算），空分组也保留；「最近」视图按上传时间
@@ -17,6 +17,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Sortable from "sortablejs";
 
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import DavBrowser from "@/components/DavBrowser.vue";
 import FileList from "@/components/FileList.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
 import UploadDock from "@/components/UploadDock.vue";
@@ -204,6 +205,8 @@ const pageTitle = computed(() => {
   switch (view.value.kind) {
     case "favorites":
       return t("nav.favorites");
+    case "drive":
+      return t("nav.drive");
     case "ungrouped":
       return t("nav.ungrouped");
     case "group":
@@ -229,6 +232,7 @@ const emptyIcon = computed(() => {
 
 const isRecent = computed(() => view.value.kind === "recent");
 const isFavorites = computed(() => view.value.kind === "favorites");
+const isDrive = computed(() => view.value.kind === "drive");
 const isUngrouped = computed(() => view.value.kind === "ungrouped");
 const isGroupView = computed(() => view.value.kind === "group");
 const isGroupActive = (path: string): boolean =>
@@ -296,6 +300,10 @@ function showRecent(): void {
 
 function showFavorites(): void {
   applyView({ kind: "favorites" });
+}
+
+function showDrive(): void {
+  applyView({ kind: "drive" });
 }
 
 function showGroup(group: string): void {
@@ -841,11 +849,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <button type="button" class="upload-primary" @click="pickFiles">
+      <button v-if="!isDrive" type="button" class="upload-primary" @click="pickFiles">
         <span class="upload-primary-icon" v-html="ICONS.upload"></span>
         {{ t("upload.button") }}
       </button>
-      <p class="upload-hint">{{ t("upload.hint") }}</p>
+      <p v-if="!isDrive" class="upload-hint">{{ t("upload.hint") }}</p>
 
       <nav class="nav" :aria-label="t('nav.views')">
         <button type="button" class="nav-item" :class="{ active: isRecent }" :aria-current="isRecent ? 'page' : undefined" @click="showRecent">
@@ -863,6 +871,16 @@ onBeforeUnmount(() => {
           <span class="nav-icon" v-html="ICONS.star"></span>
           <span class="nav-label">{{ t("nav.favorites") }}</span>
           <span class="nav-count">{{ files.filter((file) => file.is_favorite).length }}</span>
+        </button>
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: isDrive }"
+          :aria-current="isDrive ? 'page' : undefined"
+          @click="showDrive"
+        >
+          <span class="nav-icon" v-html="ICONS.drive"></span>
+          <span class="nav-label">{{ t("nav.drive") }}</span>
         </button>
       </nav>
 
@@ -989,6 +1007,7 @@ onBeforeUnmount(() => {
         <div class="mobile-actions">
           <LocaleSwitch />
           <button
+            v-if="!isDrive"
             type="button"
             class="mobile-upload"
             :title="t('upload.button')"
@@ -1027,11 +1046,11 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <p class="page-sub">
-            {{
-              recentCapped
-                ? t("nav.recent-count", { shown: pageCount, total: files.length })
-                : t("nav.file-count", { count: pageCount })
-            }}
+            <template v-if="isDrive">{{ t("drive.hint") }}</template>
+            <template v-else-if="recentCapped">
+              {{ t("nav.recent-count", { shown: pageCount, total: files.length }) }}
+            </template>
+            <template v-else>{{ t("nav.file-count", { count: pageCount }) }}</template>
           </p>
         </div>
         <div class="page-actions">
@@ -1046,27 +1065,29 @@ onBeforeUnmount(() => {
             <span class="group-download-icon" v-html="ICONS.download"></span>
             {{ t("action.download-group") }}
           </button>
-          <label class="search">
-            <span class="search-icon" v-html="ICONS.search"></span>
-            <input
-              v-model="query"
-              type="search"
-              class="search-input"
-              :placeholder="t('nav.search-placeholder')"
-              :aria-label="t('nav.search-placeholder')"
-            />
-          </label>
-          <button
-            type="button"
-            class="refresh-btn"
-            :class="{ spinning: refreshing }"
-            :title="t('action.refresh')"
-            :aria-label="t('action.refresh')"
-            :disabled="refreshing"
-            @click="refresh"
-          >
-            <span v-html="ICONS.refresh"></span>
-          </button>
+          <template v-if="!isDrive">
+            <label class="search">
+              <span class="search-icon" v-html="ICONS.search"></span>
+              <input
+                v-model="query"
+                type="search"
+                class="search-input"
+                :placeholder="t('nav.search-placeholder')"
+                :aria-label="t('nav.search-placeholder')"
+              />
+            </label>
+            <button
+              type="button"
+              class="refresh-btn"
+              :class="{ spinning: refreshing }"
+              :title="t('action.refresh')"
+              :aria-label="t('action.refresh')"
+              :disabled="refreshing"
+              @click="refresh"
+            >
+              <span v-html="ICONS.refresh"></span>
+            </button>
+          </template>
         </div>
       </header>
 
@@ -1093,6 +1114,16 @@ onBeforeUnmount(() => {
         >
           {{ t("nav.favorites") }}
           <span class="tab-count">{{ files.filter((file) => file.is_favorite).length }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab"
+          role="tab"
+          :class="{ active: isDrive }"
+          :aria-selected="isDrive"
+          @click="showDrive"
+        >
+          {{ t("nav.drive") }}
         </button>
       </div>
 
@@ -1195,7 +1226,11 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
+        <!-- 网盘：独立的 WebDAV 命名空间，只读浏览 + 下载 -->
+        <DavBrowser v-if="isDrive" />
+
         <!-- 最近视图按上传时间倒序、按本地日期分段；其余视图按 sort_order 平铺成一张卡片 -->
+        <template v-else>
         <div v-if="visibleFiles.length" class="file-sections">
           <section v-for="section in visibleSections" :key="section.key" class="file-section">
             <h2 v-if="section.title" class="file-section-title">{{ section.title }}</h2>
@@ -1230,6 +1265,7 @@ onBeforeUnmount(() => {
             </button>
           </template>
         </div>
+        </template>
       </section>
 
       <div v-if="dropActive" class="drop-overlay" aria-hidden="true">

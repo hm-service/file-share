@@ -79,7 +79,7 @@ func TestOpenRejectsUnsupportedSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 报错: %v", err)
 	}
-	if _, err := store.db.Exec("PRAGMA user_version = 6"); err != nil {
+	if _, err := store.db.Exec("PRAGMA user_version = 99"); err != nil {
 		t.Fatalf("改 schema 版本失败: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -435,5 +435,91 @@ func TestOpenMigratesV4Database(t *testing.T) {
 	// 迁移后可以直接建二级分组。
 	if _, err := store.CreateGroup("乙组/子组"); err != nil {
 		t.Fatalf("迁移后建二级分组报错: %v", err)
+	}
+}
+
+// createV5Database 造一个 v5 库（两级分组已经就位，但没有 dav_node 表）。
+func createV5Database(t *testing.T, path string) {
+	t.Helper()
+	handle, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("打开 v5 库失败: %v", err)
+	}
+	defer handle.Close()
+	statements := []string{
+		`CREATE TABLE file (
+			id          TEXT    PRIMARY KEY,
+			filename    TEXT    NOT NULL,
+			sha256      TEXT    NOT NULL,
+			size        INTEGER NOT NULL,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			is_public   INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL,
+			group_path  TEXT    NOT NULL DEFAULT '',
+			sort_order  INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX file_sha256_idx ON file (sha256)`,
+		`CREATE TABLE groups (
+			path       TEXT    PRIMARY KEY,
+			parent     TEXT    NOT NULL,
+			name       TEXT    NOT NULL,
+			sort_order INTEGER NOT NULL,
+			UNIQUE (parent, name)
+		)`,
+		`INSERT INTO file (id, filename, sha256, size, created_at, group_path, sort_order)
+		 VALUES ('old', 'old.txt', 'sha-old', 1, 100, '甲组', 0)`,
+		`INSERT INTO groups (path, parent, name, sort_order) VALUES ('甲组', '', '甲组', 0)`,
+		`PRAGMA user_version = 5`,
+	}
+	for _, statement := range statements {
+		if _, err := handle.Exec(statement); err != nil {
+			t.Fatalf("准备 v5 库失败: %v", err)
+		}
+	}
+}
+
+// v5 → v6：只新增 dav_node 表，旧数据保持原样；引用计数开始跨表计算。
+func TestOpenMigratesV5Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file-share.db")
+	createV5Database(t, path)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() 迁移报错: %v", err)
+	}
+	defer store.Close()
+	if version, err := store.schemaVersion(); err != nil || version != schemaVersion {
+		t.Fatalf("迁移后 schema 版本 = %d, %v，想要 %d", version, err, schemaVersion)
+	}
+	var hasDav int
+	if err := store.db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dav_node'").Scan(&hasDav); err != nil {
+		t.Fatalf("查询 dav_node 表失败: %v", err)
+	}
+	if hasDav != 1 {
+		t.Fatal("迁移后应当有 dav_node 表")
+	}
+	if files, err := store.ListFiles(); err != nil || len(files) != 1 || files[0].ID != "old" {
+		t.Fatalf("迁移后旧记录 = %+v, %v", files, err)
+	}
+	if groups, err := store.Groups(); err != nil || len(groups) != 1 || groups[0].Path != "甲组" {
+		t.Fatalf("迁移后旧分组 = %+v, %v", groups, err)
+	}
+
+	// 两张表引用同一个 sha 时，CountBySHA 要算两次。
+	if err := store.InsertDavNode(DavNode{
+		Path: "a.txt", Parent: "", Name: "a.txt", SHA256: "sha-old", Size: 1,
+		CreatedAt: 200, UpdatedAt: 200,
+	}); err != nil {
+		t.Fatalf("迁移后 InsertDavNode() 报错: %v", err)
+	}
+	if count, err := store.CountBySHA("sha-old"); err != nil || count != 2 {
+		t.Fatalf("CountBySHA(sha-old) = %d, %v，想要 2", count, err)
+	}
+	if _, err := store.DeleteDavSubtree("a.txt"); err != nil {
+		t.Fatalf("DeleteDavSubtree() 报错: %v", err)
+	}
+	if count, err := store.CountBySHA("sha-old"); err != nil || count != 1 {
+		t.Fatalf("删掉 dav 记录后 CountBySHA(sha-old) = %d, %v，想要 1", count, err)
 	}
 }

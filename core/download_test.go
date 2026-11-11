@@ -51,11 +51,11 @@ func TestTicketVerifyRejectsMalformed(t *testing.T) {
 	// 用同一把密钥签一个字段不合约定的载荷：签名正确，但缺 file id。
 	missingIDPayload := base64.RawURLEncoding.EncodeToString(
 		[]byte(strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10) + "|"))
-	missingID := missingIDPayload + "." + base64.RawURLEncoding.EncodeToString(signer.sign(missingIDPayload))
+	missingID := missingIDPayload + "." + base64.RawURLEncoding.EncodeToString(signer.sign(downloadTicketVersion, missingIDPayload))
 	// file id 里混进分隔符：解析会歧义，按格式无效处理。
 	separatorPayload := base64.RawURLEncoding.EncodeToString(
 		[]byte(strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10) + "|abc|def"))
-	separator := separatorPayload + "." + base64.RawURLEncoding.EncodeToString(signer.sign(separatorPayload))
+	separator := separatorPayload + "." + base64.RawURLEncoding.EncodeToString(signer.sign(downloadTicketVersion, separatorPayload))
 
 	cases := []struct {
 		name   string
@@ -113,5 +113,45 @@ func TestTicketAndSessionDoNotInterchange(t *testing.T) {
 	}
 	if _, err := sessionSigner.Verify(ticket, time.Now()); !errors.Is(err, ErrSessionMalformed) {
 		t.Errorf("下载票据不应当通过会话校验，得到 %v", err)
+	}
+}
+
+func TestDavTicketIssueVerifyRoundTrip(t *testing.T) {
+	signer := NewTicketSigner([]byte("test_signing_key_0123456789"))
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+
+	for _, path := range []string{"a.txt", "目录/文件 name.txt", "a|b.c d", "x/y/z"} {
+		ticket, err := signer.IssueDav(path, now)
+		if err != nil {
+			t.Fatalf("IssueDav(%q) 报错: %v", path, err)
+		}
+		got, err := signer.VerifyDav(ticket, now)
+		if err != nil {
+			t.Fatalf("VerifyDav(%q) 报错: %v", path, err)
+		}
+		if got != path {
+			t.Errorf("路径 = %q，想要 %q", got, path)
+		}
+	}
+
+	ticket, err := signer.IssueDav("a.txt", now)
+	if err != nil {
+		t.Fatalf("IssueDav() 报错: %v", err)
+	}
+	if _, err := signer.Verify(ticket, now); !errors.Is(err, ErrTicketMalformed) {
+		t.Errorf("dav 票据不应当通过 file 票据校验，得到 %v", err)
+	}
+	fileTicket, err := signer.Issue("abc", now)
+	if err != nil {
+		t.Fatalf("Issue() 报错: %v", err)
+	}
+	if _, err := signer.VerifyDav(fileTicket, now); !errors.Is(err, ErrTicketMalformed) {
+		t.Errorf("file 票据不应当通过 dav 票据校验，得到 %v", err)
+	}
+	if _, err := signer.VerifyDav(ticket, now.Add(DownloadTicketTTL)); !errors.Is(err, ErrTicketExpired) {
+		t.Errorf("过期那一刻应当返回 ErrTicketExpired，得到 %v", err)
+	}
+	if _, err := signer.IssueDav("", now); err == nil {
+		t.Error("空路径应当报错")
 	}
 }

@@ -164,7 +164,7 @@ func TestNormalizeGroupSegment(t *testing.T) {
 	}
 }
 
-func TestSplitGroupPath(t *testing.T) {
+func TestSplitPath(t *testing.T) {
 	cases := []struct {
 		path   string
 		parent string
@@ -176,9 +176,9 @@ func TestSplitGroupPath(t *testing.T) {
 		{"工作/项目A/子", "工作/项目A", "子"},
 	}
 	for _, item := range cases {
-		parent, name := SplitGroupPath(item.path)
+		parent, name := SplitPath(item.path)
 		if parent != item.parent || name != item.name {
-			t.Errorf("SplitGroupPath(%q) = (%q, %q)，想要 (%q, %q)",
+			t.Errorf("SplitPath(%q) = (%q, %q)，想要 (%q, %q)",
 				item.path, parent, name, item.parent, item.name)
 		}
 	}
@@ -211,6 +211,40 @@ func TestValidOrderItems(t *testing.T) {
 		t.Run(item.name, func(t *testing.T) {
 			if got := ValidOrderItems(item.items); got != item.want {
 				t.Errorf("ValidOrderItems() = %v，想要 %v", got, item.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeDavPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   string
+		want  string
+		valid bool
+	}{
+		{name: "根", raw: "/", want: "", valid: true},
+		{name: "空串", raw: "", want: "", valid: true},
+		{name: "单段", raw: "/a.txt", want: "a.txt", valid: true},
+		{name: "多段", raw: "/a/b/c.txt", want: "a/b/c.txt", valid: true},
+		{name: "首尾斜杠", raw: "/a/b/", want: "a/b", valid: true},
+		{name: "空段", raw: "/a//b", valid: false},
+		{name: "点", raw: "/a/./b", valid: false},
+		{name: "双点", raw: "/a/../b", valid: false},
+		{name: "空段结尾", raw: "//", valid: false},
+		{name: "控制字符", raw: "/a\x01b", valid: false},
+		{name: "没前导斜杠（内部形式）", raw: "a/b", want: "a/b", valid: true},
+		{name: "超长段", raw: "/" + strings.Repeat("a", MaxFilenameBytes+1), valid: false},
+		{name: "空格段", raw: "/a b/c d", want: "a b/c d", valid: true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			got, ok := NormalizeDavPath(item.raw)
+			if ok != item.valid {
+				t.Fatalf("NormalizeDavPath(%q) 有效 = %v，想要 %v", item.raw, ok, item.valid)
+			}
+			if ok && got != item.want {
+				t.Errorf("NormalizeDavPath(%q) = %q，想要 %q", item.raw, got, item.want)
 			}
 		})
 	}

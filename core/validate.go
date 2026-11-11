@@ -66,6 +66,9 @@ var reservedGroupNames = map[string]struct{}{
 	"api":         {},
 	"s":           {},
 	"d":           {},
+	"dav":         {},
+	"davdl":       {},
+	"drive":       {},
 	"auth":        {},
 	"assets":      {},
 	"readyz":      {},
@@ -123,12 +126,47 @@ func NormalizeGroupSegment(raw string) (string, bool) {
 	return name, true
 }
 
-// SplitGroupPath 把规范化路径拆成父路径与最后一段；顶级分组的父路径是空串。
-func SplitGroupPath(path string) (parent, name string) {
+// SplitPath 把规范化路径拆成父路径与最后一段；没有 "/" 时父路径是空串。
+func SplitPath(path string) (parent, name string) {
 	if i := strings.LastIndex(path, "/"); i >= 0 {
 		return path[:i], path[i+1:]
 	}
 	return "", path
+}
+
+// MaxDavPathBytes 是 WebDAV 路径（不含首尾斜杠）的字节上限：够放深层目录，
+// 又不至于让一次 PROPFIND 的响应失控。
+const MaxDavPathBytes = 4096
+
+// NormalizeDavPath 把 WebDAV 请求路径规范成内部形式："/" 与空串都是根（空串），
+// 其余去掉可选的前导斜杠与末尾斜杠后逐段校验；第二个返回值 false 表示路径非法。
+//
+// 前导斜杠可省略：WebDAV 处理器传 "/a/b"，网盘界面的接口传内部形式 "a/b"。
+// 不做 TrimSpace：文件名里的首尾空格是合法的，调用方传进来的就该是原样路径。
+func NormalizeDavPath(raw string) (string, bool) {
+	if raw == "" || raw == "/" {
+		return "", true
+	}
+	trimmed := strings.TrimPrefix(raw, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	if trimmed == "" || len(trimmed) > MaxDavPathBytes {
+		return "", false
+	}
+	for _, segment := range strings.Split(trimmed, "/") {
+		if !ValidDavSegment(segment) {
+			return "", false
+		}
+	}
+	return trimmed, true
+}
+
+// ValidDavSegment 校验 WebDAV 路径里的一段：规则与文件名的 basename 一致
+// （非空、<=255 字节、合法 UTF-8、不含控制字符与路径分隔符），并额外排除 "." / ".."。
+func ValidDavSegment(segment string) bool {
+	if segment == "." || segment == ".." {
+		return false
+	}
+	return ValidFilename(segment)
 }
 
 // ReservedGroupRoot 判断某个名字是不是站点已占用的一级路径（不能拿来当顶级分组名）。
