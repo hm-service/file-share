@@ -183,7 +183,19 @@ func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
 	}
 	// 记录已经删掉：blob 只剩这个分组引用时才清理，删不掉只留孤儿文件、不影响响应。
 	for _, sha := range shas {
-		a.pruneBlob(sha)
+		remaining, err := a.Store.CountBySHA(sha)
+		if err != nil {
+			slog.Error("count blob references after group delete failed",
+				slog.String("sha256", sha), slog.Any("error", err))
+			continue
+		}
+		if remaining > 0 {
+			continue
+		}
+		if err := os.Remove(a.blobPath(sha)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Error("remove blob after group delete failed",
+				slog.String("sha256", sha), slog.Any("error", err))
+		}
 	}
 	return nil
 }
@@ -254,14 +266,10 @@ func storeFailure(err error, key string) error {
 	return core.Fail(500, key)
 }
 
-// DownloadedFile 是下载需要的元信息与已打开的 blob。它不绑定某张表：
-// file 表与 dav_node 表都通过它把内容交给 HTTP 层。
+// DownloadedFile 是下载需要的记录与已打开的 blob。
 type DownloadedFile struct {
-	// Name 是下载时写进 Content-Disposition 的文件名（取自记录或 WebDAV 路径最后一段）。
-	Name   string
-	SHA256 string
-	Size   int64
-	Blob   *os.File
+	File *db.File
+	Blob *os.File
 }
 
 // Close 关闭 blob 文件句柄。
@@ -273,7 +281,7 @@ func (a *App) OpenDownload(id string) (*DownloadedFile, error) {
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}
-	return a.openBlob(record.SHA256, record.Filename, record.Size, "file.not-found")
+	return a.openBlob(record)
 }
 
 // OpenPublicDownload 只对公开记录打开 blob；私有与不存在对外表现完全一致。
@@ -282,20 +290,20 @@ func (a *App) OpenPublicDownload(id string) (*DownloadedFile, error) {
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}
-	return a.openBlob(record.SHA256, record.Filename, record.Size, "file.not-found")
+	return a.openBlob(record)
 }
 
-// openBlob 按 sha256 打开物理文件；记录在而 blob 丢了按 404 处理，不泄露数据目录的状态。
-func (a *App) openBlob(sha, name string, size int64, notFoundKey string) (*DownloadedFile, error) {
-	blob, err := os.Open(a.blobPath(sha))
+func (a *App) openBlob(record *db.File) (*DownloadedFile, error) {
+	blob, err := os.Open(a.blobPath(record.SHA256))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, core.Fail(404, notFoundKey)
+			// 记录在而 blob 丢了：对外与「记录不存在」一样是 404，不泄露数据目录的状态。
+			return nil, core.Fail(404, "file.not-found")
 		}
-		slog.Error("open blob failed", slog.String("sha256", sha), slog.Any("error", err))
+		slog.Error("open blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
 		return nil, core.Fail(500, "internal")
 	}
-	return &DownloadedFile{Name: name, SHA256: sha, Size: size, Blob: blob}, nil
+	return &DownloadedFile{File: record, Blob: blob}, nil
 }
 
 // DeleteFile 删除一条记录；这个 sha256 已无其他记录引用时顺手删掉 blob。
@@ -310,24 +318,20 @@ func (a *App) DeleteFile(id string) error {
 	if err := a.Store.DeleteFile(id); err != nil {
 		return storeFailure(err, "store.delete")
 	}
-	a.pruneBlob(record.SHA256)
-	return nil
-}
-
-// pruneBlob 在记录删除之后调用：file 与 dav_node 都不再引用这个 sha 时才删物理文件。
-// 记录已经删了，这里的失败只留下孤儿文件，不把错误回给调用方。
-func (a *App) pruneBlob(sha string) {
-	remaining, err := a.Store.CountBySHA(sha)
+	remaining, err := a.Store.CountBySHA(record.SHA256)
 	if err != nil {
-		slog.Error("count blob references failed", slog.String("sha256", sha), slog.Any("error", err))
-		return
+		// 记录已经删了，此时再报删除失败会误导用户；blob 留下来由运维清理。
+		slog.Error("count blob references failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
+		return nil
 	}
 	if remaining > 0 {
-		return
+		return nil
 	}
-	if err := os.Remove(a.blobPath(sha)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		slog.Error("remove unreferenced blob failed", slog.String("sha256", sha), slog.Any("error", err))
+	if err := os.Remove(a.blobPath(record.SHA256)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// 同上：记录已删，blob 删不掉只是留了个孤儿文件。
+		slog.Error("remove unreferenced blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
 	}
+	return nil
 }
 
 func newFileRecord(filename, sha string, size int64) (*db.File, error) {

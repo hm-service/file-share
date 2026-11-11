@@ -353,7 +353,7 @@ func (s *Store) RenameGroup(path, newName string) (int64, error) {
 	}
 	defer tx.Rollback()
 
-	parent, _ := core.SplitPath(path)
+	parent, _ := core.SplitGroupPath(path)
 	var exists int
 	if err := tx.QueryRow("SELECT COUNT(*) FROM groups WHERE path = ?", path).Scan(&exists); err != nil {
 		return 0, err
@@ -502,7 +502,7 @@ func (s *Store) DeleteGroup(path string, deleteFiles bool) ([]string, error) {
 		}
 	} else {
 		// 文件上移到被删分组的父路径，并挪到目标分组的末尾。
-		parent, _ := core.SplitPath(path)
+		parent, _ := core.SplitGroupPath(path)
 		var next int64
 		if err := tx.QueryRow("SELECT COALESCE(MAX(sort_order), 0) FROM file").Scan(&next); err != nil {
 			return nil, err
@@ -616,7 +616,7 @@ func ensureGroup(tx *sql.Tx, path string) error {
 	if path == "" {
 		return nil
 	}
-	parent, name := core.SplitPath(path)
+	parent, name := core.SplitGroupPath(path)
 	if parent != "" {
 		if err := ensureGroup(tx, parent); err != nil {
 			return err
@@ -639,13 +639,11 @@ func ensureGroup(tx *sql.Tx, path string) error {
 }
 
 // CountBySHA 数某个 blob 还有多少条记录引用它，删除记录后用来决定 blob 是否还要保留。
-// file 与 dav_node 共用同一个 blob 池，所以引用要跨表相加：两边都删掉才轮到物理文件。
 func (s *Store) CountBySHA(sha string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var count int
-	if err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM file WHERE sha256 = ?)
-		+ (SELECT COUNT(*) FROM dav_node WHERE sha256 = ?)`, sha, sha).Scan(&count); err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM file WHERE sha256 = ?", sha).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil

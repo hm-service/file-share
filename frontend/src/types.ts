@@ -69,21 +69,3 @@ export interface UploadResponse {
   id: string;
   sha256: string;
 }
-
-/** GET /api/dav 里的一条 WebDAV 节点。 */
-export interface DavEntry {
-  /** 内部路径，例如 "a/b.txt"；根为空串。 */
-  path: string;
-  name: string;
-  is_dir: boolean;
-  sha256?: string;
-  size: number;
-  created_at: number;
-  updated_at: number;
-}
-
-/** GET /api/dav?path= 的响应。 */
-export interface DavListResponse {
-  path: string;
-  entries: DavEntry[];
-}

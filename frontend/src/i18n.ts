@@ -43,7 +43,6 @@ export type MessageKey =
   | "nav.recent"
   | "nav.views"
   | "nav.favorites"
-  | "nav.drive"
   | "nav.groups"
   | "nav.no-groups"
   | "nav.ungrouped"
@@ -111,11 +110,6 @@ export type MessageKey =
   | "group.delete-files-hint"
   | "rename.prompt"
   | "confirm.delete"
-  | "drive.root"
-  | "drive.empty"
-  | "drive.hint"
-  | "drive.dir"
-  | "drive.error"
   | "date.group-heading"
   | "meta.unknown-time"
   | "lang.label"
@@ -143,7 +137,6 @@ const messages: Record<MessageKey, Message> = {
   "nav.recent": { zh: "最近", en: "Recent" },
   "nav.views": { zh: "文件视图", en: "File views" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
-  "nav.drive": { zh: "网盘", en: "Drive" },
   "nav.groups": { zh: "分组", en: "Groups" },
   "nav.no-groups": { zh: "暂无分组", en: "No groups yet" },
   "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
@@ -232,14 +225,6 @@ const messages: Record<MessageKey, Message> = {
   },
   "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
-  "drive.root": { zh: "根目录", en: "Root" },
-  "drive.empty": { zh: "这个目录是空的", en: "This folder is empty" },
-  "drive.hint": {
-    zh: "独立的 WebDAV 空间，挂载地址 /dav/（用户名任意，密码是访问令牌）",
-    en: "Separate WebDAV space, mount at /dav/ (any username, password is the access token)",
-  },
-  "drive.dir": { zh: "文件夹", en: "Folder" },
-  "drive.error": { zh: "读取网盘目录失败", en: "Failed to load this folder" },
   "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },

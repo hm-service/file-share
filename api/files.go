@@ -306,8 +306,8 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 	header := w.Header()
 	header.Set("Content-Type", "application/octet-stream")
 	// FormatMediaType 对非 ASCII 文件名自动改走 RFC 2231 的 filename* 形式。
-	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.Name}))
-	http.ServeContent(w, r, download.Name, time.Time{}, download.Blob)
+	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.File.Filename}))
+	http.ServeContent(w, r, download.File.Filename, time.Time{}, download.Blob)
 }
 
 // handleFileDownloadTicket 签一张 60 秒有效的下载票据。前端拿 url 后让浏览器直接导航：

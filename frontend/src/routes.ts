@@ -1,20 +1,19 @@
 /**
- * 视图与地址栏的映射：最近 `/`、收藏 `/favorites`、网盘 `/drive`、未分组 `/ungrouped`、
+ * 视图与地址栏的映射：最近 `/`、收藏 `/favorites`、未分组 `/ungrouped`、
  * 分组 `/<顶级>` 或 `/<顶级>/<二级>`。
  *
  * 分组路径的每一段都是用户输入，可能含中文、空格、`#`、`?` 等字符：
  * 生成路径时逐段 encodeURIComponent，还原时逐段 decodeURIComponent；
  * 解不开（非法百分号转义）或超过两段的路径返回 null，由调用方回退到「最近」。
  *
- * favorites / ungrouped / drive 是保留的一级路径，服务端创建分组时也会拒绝这些名字，
+ * favorites / ungrouped 是保留的一级路径，服务端创建分组时也会拒绝这两个名字，
  * 所以它们不会和分组重名。
  */
 
-/** 当前视图：最近 / 收藏 / 网盘 / 未分组 / 单个分组。 */
+/** 当前视图：最近 / 收藏 / 未分组 / 单个分组。 */
 export type View =
   | { kind: "recent" }
   | { kind: "favorites" }
-  | { kind: "drive" }
   | { kind: "ungrouped" }
   | { kind: "group"; group: string };
 
@@ -23,8 +22,6 @@ export function viewPath(view: View): string {
   switch (view.kind) {
     case "favorites":
       return "/favorites";
-    case "drive":
-      return "/drive";
     case "ungrouped":
       return "/ungrouped";
     case "group":
@@ -51,7 +48,6 @@ export function viewFromPath(pathname: string): View | null {
   }
   const path = decoded.join("/");
   if (path === "favorites") return { kind: "favorites" };
-  if (path === "drive") return { kind: "drive" };
   if (path === "ungrouped") return { kind: "ungrouped" };
   return { kind: "group", group: path };
 }

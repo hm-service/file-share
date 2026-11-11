@@ -18,7 +18,7 @@ import (
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
 // 旧版本会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
-const schemaVersion = 6
+const schemaVersion = 5
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -42,20 +42,6 @@ CREATE TABLE IF NOT EXISTS groups (
     sort_order INTEGER NOT NULL,      -- 同一父级内的顺序，升序，越小越靠前
     UNIQUE (parent, name)
 );
-
-CREATE TABLE IF NOT EXISTS dav_node (
-    path       TEXT    PRIMARY KEY,   -- 空串是根（不落库）；其余形如 "a/b/c"
-    parent     TEXT    NOT NULL,      -- 父路径，根下为 ""
-    name       TEXT    NOT NULL,      -- 路径最后一段
-    is_dir     INTEGER NOT NULL,      -- 1 目录 / 0 文件
-    sha256     TEXT    NOT NULL DEFAULT '', -- 文件内容；目录为空串
-    size       INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,      -- unix 秒
-    updated_at INTEGER NOT NULL,      -- unix 秒，同时用作 getlastmodified
-    UNIQUE (parent, name)
-);
-
-CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 `
 
 // Store 包住 database/sql，并在多步写操作上加一把锁（SQLite 单写者，连接也只有一个）。
@@ -115,7 +101,6 @@ func Open(path string) (*Store, error) {
 			{2, store.migrateV2ToV3},
 			{3, store.migrateV3ToV4},
 			{4, store.migrateV4ToV5},
-			{5, store.migrateV5ToV6},
 		}
 		for _, step := range steps {
 			if version != step.from {
@@ -129,7 +114,7 @@ func Open(path string) (*Store, error) {
 		}
 		if version != schemaVersion {
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3/4/5 to migrate): remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3/4 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -285,36 +270,6 @@ func (s *Store) migrateV4ToV5() error {
 		return err
 	}
 	if _, err := tx.Exec("PRAGMA user_version = 5"); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// migrateV5ToV6 新增 WebDAV 命名空间表：它与 file 表互不可见，内容却共用同一个 blob 池，
-// 引用计数按两张表相加。只加表，不动旧数据。
-func (s *Store) migrateV5ToV6() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`CREATE TABLE dav_node (
-		path       TEXT    PRIMARY KEY,
-		parent     TEXT    NOT NULL,
-		name       TEXT    NOT NULL,
-		is_dir     INTEGER NOT NULL,
-		sha256     TEXT    NOT NULL DEFAULT '',
-		size       INTEGER NOT NULL DEFAULT 0,
-		created_at INTEGER NOT NULL,
-		updated_at INTEGER NOT NULL,
-		UNIQUE (parent, name)
-	)`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("CREATE INDEX dav_node_sha256_idx ON dav_node (sha256)"); err != nil {
-		return err
-	}
-	if _, err := tx.Exec("PRAGMA user_version = 6"); err != nil {
 		return err
 	}
 	return tx.Commit()

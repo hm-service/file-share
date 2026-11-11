@@ -78,34 +78,19 @@ CREATE TABLE IF NOT EXISTS groups (
   sort_order INTEGER NOT NULL,             -- 同一父级内的顺序，升序，越小越靠前
   UNIQUE (parent, name)
 );
-
-CREATE TABLE IF NOT EXISTS dav_node (      -- WebDAV 命名空间：独立的目录树
-  path       TEXT    PRIMARY KEY,          -- 内部路径，空串是根；其余形如 "a/b/c"
-  parent     TEXT    NOT NULL,             -- 父路径，根下为 ""
-  name       TEXT    NOT NULL,             -- 路径最后一段
-  is_dir     INTEGER NOT NULL,             -- 1 目录 / 0 文件
-  sha256     TEXT    NOT NULL DEFAULT '',  -- 文件内容；目录为空串
-  size       INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,             -- unix 秒
-  updated_at INTEGER NOT NULL,             -- unix 秒，同时用作 getlastmodified
-  UNIQUE (parent, name)
-);
-CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 ```
 
 - 单库文件、单连接（`SetMaxOpenConns(1)`），无外键；一致性由代码保证。
-- `PRAGMA user_version = 6` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
+- `PRAGMA user_version = 5` 标识当前结构；旧库启动时在事务内逐级迁移（v1 → v2 补两列，
   v2 → v3 建分组顺序表并按分组名补初始顺序，v3 → v4 把 `group_order` 升级为分组注册表 `groups`，
-  v4 → v5 给 `groups` 补 `parent` / `name` 并把 `file.group_name` 改名 `group_path`，
-  v5 → v6 新增 `dav_node` 表），新库直接建 v6；更高版本 fail-fast。
+  v4 → v5 给 `groups` 补 `parent` / `name` 并把 `file.group_name` 改名 `group_path`），
+  新库直接建 v5；更高版本 fail-fast。
 - 列表排序：`ORDER BY sort_order ASC, created_at DESC, id ASC`；上传/秒传插入时 `sort_order = MAX+1`。
 - 分组最多两级：`groups` 表存路径、父路径与同级顺序（空分组也是合法分组：新分组追加到同一父级
   末尾，改名保持位置，删掉组内最后一个文件不会删除分组）；文件上的 `group_path` 指向分组路径，
   空串表示未分组。父分组改名时，它的子分组与组内文件路径在同一个事务里一起改写。
 - 收藏与公开状态是全局的（本服务只有一个凭据身份）。
-- 删除记录时，若同一 `sha256` 已无其他记录引用，则删除物理文件。`file` 与 `dav_node` 共用
-  `files/` 下的 blob 池，引用计数跨两张表相加：两边都不再引用时才删物理文件，同内容只存一份。
-- `dav_node` 与 `file` 互不可见：WebDAV 有自己的目录树（深度不限），文件列表只读 `file` 表。
+- 删除记录时，若同一 `sha256` 已无其他记录引用，则删除物理文件。
 - **数据升级策略**：结构变更在启动时一次性迁移（不做运行期兼容分支）；检测到更旧的 Python 版本数据
   （`DATA_DIR/files.db` 或 `DATA_DIR/favorite.json`）或更高的 schema 版本时，服务拒绝启动；
   升级前备份 `DATA_DIR` 是既定代价。
@@ -116,7 +101,6 @@ CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 | --- | --- | --- |
 | `/` | 主应用（最近） | 桌面：侧栏（最近/收藏/分组 + 上传入口）+ 内容区（搜索、文件列表、行内操作、分组内拖拽排序、分组全部下载）+ 浮动上传坞；窄屏：顶栏 + 标签页 + 分组 chips + 列表 + 贴底上传坞；内容区整块可拖放上传 |
 | `/favorites` | 主应用（收藏） | 同一份应用页面，按路径还原视图 |
-| `/drive` | 主应用（网盘） | 浏览 WebDAV 命名空间：面包屑 + 目录 / 文件列表 + 下载；只读，上传与管理走 WebDAV 挂载 |
 | `/ungrouped` | 主应用（未分组） | 同上 |
 | `/<顶级>` | 主应用（顶级分组） | 路径段按 URL 转义（`encodeURIComponent` / `decodeURIComponent`） |
 | `/<顶级>/<二级>` | 主应用（二级分组） | 逐段转义；超过两段的路径 404；未知分组回退「最近」并修正地址 |
@@ -220,25 +204,7 @@ CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 与会话共用 `SESSION_SIGNING_KEY` 但签名前缀不同，两者不能互相冒用。票据只放在查询参数里，
 访问日志只记录 `/d`，不会把凭据写进日志；下载完成后过期即失效。
 
-### 6.4 WebDAV（Basic 认证，独立命名空间）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `OPTIONS` / `PROPFIND` / `GET` / `HEAD` / `PUT` / `DELETE` / `MKCOL` / `COPY` / `MOVE` / `LOCK` / `UNLOCK` | `/dav/*` | 标准 WebDAV，读写 `dav_node` 表；目录深度不限 |
-| `GET` | `/api/dav?path=` | 网盘界面列表：`{"path":"a/b","entries":[{"path","name","is_dir","sha256","size","created_at","updated_at"}]}` |
-| `POST` | `/api/dav/ticket` | 网盘界面下载票据：`{"path":"a/b.txt"}` → `{"url":"/davdl?t=…"}`（60 秒） |
-| `GET` | `/davdl?t=…` | 凭票据下载 WebDAV 文件（不需要 Basic 凭据） |
-
-- 认证：HTTP Basic，用户名不校验，密码是 `AUTH_TOKEN`；校验结果按令牌的 sha256 缓存 5 分钟，
-  避免每个 PROPFIND 都跑一次 Argon2id；失败不缓存。
-- 路径：内部形式是 `a/b/c`，根是空串；每段 ≤255 字节、合法 UTF-8、不含控制字符与 `/`，总长 ≤4096 字节。
-- 语义：`PUT` 同名覆盖（先写临时文件，成功后才替换记录与物理文件）；`DELETE` 目录递归删除；
-  `MKCOL` 目标已存在返回 405；`MOVE` 改路径前缀（目录连带子树）；`COPY` 读源写目标（内容去重）；
-  `LOCK` 用进程内锁，重启失效，适合单实例；`PROPPATCH` 的私有属性不持久化。
-- 上限：`MAX_FILE_SIZE` 同时约束 PUT 的 `Content-Length` 与流式写入。
-- 保留名：`dav`、`davdl`、`drive` 是站点占用的一级路径，不能用作分组名。
-
-### 6.5 探针
+### 6.4 探针
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -252,8 +218,6 @@ CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 - 授权：所有 `/api/*` 除 `POST /api/auth` 外均需有效会话；公开文件只通过 `/s/{id}` 暴露；
   浏览器下载用 60 秒、绑定单个文件的 HMAC 票据走 `/d?t=…`，票据不是会话凭据，不进日志。
 - 会话签名密钥、登录令牌、就绪探针令牌都按 Secret 处理：读完立即从进程环境表删除。
-- WebDAV：`/dav/*` 用 HTTP Basic，密码就是 `AUTH_TOKEN` —— 每个请求都带一份明文口令（Base64 不是加密），
-  因此只应在 HTTPS 或可信内网使用；公开直链与签名票据不适用于 WebDAV 命名空间。
 - 数据权限：`DATA_DIR` 0700、`files/` 0700、数据库 0600、物理文件 0600；启动时收紧，
   `/readyz` 持续断言。
 - 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
@@ -274,8 +238,7 @@ CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 - 二进制用 `CGO_ENABLED=0 -ldflags="-w -s" -trimpath` 构建，`ldd` 应报告
   `not a dynamic executable`。
 - 测试：标准库 `testing`，表格驱动；`internal/testenv` 提供临时 `DATA_DIR` 实例；
-  覆盖认证/会话、上传秒传与去重、公开路由、WebDAV 协议（PROPFIND/PUT/MOVE/DELETE/票据）、
-跨表 blob 引用计数、探针、错误路径、安全头与 i18n。覆盖率实测值记入 README。
+  覆盖认证/会话、上传秒传与去重、公开路由、探针、错误路径、安全头与 i18n。覆盖率实测值记入 README。
 - 前端验证：构建后用 `scripts/shot.mjs`（skill 自带，零依赖 CDP）截图并转发控制台错误；
   关键截图存入 `docs/` 并在 README 引用。
 
@@ -285,8 +248,5 @@ CREATE INDEX IF NOT EXISTS dav_node_sha256_idx ON dav_node (sha256);
 - 会话不可单独撤销；轮换 `SESSION_SIGNING_KEY` 会让所有设备下线。
 - 公开直链无过期时间/访问计数；需要更细粒度分享控制时再引入独立分享表。
 - 分组最多两级；移动文件只能通过行内菜单或把行拖到分组标签上，跨父级拖拽排序未实现。
-- WebDAV 与分享是两个命名空间：挂载端看不到文件列表，文件列表也不能直接分享 WebDAV 里的文件；
-  需要分享时只能重新上传（两边内容仍共用同一份 blob）。
-- WebDAV 的锁存在进程内存里，重启即失效；多实例部署时锁不共享。
 - 拖拽只按段提交相对顺序；搜索过滤时禁用拖拽。收藏视图的拖拽只调整收藏项之间的 `sort_order`。
 - 旧 Python 版本数据不迁移；v1 起的 SQLite 结构会在启动时自动迁移，升级前仍需备份 `DATA_DIR`。

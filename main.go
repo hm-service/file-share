@@ -103,10 +103,6 @@ func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) ht
 	static.Handle("/", siteHandler(files))
 	staticHandler := api.Concurrency(limits.static, static)
 
-	// WebDAV 是独立命名空间：Basic 认证、自己的表，内容与文件列表共用 blob 池。
-	dav := api.Concurrency(limits.static, api.DavHandler(instance))
-	davDownload := api.Concurrency(limits.static, api.DavDownloadHandler(instance))
-
 	root := http.NewServeMux()
 	// 认证单独一组：它被打满不该把业务请求挤在后面；/readyz 自己一组、只给几个槽位；
 	// /livez 不设闸门 —— 只要进程活着就必须能回 200。落在 /api/ 下的新接口自动被认领。
@@ -114,9 +110,6 @@ func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) ht
 	root.Handle("/api/", api.Concurrency(limits.api, routes))
 	root.Handle("/readyz", api.Concurrency(api.ReadyzConcurrency, routes))
 	root.Handle("/livez", routes)
-	root.Handle("/dav", dav)
-	root.Handle("/dav/", dav)
-	root.Handle("/davdl", davDownload)
 	root.Handle("/s/", staticHandler)
 	root.Handle("/d", staticHandler)
 	root.Handle("/d/", staticHandler)

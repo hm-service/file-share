@@ -13,7 +13,6 @@ import { getSession, toLogin } from "./session";
 import type {
   AuthResponse,
   CheckFileResponse,
-  DavListResponse,
   DownloadTicketResponse,
   FileItem,
   FileListResponse,
@@ -83,21 +82,6 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     throw new ApiError(detailOf(payload) || t("error.network"), response.status);
   }
   return payload as T;
-}
-
-/** GET /api/dav?path=：列出 WebDAV 命名空间下的一个目录（path 为空串表示根）。 */
-export function listDav(path: string): Promise<DavListResponse> {
-  return request<DavListResponse>(`/api/dav?path=${encodeURIComponent(path)}`);
-}
-
-/** 网盘视图的下载：先换一张 60 秒票据，再让浏览器导航下载（和文件列表同一套机制）。 */
-export async function downloadDav(path: string): Promise<void> {
-  const payload = await request<DownloadTicketResponse>("/api/dav/ticket", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-  startDownload(payload.url);
 }
 
 /** POST /api/auth：成功返回会话，失败抛 ApiError（401 = 令牌不对）。 */

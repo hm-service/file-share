@@ -45,8 +45,6 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodGet, "/livez", server.handleLivez, false},
 		{http.MethodGet, "/readyz", server.handleReadyz, false},
 		{http.MethodGet, "/api/files", server.handleListFiles, true},
-		{http.MethodGet, "/api/dav", server.handleDavList, true},
-		{http.MethodPost, "/api/dav/ticket", server.handleDavTicket, true},
 		{http.MethodPost, "/api/check_file", server.handleCheckFile, true},
 		{http.MethodPost, "/api/upload", server.handleUpload, true},
 		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true},
