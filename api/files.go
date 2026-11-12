@@ -291,7 +291,7 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 	http.ServeContent(w, r, download.File.Filename, time.Time{}, download.Blob)
 }
 
-// handleDownloadURL 签一个匿名下载地址（到下一个 UTC 整点失效）。前端拿 url 后让浏览器
+// handleDownloadURL 签一个匿名下载地址（SignedURLTTL 内有效）。前端拿 url 后让浏览器
 // 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
 func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
 	url, err := s.App.IssueDownloadURL(r.PathValue("file_id"))
@@ -302,7 +302,7 @@ func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
 }
 
-// handleShareLink 签一条 ShareLinkTTL 内有效的分享链接：对方免登录即可下载，
+// handleShareLink 签一条 SignedURLTTL 内有效的分享链接：对方免登录即可下载，
 // 签名不对或过期一律 404。
 func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 	url, err := s.App.IssueShareLink(r.PathValue("file_id"))

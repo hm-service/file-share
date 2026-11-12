@@ -293,7 +293,7 @@ function startDownload(url: string): void {
   anchor.remove();
 }
 
-/** GET /api/files/{id}/download-url：换一个匿名下载地址（到下一个 UTC 整点失效）。 */
+/** GET /api/files/{id}/download-url：换一个匿名下载地址（10 分钟内有效）。 */
 export async function downloadFile(id: string): Promise<void> {
   const payload = await request<DownloadURLResponse>(
     `/api/files/${encodeURIComponent(id)}/download-url`,

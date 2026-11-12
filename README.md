@@ -109,7 +109,7 @@ podman kube play k8s.file-share.yaml
 | `PUT` | `/api/groups/order` | 保存某一层分组的顺序（`parent`、`names`） |
 | `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载（curl / 程序用） |
-| `GET` | `/api/files/{id}/download-url` | 签浏览器下载地址（到下一个 UTC 整点失效） |
+| `GET` | `/api/files/{id}/download-url` | 签浏览器下载地址（10 分钟有效） |
 | `GET` | `/s/{id}?sig=…&exp=…` | 凭签名下载单个文件（无需登录凭据） |
 | `DELETE` | `/api/files/{id}` | 删除 |
 | `GET` | `/livez` / `/readyz` | 存活 / 就绪探针 |
@@ -229,8 +229,7 @@ curl -s -X PUT -H "Authorization: Bearer $SESSION" -H 'Content-Type: application
 
 curl / 程序可以直接带 Bearer 调 `GET /api/files/{id}/download`。浏览器里的下载按钮走签名 URL：
 先 `GET /api/files/{id}/download-url`（需登录）拿到 `{"url":"/s/{id}?sig=…&exp=…"}`，
-再让浏览器直接下载该地址。地址到下一个 UTC 整点失效（同一小时内重复签出的地址不变）、
-只绑定单个文件；下载路径不要求 `Authorization`，因此可以流式传输、支持 Range 与浏览器原生进度，
+再让浏览器直接下载该地址。地址 10 分钟内有效、只绑定单个文件；下载路径不要求 `Authorization`，因此可以流式传输、支持 Range 与浏览器原生进度，
 也不会把会话 token 写进地址栏或日志。
 
 **分享链接**：行内「复制分享链接」会先 `POST /api/files/{id}/share`（需登录）拿到

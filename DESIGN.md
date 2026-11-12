@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS groups (
 - 行内菜单可移动到任意一级分组或新建分组（`window.prompt`），也可以直接把文件拖到侧栏分组标签 /
   移动端 chips 上（落点虚线高亮，松手即改分组）；在分组视图里上传的文件会直接归入该分组。
   不提供分组删除与跨层拖拽。
-- 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态签下载地址（到下一个 UTC 整点）、
+- 单分组视图提供「全部下载」：前端按组内顺序逐个用登录态签下载地址（10 分钟内有效）、
   逐个触发 `/s/{id}?sig=…&exp=…` 下载，每个文件是浏览器里独立的一次下载（不打包成 zip）；
   浏览器可能询问是否允许下载多个文件。
 - 拖拽排序使用 SortableJS（行首 grip 为 handle，触屏长按），按段提交 0..n-1 的 `sort_order`；
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS groups (
 | PUT | `/api/files/order` | 批量排序：`{"items":[{"id","sort_order"}]}`（1..2000 项，id 不重复，0..1e9）；成功 204；任一 id 不存在则整批回滚 404 |
 | POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |
 | GET | `/api/files/{id}/download` | 附件下载（支持 Range/HEAD），需 Bearer |
-| GET | `/api/files/{id}/download-url` | 签浏览器下载地址：`{"url":"/s/{id}?sig=…&exp=…"}`（到下一个 UTC 整点，绑定单文件） |
+| GET | `/api/files/{id}/download-url` | 签浏览器下载地址：`{"url":"/s/{id}?sig=…&exp=…"}`（10 分钟，绑定单文件） |
 | POST | `/api/files/{id}/share` | 签分享链接：`{"url":"/s/{id}?sig=…&exp=…"}`（10 分钟，绑定单文件） |
 | DELETE | `/api/files/{id}` | 删除记录；无引用后删除物理文件；返回 204 |
 
@@ -203,9 +203,8 @@ CREATE TABLE IF NOT EXISTS groups (
 
 签名：`sig = base64url(HMAC-SHA256(URL_SIGNATURE_KEY, "v1|<method>|<escapedPath>|<exp>"))`，
 `escapedPath` 是 `/s/{file_id}`、不含查询参数；URL 固定为 `sig` 在前、`exp` 在后，不需要 `Authorization`。
-校验先验签、再判过期，签名覆盖方法与路径，换文件或改路径都验不过。浏览器下载地址的有效期
-取整到下一个 UTC 小时（同一小时内重复签出的地址不变），分享链接 10 分钟有效；两者格式与校验相同，
-只差签发时的 `exp`。签名 URL 与会话凭据密钥不同、不能互相冒用，访问日志只记录 `/s/{file_id}`。
+校验先验签、再判过期，签名覆盖方法与路径，换文件或改路径都验不过。浏览器下载地址与分享链接
+都是 10 分钟有效（`SignedURLTTL`），两者格式与校验相同，只是用途不同。签名 URL 与会话凭据密钥不同、不能互相冒用，访问日志只记录 `/s/{file_id}`。
 
 ### 6.4 探针
 
@@ -219,7 +218,7 @@ CREATE TABLE IF NOT EXISTS groups (
 - 认证：单 token（`AUTH_TOKEN`）。启动时用 Argon2id（m=19456, t=2, p=1）哈希，只保留哈希值；
   登录以恒定时间校验并补足最小耗时。
 - 授权：所有 `/api/*` 除 `POST /api/auth` 外均需有效会话；匿名下载只通过 `/s/{id}?sig=&exp=` 的签名 URL：
-  浏览器下载地址到下一个 UTC 整点失效、分享链接 10 分钟失效，都绑定单个文件、不是会话凭据、不进日志。
+  浏览器下载地址与分享链接都 10 分钟失效，绑定单个文件、不是会话凭据、不进日志。
 - 会话签名密钥、URL 签名密钥、登录令牌、就绪探针令牌都按 Secret 处理：读完立即从进程环境表删除。
 - 数据权限：`DATA_DIR` 0700、`files/` 0700、数据库 0600、物理文件 0600；启动时收紧，
   `/readyz` 持续断言。

@@ -1332,7 +1332,7 @@ func TestConcurrentDuplicateUploads(t *testing.T) {
 	}
 }
 
-// 下载地址：登录后签一个 /s/{id}?sig=&exp= 地址（到下一个 UTC 整点失效），
+// 下载地址：登录后签一个 /s/{id}?sig=&exp= 地址（10 分钟有效），
 // 浏览器直接导航即可匿名下载（支持 Range / HEAD）。
 func TestDownloadURL(t *testing.T) {
 	instance, handler := newAPI(t)
@@ -1360,12 +1360,9 @@ func TestDownloadURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("exp 不是整数: %v", err)
 	}
-	// 有效期取整到下一个 UTC 整点：exp 落在整点上，且最远一小时。
-	if exp%3600 != 0 {
-		t.Errorf("exp = %d，想要 UTC 整点", exp)
-	}
-	if now := time.Now().Unix(); exp <= now || exp > now+3600 {
-		t.Errorf("exp = %d，距当前 %d 秒，想要 (0, 3600]", exp, exp-now)
+	// 有效期 SignedURLTTL：不对齐整点，签发后固定 10 分钟。
+	if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.SignedURLTTL {
+		t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.SignedURLTTL)
 	}
 
 	t.Run("签名地址可匿名下载", func(t *testing.T) {

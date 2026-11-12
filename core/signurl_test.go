@@ -83,34 +83,12 @@ func TestSignedURLRejectsTampering(t *testing.T) {
 	}
 }
 
-func TestDownloadURLExpiryRoundsUpToNextUTCHour(t *testing.T) {
-	cases := []struct {
-		now  time.Time
-		want time.Time
-	}{
-		{now: time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC), want: time.Date(2026, 11, 12, 13, 0, 0, 0, time.UTC)},
-		{now: time.Date(2026, 11, 12, 12, 0, 1, 0, time.UTC), want: time.Date(2026, 11, 12, 13, 0, 0, 0, time.UTC)},
-		{now: time.Date(2026, 11, 12, 12, 59, 59, 0, time.UTC), want: time.Date(2026, 11, 12, 13, 0, 0, 0, time.UTC)},
-		{now: time.Date(2026, 11, 12, 23, 30, 0, 0, time.UTC), want: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)},
-	}
-	for _, item := range cases {
-		if got := DownloadURLExpiry(item.now); got != item.want.Unix() {
-			t.Errorf("DownloadURLExpiry(%s) = %d，想要 %d", item.now, got, item.want.Unix())
-		}
-	}
-	// 本地时区不影响取整结果：结果始终是 UTC 整点。
-	local := time.Date(2026, 11, 12, 20, 30, 0, 0, time.FixedZone("UTC+8", 8*3600))
-	if got := DownloadURLExpiry(local); got != time.Date(2026, 11, 12, 13, 0, 0, 0, time.UTC).Unix() {
-		t.Errorf("本地时间取整结果 = %d，想要 UTC 13:00", got)
-	}
-}
-
-func TestShareURLExpiryUsesTTL(t *testing.T) {
+func TestSignedURLExpiryUsesTTL(t *testing.T) {
 	now := time.Date(2026, 11, 12, 12, 34, 56, 0, time.UTC)
-	if got, want := ShareURLExpiry(now), now.Add(ShareLinkTTL).Unix(); got != want {
-		t.Errorf("ShareURLExpiry() = %d，想要 %d", got, want)
+	if got, want := SignedURLExpiry(now), now.Add(SignedURLTTL).Unix(); got != want {
+		t.Errorf("SignedURLExpiry() = %d，想要 %d", got, want)
 	}
-	if ShareLinkTTL != 10*time.Minute {
-		t.Errorf("分享链接有效期 = %s，约定是 10 分钟", ShareLinkTTL)
+	if SignedURLTTL != 10*time.Minute {
+		t.Errorf("签名 URL 有效期 = %s，约定是 10 分钟", SignedURLTTL)
 	}
 }

@@ -448,8 +448,8 @@ func TestSignedDownloadURLs(t *testing.T) {
 		if path != "/s/"+record.ID {
 			t.Errorf("路径 = %q，想要 /s/%s", path, record.ID)
 		}
-		if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.ShareLinkTTL {
-			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.ShareLinkTTL)
+		if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.SignedURLTTL {
+			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.SignedURLTTL)
 		}
 
 		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
@@ -496,11 +496,8 @@ func TestSignedDownloadURLs(t *testing.T) {
 		if path != "/s/"+record.ID {
 			t.Errorf("路径 = %q，想要 /s/%s", path, record.ID)
 		}
-		if exp%3600 != 0 {
-			t.Errorf("exp = %d，想要 UTC 整点", exp)
-		}
-		if now := time.Now().Unix(); exp <= now || exp > now+3600 {
-			t.Errorf("exp = %d，距当前 %d 秒，想要 (0, 3600]", exp, exp-now)
+		if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.SignedURLTTL {
+			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.SignedURLTTL)
 		}
 		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
 		if err != nil {

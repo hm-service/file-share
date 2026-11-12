@@ -201,15 +201,15 @@ func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
 }
 
 // IssueDownloadURL 给一条记录签匿名下载地址：浏览器凭它直接导航下载，
-// 地址到下一个 UTC 整点失效。blob 已经丢了就当场按 404 拒绝，
+// 地址 SignedURLTTL 内有效。blob 已经丢了就当场按 404 拒绝，
 // 避免用户导航过去才看到一个错误页。
 func (a *App) IssueDownloadURL(id string) (string, error) {
-	return a.issueSignedURL(id, core.DownloadURLExpiry(time.Now()), "issue download url failed")
+	return a.issueSignedURL(id, core.SignedURLExpiry(time.Now()), "issue download url failed")
 }
 
-// IssueShareLink 给一条记录签分享链接：登录后复制，对方 ShareLinkTTL 内免登录下载。
+// IssueShareLink 给一条记录签分享链接：登录后复制，对方 SignedURLTTL 内免登录下载。
 func (a *App) IssueShareLink(id string) (string, error) {
-	return a.issueSignedURL(id, core.ShareURLExpiry(time.Now()), "issue share link failed")
+	return a.issueSignedURL(id, core.SignedURLExpiry(time.Now()), "issue share link failed")
 }
 
 // issueSignedURL 是下载地址与分享链接共用的签发流程：记录与 blob 都在才签，
