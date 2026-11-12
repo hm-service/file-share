@@ -18,7 +18,7 @@ import (
 
 // schemaVersion 是库结构的版本号，写在 PRAGMA user_version 里。
 // 旧版本会在启动时一次性迁移到当前版本，其它版本一律要求清空重来。
-const schemaVersion = 5
+const schemaVersion = 6
 
 const schema = `
 CREATE TABLE IF NOT EXISTS file (
@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS file (
     sha256      TEXT    NOT NULL,      -- 64 位小写十六进制
     size        INTEGER NOT NULL,      -- 字节数
     is_favorite INTEGER NOT NULL DEFAULT 0,
-    is_public   INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL,      -- unix 秒
     group_path  TEXT    NOT NULL DEFAULT '', -- 分组路径（"顶级" 或 "顶级/二级"），空串表示未分组
     sort_order  INTEGER NOT NULL DEFAULT 0   -- 升序，越小越靠前
@@ -101,6 +100,7 @@ func Open(path string) (*Store, error) {
 			{2, store.migrateV2ToV3},
 			{3, store.migrateV3ToV4},
 			{4, store.migrateV4ToV5},
+			{5, store.migrateV5ToV6},
 		}
 		for _, step := range steps {
 			if version != step.from {
@@ -114,7 +114,7 @@ func Open(path string) (*Store, error) {
 		}
 		if version != schemaVersion {
 			handle.Close()
-			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3/4 to migrate): remove DATA_DIR and start over", version, schemaVersion)
+			return nil, fmt.Errorf("database schema version is %d, want %d (or 1/2/3/4/5 to migrate): remove DATA_DIR and start over", version, schemaVersion)
 		}
 	}
 	// 建表之后 -wal / -shm 才出现，一并收紧（老库也顺带修正）。
@@ -270,6 +270,22 @@ func (s *Store) migrateV4ToV5() error {
 		return err
 	}
 	if _, err := tx.Exec("PRAGMA user_version = 5"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV5ToV6 删掉 is_public 列：公开直链换成临时签名链接后，文件不再有全局公开状态。
+func (s *Store) migrateV5ToV6() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("ALTER TABLE file DROP COLUMN is_public"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 6"); err != nil {
 		return err
 	}
 	return tx.Commit()

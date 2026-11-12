@@ -74,7 +74,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/check_file"},
 		{http.MethodPost, "/api/upload"},
 		{http.MethodPost, "/api/files/abc/favorite"},
-		{http.MethodPost, "/api/files/abc/public"},
+		{http.MethodPost, "/api/files/abc/share"},
 		{http.MethodGet, "/api/files/abc/download"},
 		{http.MethodGet, "/api/files/abc/download-ticket"},
 		{http.MethodPost, "/api/groups"},
@@ -221,7 +221,7 @@ func TestListFiles(t *testing.T) {
 	// 直接往库里插记录：插入顺序就是列表顺序（sort_order 递增）。
 	records := []db.File{
 		{ID: "bbbb", Filename: "b.txt", SHA256: "b1", Size: 1, CreatedAt: 100},
-		{ID: "aaaa", Filename: "a.txt", SHA256: "a1", Size: 2, CreatedAt: 200, IsPublic: true},
+		{ID: "aaaa", Filename: "a.txt", SHA256: "a1", Size: 2, CreatedAt: 200},
 		{ID: "cccc", Filename: "c.txt", SHA256: "c1", Size: 3, CreatedAt: 200, IsFavorite: true},
 	}
 	for _, record := range records {
@@ -239,7 +239,6 @@ func TestListFiles(t *testing.T) {
 			SHA256     string `json:"sha256"`
 			Size       int64  `json:"size"`
 			IsFavorite bool   `json:"is_favorite"`
-			IsPublic   bool   `json:"is_public"`
 			CreatedAt  int64  `json:"created_at"`
 			GroupPath  string `json:"group_path"`
 			SortOrder  int64  `json:"sort_order"`
@@ -264,8 +263,8 @@ func TestListFiles(t *testing.T) {
 	if last := payload.Files[len(payload.Files)-1]; last.CreatedAt != 200 || last.Filename != "c.txt" || last.Size != 3 {
 		t.Errorf("字段映射不对: %+v", last)
 	}
-	if !payload.Files[1].IsPublic || !payload.Files[2].IsFavorite {
-		t.Error("收藏 / 公开标记没有映射出来")
+	if !payload.Files[2].IsFavorite {
+		t.Error("收藏标记没有映射出来")
 	}
 	if len(payload.Groups) != 0 {
 		t.Errorf("没有分组时 groups = %v，想要空数组", payload.Groups)
@@ -522,7 +521,7 @@ func TestUploadSizeLimit(t *testing.T) {
 	})
 }
 
-func TestFavoriteAndPublicToggles(t *testing.T) {
+func TestFavoriteToggle(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
 	record := testenv.SeedUpload(t, instance, "toggle.txt", []byte("toggle me"))
@@ -551,24 +550,8 @@ func TestFavoriteAndPublicToggles(t *testing.T) {
 		}
 	})
 
-	t.Run("公开切换", func(t *testing.T) {
-		recorder := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/public", token)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("状态码 = %d", recorder.Code)
-		}
-		var payload struct {
-			IsPublic bool `json:"is_public"`
-		}
-		testenv.DecodeInto(t, recorder, &payload)
-		if !payload.IsPublic {
-			t.Error("切换后应当是公开")
-		}
-	})
-
 	t.Run("记录不存在", func(t *testing.T) {
 		assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/absent/favorite", token),
-			http.StatusNotFound, "找不到该文件")
-		assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/absent/public", token),
 			http.StatusNotFound, "找不到该文件")
 	})
 
@@ -680,39 +663,46 @@ func TestDeleteFile(t *testing.T) {
 		http.StatusNotFound, "找不到该文件")
 }
 
-func TestPublicDownload(t *testing.T) {
+// 分享链接：登录后换取 /d?t= 地址，匿名可下载（支持 Range / HEAD）；票据无效一律 404。
+func TestShareLink(t *testing.T) {
 	instance, handler := newAPI(t)
-	content := []byte("public content")
-	record := testenv.SeedUpload(t, instance, "public.txt", content)
+	token := testenv.Token(t, instance)
+	content := []byte("shared content")
+	record := testenv.SeedUpload(t, instance, "shared.txt", content)
 
-	t.Run("私有记录匿名访问回 404", func(t *testing.T) {
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/s/"+record.ID, ""), http.StatusNotFound, "找不到该文件")
-	})
+	recorder := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/share", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	if !strings.HasPrefix(payload.URL, "/d?t=") {
+		t.Fatalf("url = %q，想要 /d?t=<ticket>", payload.URL)
+	}
 
-	t.Run("公开后匿名可下载", func(t *testing.T) {
-		if _, err := instance.TogglePublic(record.ID); err != nil {
-			t.Fatalf("TogglePublic() 报错: %v", err)
+	t.Run("匿名可下载", func(t *testing.T) {
+		anonymous := testenv.Do(handler, http.MethodGet, payload.URL, "")
+		if anonymous.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d（body=%s）", anonymous.Code, anonymous.Body.String())
 		}
-		recorder := testenv.Do(handler, http.MethodGet, "/s/"+record.ID, "")
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+		if !bytes.Equal(anonymous.Body.Bytes(), content) {
+			t.Errorf("下载内容 = %q", anonymous.Body.Bytes())
 		}
-		if !bytes.Equal(recorder.Body.Bytes(), content) {
-			t.Errorf("下载内容 = %q", recorder.Body.Bytes())
-		}
-		if got := recorder.Header().Get("Content-Type"); got != "application/octet-stream" {
+		if got := anonymous.Header().Get("Content-Type"); got != "application/octet-stream" {
 			t.Errorf("Content-Type = %q", got)
 		}
-		if disposition := recorder.Header().Get("Content-Disposition"); !strings.HasPrefix(disposition, "attachment;") {
+		if disposition := anonymous.Header().Get("Content-Disposition"); !strings.HasPrefix(disposition, "attachment;") {
 			t.Errorf("Content-Disposition = %q", disposition)
 		}
 
-		head := testenv.Do(handler, http.MethodHead, "/s/"+record.ID, "")
+		head := testenv.Do(handler, http.MethodHead, payload.URL, "")
 		if head.Code != http.StatusOK || head.Body.Len() != 0 {
-			t.Errorf("HEAD /s/ = %d，体长 %d", head.Code, head.Body.Len())
+			t.Errorf("HEAD 分享链接 = %d，体长 %d", head.Code, head.Body.Len())
 		}
 
-		ranged := testenv.DoRequest(handler, http.MethodGet, "/s/"+record.ID, nil, "", "",
+		ranged := testenv.DoRequest(handler, http.MethodGet, payload.URL, nil, "", "",
 			map[string]string{"Range": "bytes=0-2"})
 		if ranged.Code != http.StatusPartialContent {
 			t.Fatalf("Range 状态码 = %d，想要 206", ranged.Code)
@@ -722,40 +712,8 @@ func TestPublicDownload(t *testing.T) {
 		}
 	})
 
-	t.Run("私有与不存在回同一句话", func(t *testing.T) {
-		private := testenv.SeedUpload(t, instance, "private.txt", []byte("private"))
-		privateRecorder := testenv.Do(handler, http.MethodGet, "/s/"+private.ID, "")
-		missingRecorder := testenv.Do(handler, http.MethodGet, "/s/does-not-exist", "")
-		if privateRecorder.Code != missingRecorder.Code {
-			t.Fatalf("私有 %d 与不存在 %d 状态码应当一致", privateRecorder.Code, missingRecorder.Code)
-		}
-		if privateRecorder.Body.String() != missingRecorder.Body.String() {
-			t.Errorf("私有与不存在的响应体应当一致: %q vs %q",
-				privateRecorder.Body.String(), missingRecorder.Body.String())
-		}
-	})
-
-	t.Run("blob 丢失也是一样的 404", func(t *testing.T) {
-		lost := testenv.SeedUpload(t, instance, "lost-public.txt", []byte("gone"))
-		if _, err := instance.TogglePublic(lost.ID); err != nil {
-			t.Fatalf("TogglePublic() 报错: %v", err)
-		}
-		testenv.RemoveBlob(t, instance, lost.SHA256)
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/s/"+lost.ID, ""), http.StatusNotFound, "找不到该文件")
-	})
-
-	t.Run("方法不对", func(t *testing.T) {
-		recorder := testenv.Do(handler, http.MethodPost, "/s/"+record.ID, "")
-		if recorder.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("状态码 = %d", recorder.Code)
-		}
-		if got := recorder.Header().Get("Allow"); got != "GET, HEAD" {
-			t.Errorf("Allow = %q", got)
-		}
-	})
-
-	t.Run("坏路径与私有一样是 404", func(t *testing.T) {
-		for _, target := range []string{"/s/", "/s/a/b"} {
+	t.Run("非法票据回 404", func(t *testing.T) {
+		for _, target := range []string{"/d", "/d?t=", "/d?t=nope", "/d?t=abc.def", "/d/extra"} {
 			recorder := testenv.Do(handler, http.MethodGet, target, "")
 			if recorder.Code != http.StatusNotFound {
 				t.Errorf("%s 状态码 = %d，想要 404", target, recorder.Code)
@@ -763,6 +721,50 @@ func TestPublicDownload(t *testing.T) {
 			if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 				t.Errorf("%s Content-Type = %q", target, got)
 			}
+		}
+	})
+
+	t.Run("blob 丢失后链接回 404", func(t *testing.T) {
+		lost := testenv.SeedUpload(t, instance, "lost.txt", []byte("gone"))
+		signed := testenv.Do(handler, http.MethodPost, "/api/files/"+lost.ID+"/share", token)
+		var lostPayload struct {
+			URL string `json:"url"`
+		}
+		testenv.DecodeInto(t, signed, &lostPayload)
+		testenv.RemoveBlob(t, instance, lost.SHA256)
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, lostPayload.URL, ""), http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("文件删除后链接回 404", func(t *testing.T) {
+		gone := testenv.SeedUpload(t, instance, "gone.txt", []byte("gone"))
+		signed := testenv.Do(handler, http.MethodPost, "/api/files/"+gone.ID+"/share", token)
+		var gonePayload struct {
+			URL string `json:"url"`
+		}
+		testenv.DecodeInto(t, signed, &gonePayload)
+		if recorder := testenv.Do(handler, http.MethodDelete, "/api/files/"+gone.ID, token); recorder.Code != http.StatusNoContent {
+			t.Fatalf("删除记录状态码 = %d", recorder.Code)
+		}
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, gonePayload.URL, ""),
+			http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("记录不存在或 blob 丢失时不签", func(t *testing.T) {
+		assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/absent/share", token),
+			http.StatusNotFound, "找不到该文件")
+		missing := testenv.SeedUpload(t, instance, "missing.txt", []byte("missing"))
+		testenv.RemoveBlob(t, instance, missing.SHA256)
+		assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/"+missing.ID+"/share", token),
+			http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("方法不对", func(t *testing.T) {
+		recorder := testenv.Do(handler, http.MethodGet, "/api/files/"+record.ID+"/share", token)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("状态码 = %d", recorder.Code)
+		}
+		if got := recorder.Header().Get("Allow"); got != "POST" {
+			t.Errorf("Allow = %q，想要 POST", got)
 		}
 	})
 }
@@ -786,7 +788,7 @@ func TestUnknownRoutesAndMethods(t *testing.T) {
 			{http.MethodPut, "/api/files/abc", "PATCH, DELETE"},
 			{http.MethodGet, "/api/files/abc", "PATCH, DELETE"},
 			{http.MethodGet, "/api/files/abc/favorite", "POST"},
-			{http.MethodGet, "/api/files/abc/public", "POST"},
+			{http.MethodGet, "/api/files/abc/share", "POST"},
 		}
 		for _, item := range cases {
 			recorder := testenv.Do(handler, item.method, item.target, "")
@@ -1050,7 +1052,6 @@ type fileJSON struct {
 	SHA256     string `json:"sha256"`
 	Size       int64  `json:"size"`
 	IsFavorite bool   `json:"is_favorite"`
-	IsPublic   bool   `json:"is_public"`
 	CreatedAt  int64  `json:"created_at"`
 	GroupPath  string `json:"group_path"`
 	SortOrder  int64  `json:"sort_order"`

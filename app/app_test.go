@@ -270,8 +270,8 @@ func TestUploadAndInstantReuse(t *testing.T) {
 	if record.ID == "" || record.SHA256 != testenv.SHA256(content) || record.Size != int64(len(content)) {
 		t.Fatalf("记录字段不对: %+v", record)
 	}
-	if record.IsFavorite || record.IsPublic {
-		t.Error("新记录默认既非收藏也非公开")
+	if record.IsFavorite {
+		t.Error("新记录默认不是收藏")
 	}
 	blob, err := os.ReadFile(testenv.BlobPath(instance, record.SHA256))
 	if err != nil {
@@ -403,11 +403,9 @@ func TestToggleMissingFile(t *testing.T) {
 	instance := testenv.New(t)
 	_, err := instance.ToggleFavorite("absent")
 	assertBusinessError(t, err, 404, "file.not-found")
-	_, err = instance.TogglePublic("absent")
-	assertBusinessError(t, err, 404, "file.not-found")
 }
 
-func TestDownloadVisibility(t *testing.T) {
+func TestDownload(t *testing.T) {
 	instance := testenv.New(t)
 	content := []byte("download me")
 	record := testenv.SeedUpload(t, instance, "下载.txt", content)
@@ -422,20 +420,6 @@ func TestDownloadVisibility(t *testing.T) {
 		t.Fatalf("blob 内容 = %q err=%v", body, err)
 	}
 
-	if _, err := instance.OpenPublicDownload(record.ID); err == nil {
-		t.Fatal("私有记录的公开下载应当 404")
-	} else {
-		assertBusinessError(t, err, 404, "file.not-found")
-	}
-	if _, err := instance.TogglePublic(record.ID); err != nil {
-		t.Fatalf("TogglePublic() 报错: %v", err)
-	}
-	public, err := instance.OpenPublicDownload(record.ID)
-	if err != nil {
-		t.Fatalf("公开后 OpenPublicDownload() 报错: %v", err)
-	}
-	public.Close()
-
 	// blob 丢失与记录不存在对外表现一致。
 	testenv.RemoveBlob(t, instance, record.SHA256)
 	if _, err := instance.OpenDownload(record.ID); err == nil {
@@ -443,11 +427,34 @@ func TestDownloadVisibility(t *testing.T) {
 	} else {
 		assertBusinessError(t, err, 404, "file.not-found")
 	}
-	if _, err := instance.OpenPublicDownload(record.ID); err == nil {
-		t.Fatal("blob 丢失时公开下载应当 404")
-	}
 	if _, err := instance.OpenDownload("absent"); err == nil {
 		t.Fatal("不存在的记录下载应当 404")
+	}
+}
+
+func TestShareLink(t *testing.T) {
+	instance := testenv.New(t)
+	record := testenv.SeedUpload(t, instance, "分享.txt", []byte("shared"))
+
+	ticket, err := instance.IssueShareLink(record.ID)
+	if err != nil {
+		t.Fatalf("IssueShareLink() 报错: %v", err)
+	}
+	fileID, err := instance.VerifyDownloadTicket(ticket)
+	if err != nil || fileID != record.ID {
+		t.Fatalf("分享票据校验 = %q, %v，想要 %q", fileID, err, record.ID)
+	}
+
+	if _, err := instance.IssueShareLink("absent"); err == nil {
+		t.Fatal("不存在的记录签分享链接应当 404")
+	} else {
+		assertBusinessError(t, err, 404, "file.not-found")
+	}
+	testenv.RemoveBlob(t, instance, record.SHA256)
+	if _, err := instance.IssueShareLink(record.ID); err == nil {
+		t.Fatal("blob 丢失时签分享链接应当 404")
+	} else {
+		assertBusinessError(t, err, 404, "file.not-found")
 	}
 }
 

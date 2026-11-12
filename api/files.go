@@ -271,28 +271,8 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"is_favorite": favorite})
 }
 
-func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
-	isPublic, err := s.App.TogglePublic(r.PathValue("file_id"))
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{"is_public": isPublic})
-}
-
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	download, err := s.App.OpenDownload(r.PathValue("file_id"))
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	defer download.Close()
-	serveDownload(w, r, download)
-}
-
-// handlePublicDownload 是匿名下载路由：私有与不存在对外表现完全一致。
-func (s *Server) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
-	download, err := s.App.OpenPublicDownload(r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -314,6 +294,17 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 // 流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
 func (s *Server) handleFileDownloadTicket(w http.ResponseWriter, r *http.Request) {
 	ticket, err := s.App.IssueFileDownloadTicket(r.PathValue("file_id"))
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
+}
+
+// handleShareLink 签一条 1 小时有效的分享链接。链接是查询参数里的 HMAC 票据：
+// 对方免登录即可下载，票据过期或签名不对一律 404。
+func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
+	ticket, err := s.App.IssueShareLink(r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return

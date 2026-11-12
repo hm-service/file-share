@@ -91,13 +91,12 @@ func run() int {
 }
 
 // newRootHandler 把两半接起来：站点外壳（web.go）管页面与静态资源，api 包管接口、探针与
-// 公开下载；接口按路由组各套一层独立闸门，外面再套共用的中间件（访问日志、安全头、语言协商）。
+// 票据下载；接口按路由组各套一层独立闸门，外面再套共用的中间件（访问日志、安全头、语言协商）。
 func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) http.Handler {
 	routes := api.NewMux(instance)
 
-	// 公开下载（/s/、/d）与页面 / 静态资源同属「静态」一类，共用一个信号量。
+	// 票据下载（/d）与页面 / 静态资源同属「静态」一类，共用一个信号量。
 	static := http.NewServeMux()
-	static.Handle("/s/", routes)
 	static.Handle("/d", routes)
 	static.Handle("/d/", routes)
 	static.Handle("/", siteHandler(files))
@@ -110,7 +109,6 @@ func newRootHandler(instance *app.App, files fs.FS, limits concurrencyLimits) ht
 	root.Handle("/api/", api.Concurrency(limits.api, routes))
 	root.Handle("/readyz", api.Concurrency(api.ReadyzConcurrency, routes))
 	root.Handle("/livez", routes)
-	root.Handle("/s/", staticHandler)
 	root.Handle("/d", staticHandler)
 	root.Handle("/d/", staticHandler)
 	root.Handle("/", staticHandler)

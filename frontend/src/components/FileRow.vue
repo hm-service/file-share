@@ -2,10 +2,11 @@
 /**
  * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 操作区。
  *
- * 行内只留「下载、收藏、分组、更多」四个按钮：分组是高频操作，单独开「移动到分组」菜单；
- * 重命名、复制直链与 curl 命令、公开/私有、删除收进最右的「更多」菜单，避免一行里挤满七个图标。
+ * 行内只留「下载、分享链接、收藏、分组、更多」五个按钮：分享链接与分组都是高频操作，
+ * 单独开按钮；重命名、复制 curl 命令、删除收进最右的「更多」菜单，避免一行里挤满图标。
  *
- * 复制直链与 curl 命令只对公开文件可用（私有文件的 /s/{id} 会 404，复制了也没用）；
+ * 分享链接与 curl 命令都先向服务端换一张 1 小时有效的签名票据，再复制带票据的绝对地址：
+ * 换票请求中按钮禁用，成功后短暂显示勾；换票失败交给父组件统一提示。
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
  * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
@@ -13,7 +14,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 
-import { publicLink } from "@/api";
+import { createShareLink } from "@/api";
 import { formatSize, formatTime } from "@/format";
 import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
@@ -31,7 +32,7 @@ const emit = defineEmits<{
   favorite: [];
   download: [];
   rename: [];
-  visibility: [];
+  error: [error: unknown];
   delete: [];
   "move-group": [groupPath: string];
 }>();
@@ -99,13 +100,18 @@ const kind = computed<FileKind>(() => {
   return "other";
 });
 
-/* ---------- 复制直链 / curl 命令 ---------- */
+/* ---------- 分享链接 / curl 命令 ---------- */
 
-/** 刚复制过的动作：只有那一项短暂显示「已复制」，两个复制入口互不影响。 */
-const copied = ref<"link" | "curl" | null>(null);
-let copiedTimer = 0;
+/** 换票状态：请求中禁用行内按钮与 curl 菜单项，成功后短暂显示勾 / 已复制。 */
+const sharing = ref(false);
+const shared = ref(false);
+let sharedTimer = 0;
 
-/** 复制成功返回 true；失败不弹窗，只是不显示「已复制」。 */
+/** 「更多」菜单里的 curl 项：复制成功后短暂显示「已复制」。 */
+const curlCopied = ref(false);
+let curlCopiedTimer = 0;
+
+/** 复制成功返回 true；失败不弹窗，只是不显示勾 / 「已复制」。 */
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -139,30 +145,66 @@ function shellQuote(value: string): string {
 }
 
 /**
- * 公开文件的 curl 命令：`-f` 让 404 / 5xx 直接失败（免得把错误 JSON 存成文件），
- * `-o` 把文件按原名落到当前目录。文件名与地址都套单引号，空格、$ 之类不用额外转义。
+ * 换一张 1 小时有效的签名票据，返回可直接发给对方的绝对地址。
+ * 接口给的是同源相对地址（/d?t=...），拼上 origin 复制给别人才能直接打开。
  */
-function curlCommand(): string {
-  return `curl -f -o ${shellQuote(props.file.filename)} ${shellQuote(publicLink(props.file.id))}`;
+async function shareUrl(): Promise<string> {
+  const payload = await createShareLink(props.file.id);
+  return new URL(payload.url, location.origin).href;
 }
 
-/** 复制成功后菜单保持打开，对应的那一项显示「已复制」。 */
-async function copyAction(kind: "link" | "curl", text: string): Promise<void> {
-  if (!props.file.is_public) return;
-  if (!(await copyText(text))) return;
-  copied.value = kind;
-  window.clearTimeout(copiedTimer);
-  copiedTimer = window.setTimeout(() => {
-    copied.value = null;
+/** 换票失败交给父组件提示；换票成功后按钮立即恢复，不占着禁用态等剪贴板。 */
+async function shareUrlOrReport(): Promise<string | null> {
+  sharing.value = true;
+  try {
+    return await shareUrl();
+  } catch (error) {
+    emit("error", error);
+    return null;
+  } finally {
+    sharing.value = false;
+  }
+}
+
+/** 行内分享：换票 → 复制绝对地址 → 短暂显示勾。 */
+async function shareLink(): Promise<void> {
+  if (sharing.value) return;
+  const url = await shareUrlOrReport();
+  if (url === null) return;
+  if (!(await copyText(url))) {
+    emit("error", new Error(t("error.copy")));
+    return;
+  }
+  shared.value = true;
+  window.clearTimeout(sharedTimer);
+  sharedTimer = window.setTimeout(() => {
+    shared.value = false;
   }, 1200);
 }
 
-function copyLink(): void {
-  void copyAction("link", publicLink(props.file.id));
+/**
+ * curl 命令：`-f` 让 4xx / 5xx 直接失败（免得把错误 JSON 存成文件），
+ * `-o` 把文件按原名落到当前目录。文件名与地址都套单引号，空格、$ 之类不用额外转义。
+ * 地址是换来的签名 URL，对方免登录即可下载。
+ */
+function curlCommand(url: string): string {
+  return `curl -f -o ${shellQuote(props.file.filename)} ${shellQuote(url)}`;
 }
 
-function copyCurl(): void {
-  void copyAction("curl", curlCommand());
+/** 复制成功后菜单保持打开，curl 项显示「已复制」。 */
+async function copyCurl(): Promise<void> {
+  if (sharing.value) return;
+  const url = await shareUrlOrReport();
+  if (url === null) return;
+  if (!(await copyText(curlCommand(url)))) {
+    emit("error", new Error(t("error.copy")));
+    return;
+  }
+  curlCopied.value = true;
+  window.clearTimeout(curlCopiedTimer);
+  curlCopiedTimer = window.setTimeout(() => {
+    curlCopied.value = false;
+  }, 1200);
 }
 
 /* ---------- 行内菜单（分组 / 更多） ---------- */
@@ -268,18 +310,13 @@ function chooseGroup(path: string): void {
   emit("move-group", path);
 }
 
-/** 菜单里的重命名 / 公开私有：先关菜单再交给父组件，避免弹窗压在下拉菜单上。 */
+/** 菜单里的重命名：先关菜单再交给父组件，避免 prompt 压在下拉菜单上。 */
 function chooseRename(): void {
   closeMenu();
   emit("rename");
 }
 
-function chooseVisibility(): void {
-  closeMenu();
-  emit("visibility");
-}
-
-/** 删除是不可逆操作：先关菜单，确认弹窗由父组件负责（和收藏 / 公开保持同一处交互）。 */
+/** 删除是不可逆操作：先关菜单，确认弹窗由父组件负责（和收藏保持同一处交互）。 */
 function chooseDelete(): void {
   closeMenu();
   emit("delete");
@@ -292,7 +329,8 @@ function promptNewGroup(): void {
 }
 
 onBeforeUnmount(() => {
-  window.clearTimeout(copiedTimer);
+  window.clearTimeout(sharedTimer);
+  window.clearTimeout(curlCopiedTimer);
   closeMenu();
 });
 </script>
@@ -304,10 +342,7 @@ onBeforeUnmount(() => {
     <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
 
     <div class="file-body">
-      <div class="file-title-line">
-        <p class="file-name" :title="file.filename">{{ file.filename }}</p>
-        <span v-if="file.is_public" class="badge badge-public">{{ t("badge.public") }}</span>
-      </div>
+      <p class="file-name" :title="file.filename">{{ file.filename }}</p>
       <p class="file-meta">{{ formatTime(file.created_at) }} · {{ formatSize(file.size) }}</p>
       <p class="file-hash" :title="file.sha256">
         <span class="file-hash-label">{{ t("file.sha256") }}</span>
@@ -323,6 +358,18 @@ onBeforeUnmount(() => {
         :aria-label="t('action.download')"
         v-html="ICONS.download"
         @click="emit('download')"
+      ></button>
+
+      <!-- 分享链接独立成按钮：换 1 小时有效的签名票据并复制绝对地址，请求中禁用 -->
+      <button
+        type="button"
+        class="icon-btn link"
+        :class="{ on: shared }"
+        :title="t('action.copy-link')"
+        :aria-label="t('action.copy-link')"
+        :disabled="sharing"
+        v-html="shared ? ICONS.check : ICONS.link"
+        @click="shareLink"
       ></button>
 
       <button
@@ -443,34 +490,12 @@ onBeforeUnmount(() => {
           type="button"
           class="row-menu-item"
           role="menuitem"
-          :disabled="!file.is_public"
-          :title="file.is_public ? undefined : t('action.copy-link-private')"
-          @click="copyLink"
-        >
-          <span class="row-menu-icon" v-html="copied === 'link' ? ICONS.check : ICONS.link"></span>
-          <span class="row-menu-label">
-            {{ copied === "link" ? t("action.copied") : t("action.copy-link") }}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          class="row-menu-item"
-          role="menuitem"
-          :disabled="!file.is_public"
-          :title="file.is_public ? undefined : t('action.copy-curl-private')"
+          :disabled="sharing"
           @click="copyCurl"
         >
-          <span class="row-menu-icon" v-html="copied === 'curl' ? ICONS.check : ICONS.terminal"></span>
+          <span class="row-menu-icon" v-html="curlCopied ? ICONS.check : ICONS.terminal"></span>
           <span class="row-menu-label">
-            {{ copied === "curl" ? t("action.copied") : t("action.copy-curl") }}
-          </span>
-        </button>
-
-        <button type="button" class="row-menu-item" role="menuitem" @click="chooseVisibility">
-          <span class="row-menu-icon" v-html="file.is_public ? ICONS.eyeOff : ICONS.eye"></span>
-          <span class="row-menu-label">
-            {{ file.is_public ? t("action.make-private") : t("action.make-public") }}
+            {{ curlCopied ? t("action.copied") : t("action.copy-curl") }}
           </span>
         </button>
 

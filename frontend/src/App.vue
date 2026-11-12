@@ -3,7 +3,7 @@
  * 主页面（/）的界面壳：左侧导航（最近 / 收藏 / 分组） + 文件列表 + 浮动上传坞。
  *
  * 列表数据只在这里维护；每行的操作成功后重新拉一次列表，保持与服务端一致
- * （收藏 / 公开 / 分组是全局的，上传完成后也可能出现新记录）。
+ * （收藏 / 分组是全局的，上传完成后也可能出现新记录）。
  *
  * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/ungrouped`「未分组」、
  * `/<分组名>`「单个分组」（名字按 URL 转义）。切换视图用 pushState 进历史，
@@ -32,7 +32,6 @@ import {
   reorderFiles,
   reorderGroups,
   toggleFavorite,
-  togglePublic,
   updateFileGroup,
 } from "@/api";
 import { formatDayHeading } from "@/format";
@@ -448,15 +447,6 @@ async function refresh(): Promise<void> {
 async function onFavorite(file: FileItem): Promise<void> {
   try {
     await toggleFavorite(file.id);
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-async function onVisibility(file: FileItem): Promise<void> {
-  try {
-    await togglePublic(file.id);
     await refresh();
   } catch (error) {
     showActionError(error);
@@ -1206,7 +1196,7 @@ onBeforeUnmount(() => {
               @favorite="onFavorite"
               @download="onDownload"
               @rename="onRename"
-              @visibility="onVisibility"
+              @error="showActionError"
               @delete="onDelete"
               @move-group="onMoveGroup"
               @reorder="onReorder"

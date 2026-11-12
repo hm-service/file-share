@@ -14,12 +14,20 @@ import (
 // 但导航带不了 Authorization 头。所以登录后先用 API 换一张短期票据，再让浏览器打开
 // 票据 URL —— 凭据不进入 URL，会话 token 也不会出现在地址栏 / 代理日志里。
 //
+// 分享链接用同一套票据：登录后换取一张有效期更长的票据，把地址发给别人，
+// 对方不用登录即可下载。两者只差 TTL，签名与校验完全一样。
+//
 //	payload = base64url("<exp>|<file_id>")
 //	sig     = base64url(HMAC-SHA256(key, "d1|" + payload))
 //	ticket  = payload + "." + sig
 //
 // 与会话凭据共用密钥，但签名前缀不同，两者不能互相冒用。
-const DownloadTicketTTL = 60 * time.Second
+const (
+	// DownloadTicketTTL 是浏览器下载票据的有效期：换完立刻导航，够用就行。
+	DownloadTicketTTL = 60 * time.Second
+	// ShareLinkTTL 是分享链接的有效期：够对方打开，又不会让链接长期有效。
+	ShareLinkTTL = time.Hour
+)
 
 const downloadTicketVersion = "d1"
 
@@ -28,20 +36,29 @@ var (
 	ErrTicketExpired   = errors.New("expired download ticket")
 )
 
-// TicketSigner 签发与校验短期下载票据。
+// TicketSigner 签发与校验短期票据（浏览器下载与分享链接共用）。
 type TicketSigner struct {
 	key []byte
 }
 
 func NewTicketSigner(key []byte) *TicketSigner { return &TicketSigner{key: key} }
 
-// Issue 给一条文件记录签票据。fileID 为空说明调用方有 bug，当场失败，
+// Issue 给一条文件记录签下载票据。fileID 为空说明调用方有 bug，当场失败，
 // 不要把错误拖到用户点下载的时候。
 func (s *TicketSigner) Issue(fileID string, now time.Time) (string, error) {
+	return s.issue(fileID, now, DownloadTicketTTL)
+}
+
+// IssueShareLink 签一张分享链接票据：文件 id 与过期时间都写进签名，拿到链接即可下载。
+func (s *TicketSigner) IssueShareLink(fileID string, now time.Time) (string, error) {
+	return s.issue(fileID, now, ShareLinkTTL)
+}
+
+func (s *TicketSigner) issue(fileID string, now time.Time, ttl time.Duration) (string, error) {
 	if fileID == "" {
 		return "", errors.New("empty download ticket file id")
 	}
-	expiresAt := now.Add(DownloadTicketTTL).Unix()
+	expiresAt := now.Add(ttl).Unix()
 	plain := strconv.FormatInt(expiresAt, 10) + "|" + fileID
 	payload := sessionBase64.EncodeToString([]byte(plain))
 	return payload + "." + sessionBase64.EncodeToString(s.sign(payload)), nil

@@ -23,7 +23,6 @@ var contractKeys = []string{
 	"store.list",
 	"store.insert",
 	"store.favorite",
-	"store.public",
 	"store.delete",
 	"group.invalid",
 	"order.invalid",

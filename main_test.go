@@ -218,8 +218,8 @@ func TestRootHandlerGivesEachRouteGroupItsOwnGate(t *testing.T) {
 	instance := testenv.New(t)
 	handler := newRootHandler(instance, testSite(), concurrencyLimits{auth: 1, api: 1, static: 0})
 
-	// 页面、公开下载与票据下载共用静态闸门：0 个槽位时三者都该排队。
-	for _, target := range []string{"/", "/s/whatever", "/d?t=whatever"} {
+	// 页面与票据下载共用静态闸门：0 个槽位时两者都该排队。
+	for _, target := range []string{"/", "/d?t=whatever"} {
 		blocked := make(chan struct{})
 		go func() {
 			defer close(blocked)

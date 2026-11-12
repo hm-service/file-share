@@ -41,7 +41,7 @@ var pages = map[string]string{
 }
 
 // siteHandler 是站点外壳：页面 + 构建产物里的其余文件（/assets/*、favicon.svg） + 前端视图路由。
-// 接口、探针与公开下载都在 api 包里，由 main.go 按前缀挂到别的分支上 —— 这里只管
+// 接口、探针与票据下载都在 api 包里，由 main.go 按前缀挂到别的分支上 —— 这里只管
 // 「把一个构建产物当成网站发出去」这一件事。
 func siteHandler(files fs.FS) http.Handler {
 	mux := http.NewServeMux()

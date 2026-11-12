@@ -80,7 +80,7 @@ func (a *App) SetGroupOrder(rawParent string, names []string) error {
 	return storeFailure(err, "store.order")
 }
 
-// CheckFile 是秒传预检：blob 已在磁盘上就立刻补一条记录（新的记录默认既非收藏也非公开）。
+// CheckFile 是秒传预检：blob 已在磁盘上就立刻补一条记录（新的记录默认不是收藏）。
 // 返回的记录只在 exists 为 true 时有效。
 func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool, err error) {
 	if clientSHA == "" || filename == "" {
@@ -203,6 +203,16 @@ func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
 // IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
 // blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
 func (a *App) IssueFileDownloadTicket(id string) (string, error) {
+	return a.issueTicket(id, a.tickets.Issue, "issue file download ticket failed")
+}
+
+// IssueShareLink 给一条记录签一张 1 小时有效的分享票据：登录后复制链接，对方免登录下载。
+func (a *App) IssueShareLink(id string) (string, error) {
+	return a.issueTicket(id, a.tickets.IssueShareLink, "issue share link failed")
+}
+
+// issueTicket 是两种票据共用的签发流程：记录与 blob 都在才签。
+func (a *App) issueTicket(id string, sign func(string, time.Time) (string, error), errorLog string) (string, error) {
 	record, err := a.Store.File(id)
 	if err != nil {
 		return "", storeFailure(err, "internal")
@@ -211,12 +221,12 @@ func (a *App) IssueFileDownloadTicket(id string) (string, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", core.Fail(404, "file.not-found")
 		}
-		slog.Error("stat blob for download ticket failed", slog.Any("error", err))
+		slog.Error("stat blob for ticket failed", slog.Any("error", err))
 		return "", core.Fail(500, "internal")
 	}
-	ticket, err := a.tickets.Issue(record.ID, time.Now())
+	ticket, err := sign(record.ID, time.Now())
 	if err != nil {
-		slog.Error("issue file download ticket failed", slog.Any("error", err))
+		slog.Error(errorLog, slog.Any("error", err))
 		return "", core.Fail(500, "internal")
 	}
 	return ticket, nil
@@ -248,12 +258,6 @@ func (a *App) ToggleFavorite(id string) (bool, error) {
 	return favorite, storeFailure(err, "store.favorite")
 }
 
-// TogglePublic 翻转公开状态并返回翻转后的状态。
-func (a *App) TogglePublic(id string) (bool, error) {
-	isPublic, err := a.Store.TogglePublic(id)
-	return isPublic, storeFailure(err, "store.public")
-}
-
 // storeFailure 把 db 层错误翻译成 HTTP 层认识的业务错误：记录不存在是 404，其余是 500。
 func storeFailure(err error, key string) error {
 	if err == nil {
@@ -275,18 +279,9 @@ type DownloadedFile struct {
 // Close 关闭 blob 文件句柄。
 func (d *DownloadedFile) Close() error { return d.Blob.Close() }
 
-// OpenDownload 打开一条记录的 blob（需要登录的下载）。
+// OpenDownload 打开一条记录的 blob（需要登录的下载，以及凭票据的匿名下载）。
 func (a *App) OpenDownload(id string) (*DownloadedFile, error) {
 	record, err := a.Store.File(id)
-	if err != nil {
-		return nil, storeFailure(err, "internal")
-	}
-	return a.openBlob(record)
-}
-
-// OpenPublicDownload 只对公开记录打开 blob；私有与不存在对外表现完全一致。
-func (a *App) OpenPublicDownload(id string) (*DownloadedFile, error) {
-	record, err := a.Store.PublicFile(id)
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}

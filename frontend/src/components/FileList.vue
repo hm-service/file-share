@@ -24,7 +24,8 @@ const emit = defineEmits<{
   favorite: [file: FileItem];
   download: [file: FileItem];
   rename: [file: FileItem];
-  visibility: [file: FileItem];
+  /** 行内操作（如换分享票据）失败，交给父组件统一提示。 */
+  error: [error: unknown];
   delete: [file: FileItem];
   "move-group": [file: FileItem, groupName: string];
   reorder: [orderedIds: string[]];
@@ -102,7 +103,7 @@ onBeforeUnmount(destroySortable);
       @favorite="emit('favorite', file)"
       @download="emit('download', file)"
       @rename="emit('rename', file)"
-      @visibility="emit('visibility', file)"
+      @error="emit('error', $event)"
       @delete="emit('delete', file)"
       @move-group="(groupName) => emit('move-group', file, groupName)"
     />

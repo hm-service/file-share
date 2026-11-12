@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-// ContentType 是 /api/* 与 /s/* 的 JSON 响应类型。
+// ContentType 是 /api/* 与 /d* 的 JSON 响应类型。
 const ContentType = "application/json; charset=utf-8"
 
 // Detail 是错误体：前端只读 detail 字段。

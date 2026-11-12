@@ -194,9 +194,9 @@ export function toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
   );
 }
 
-/** POST /api/files/{id}/public：返回切换后的状态。 */
-export function togglePublic(id: string): Promise<{ is_public: boolean }> {
-  return request<{ is_public: boolean }>(`/api/files/${encodeURIComponent(id)}/public`, {
+/** POST /api/files/{id}/share：签一条 1 小时有效的分享链接，返回可直接发给对方的相对地址。 */
+export function createShareLink(id: string): Promise<{ url: string }> {
+  return request<{ url: string }>(`/api/files/${encodeURIComponent(id)}/share`, {
     method: "POST",
   });
 }
@@ -270,11 +270,6 @@ export function reorderFiles(items: FileOrderItem[]): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
   });
-}
-
-/** 公开直链（复制用）：同源 /s/{id}，匿名可下载。 */
-export function publicLink(id: string): string {
-  return `${location.origin}/s/${encodeURIComponent(id)}`;
 }
 
 /**

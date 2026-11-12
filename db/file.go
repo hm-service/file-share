@@ -23,7 +23,6 @@ type File struct {
 	SHA256     string `json:"sha256"`
 	Size       int64  `json:"size"`
 	IsFavorite bool   `json:"is_favorite"`
-	IsPublic   bool   `json:"is_public"`
 	CreatedAt  int64  `json:"created_at"`
 	GroupPath  string `json:"group_path"`
 	SortOrder  int64  `json:"sort_order"`
@@ -38,7 +37,7 @@ type Group struct {
 	SortOrder int64  `json:"-"`
 }
 
-const fileColumns = "id, filename, sha256, size, is_favorite, is_public, created_at, group_path, sort_order"
+const fileColumns = "id, filename, sha256, size, is_favorite, created_at, group_path, sort_order"
 
 // rowScanner 让单行查询与多行查询共用一套扫描代码。
 type rowScanner interface {
@@ -48,7 +47,7 @@ type rowScanner interface {
 func scanFile(row rowScanner) (*File, error) {
 	var file File
 	if err := row.Scan(&file.ID, &file.Filename, &file.SHA256, &file.Size,
-		&file.IsFavorite, &file.IsPublic, &file.CreatedAt, &file.GroupPath, &file.SortOrder); err != nil {
+		&file.IsFavorite, &file.CreatedAt, &file.GroupPath, &file.SortOrder); err != nil {
 		return nil, err
 	}
 	return &file, nil
@@ -89,20 +88,6 @@ func (s *Store) File(id string) (*File, error) {
 	return file, nil
 }
 
-// PublicFile 取一条公开记录：私有与不存在一样返回 ErrNotFound，调用方不用（也不该）区分。
-func (s *Store) PublicFile(id string) (*File, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	file, err := scanFile(s.db.QueryRow("SELECT "+fileColumns+" FROM file WHERE id = ? AND is_public = 1", id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
-}
-
 // InsertFile 插入一条记录并把它排在列表末尾：sort_order 取当前最大值 +1。
 // 上传与秒传都走这里，所以新文件默认出现在最后；id 重复属于程序 bug，直接让错误往上抛。
 func (s *Store) InsertFile(file File) error {
@@ -117,8 +102,8 @@ func (s *Store) InsertFile(file File) error {
 		return err
 	}
 	if _, err := tx.Exec(
-		"INSERT INTO file ("+fileColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		file.ID, file.Filename, file.SHA256, file.Size, file.IsFavorite, file.IsPublic,
+		"INSERT INTO file ("+fileColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		file.ID, file.Filename, file.SHA256, file.Size, file.IsFavorite,
 		file.CreatedAt, file.GroupPath, file.SortOrder); err != nil {
 		return err
 	}
@@ -230,16 +215,6 @@ func (s *Store) SetOrder(items []core.OrderItem) error {
 
 // ToggleFavorite 翻转收藏状态并返回翻转后的值；记录不存在返回 ErrNotFound。
 func (s *Store) ToggleFavorite(id string) (bool, error) {
-	return s.toggle(id, "is_favorite")
-}
-
-// TogglePublic 翻转公开状态并返回翻转后的值；记录不存在返回 ErrNotFound。
-func (s *Store) TogglePublic(id string) (bool, error) {
-	return s.toggle(id, "is_public")
-}
-
-// toggle 是两种开关的共同实现。列名只来自本包内的两个常量，不存在注入面。
-func (s *Store) toggle(id, column string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -247,7 +222,7 @@ func (s *Store) toggle(id, column string) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec("UPDATE file SET "+column+" = 1 - "+column+" WHERE id = ?", id)
+	result, err := tx.Exec("UPDATE file SET is_favorite = 1 - is_favorite WHERE id = ?", id)
 	if err != nil {
 		return false, err
 	}
@@ -259,7 +234,7 @@ func (s *Store) toggle(id, column string) (bool, error) {
 		return false, ErrNotFound
 	}
 	var value bool
-	if err := tx.QueryRow("SELECT "+column+" FROM file WHERE id = ?", id).Scan(&value); err != nil {
+	if err := tx.QueryRow("SELECT is_favorite FROM file WHERE id = ?", id).Scan(&value); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {

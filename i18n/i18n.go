@@ -43,7 +43,6 @@ var catalog = map[string]entry{
 	"store.list":               {"读取文件列表失败", "Failed to list files"},
 	"store.insert":             {"保存文件记录失败", "Failed to save the file record"},
 	"store.favorite":           {"切换收藏失败", "Failed to toggle favorite"},
-	"store.public":             {"切换公开状态失败", "Failed to toggle visibility"},
 	"store.delete":             {"删除文件失败", "Failed to delete the file"},
 	"group.invalid":            {"分组名无效", "Invalid group name"},
 	"group.exists":             {"分组名已存在", "A group with this name already exists"},

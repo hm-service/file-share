@@ -7,7 +7,6 @@ export interface FileItem {
   sha256: string;
   size: number;
   is_favorite: boolean;
-  is_public: boolean;
   /** 分组路径（"顶级" 或 "顶级/二级"）；空串表示未分组。 */
   group_path: string;
   /** 所在分组（或未分组段）内的排序序号，0..n-1。 */

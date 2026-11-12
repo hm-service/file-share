@@ -115,3 +115,28 @@ func TestTicketAndSessionDoNotInterchange(t *testing.T) {
 		t.Errorf("下载票据不应当通过会话校验，得到 %v", err)
 	}
 }
+
+func TestShareLinkIssueVerifyRoundTrip(t *testing.T) {
+	signer := NewTicketSigner([]byte("test_signing_key_0123456789"))
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+
+	ticket, err := signer.IssueShareLink("file-id-1", now)
+	if err != nil {
+		t.Fatalf("IssueShareLink() 报错: %v", err)
+	}
+	fileID, err := signer.Verify(ticket, now)
+	if err != nil || fileID != "file-id-1" {
+		t.Fatalf("分享链接校验 = %q, %v，想要 file-id-1", fileID, err)
+	}
+	// 分享链接按 ShareLinkTTL 过期，比下载票据活得久。
+	expiresAt := now.Add(ShareLinkTTL).Unix()
+	if _, err := signer.Verify(ticket, time.Unix(expiresAt-1, 0)); err != nil {
+		t.Errorf("过期前一刻应当有效: %v", err)
+	}
+	if _, err := signer.Verify(ticket, time.Unix(expiresAt, 0)); !errors.Is(err, ErrTicketExpired) {
+		t.Errorf("过期那一刻应当返回 ErrTicketExpired，得到 %v", err)
+	}
+	if _, err := signer.IssueShareLink("", now); err == nil {
+		t.Error("空 file id 应当报错")
+	}
+}

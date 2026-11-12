@@ -81,13 +81,9 @@ export type MessageKey =
   | "action.rename"
   | "action.rename-group"
   | "action.copy-link"
-  | "action.copy-link-private"
   | "action.copy-curl"
-  | "action.copy-curl-private"
   | "action.copied"
   | "action.delete"
-  | "action.make-public"
-  | "action.make-private"
   | "action.move-group"
   | "action.more"
   | "action.new-group"
@@ -98,7 +94,6 @@ export type MessageKey =
   | "action.collapse-group"
   | "action.cancel"
   | "action.logout"
-  | "badge.public"
   | "file.sha256"
   | "group.new-prompt"
   | "group.rename-prompt"
@@ -115,6 +110,7 @@ export type MessageKey =
   | "lang.label"
   | "state.loading"
   | "error.load"
+  | "error.copy"
   | "error.network";
 
 interface Message {
@@ -127,7 +123,10 @@ const messages: Record<MessageKey, Message> = {
   "app.tagline": { zh: "上传、整理、分享，一个页面搞定", en: "Upload, organize and share in one place" },
   "auth.hero-title": { zh: "把文件分享变简单", en: "File sharing, simplified" },
   "auth.point.instant": { zh: "SHA-256 秒传与去重，不浪费空间", en: "SHA-256 instant uploads with dedupe" },
-  "auth.point.share": { zh: "文件公开后即可用直链分享", en: "Share public files with a direct link" },
+  "auth.point.share": {
+    zh: "临时签名链接，1 小时内下载免登录",
+    en: "Signed links valid for 1 hour, no sign-in to download",
+  },
   "auth.point.private": { zh: "默认私有，单个访问令牌控制", en: "Private by default, guarded by one token" },
   "auth.title": { zh: "登录", en: "Sign in" },
   "auth.hint": { zh: "输入访问令牌进入你的文件空间", en: "Enter the access token to open your space" },
@@ -183,17 +182,10 @@ const messages: Record<MessageKey, Message> = {
   "action.rename": { zh: "重命名", en: "Rename" },
   "action.rename-group": { zh: "重命名分组", en: "Rename group" },
   "action.refresh": { zh: "刷新列表", en: "Refresh" },
-  "action.copy-link": { zh: "复制直链", en: "Copy link" },
-  "action.copy-link-private": { zh: "公开后才能复制直链", en: "Make it public to copy the link" },
+  "action.copy-link": { zh: "复制分享链接（1 小时内有效）", en: "Copy share link (valid for 1 hour)" },
   "action.copy-curl": { zh: "复制 curl 命令", en: "Copy curl command" },
-  "action.copy-curl-private": {
-    zh: "公开后才能复制 curl 命令",
-    en: "Make it public to copy the curl command",
-  },
   "action.copied": { zh: "已复制", en: "Copied" },
   "action.delete": { zh: "删除", en: "Delete" },
-  "action.make-public": { zh: "设为公开", en: "Make public" },
-  "action.make-private": { zh: "设为私有", en: "Make private" },
   "action.move-group": { zh: "移动到分组", en: "Move to group" },
   "action.more": { zh: "更多操作", en: "More actions" },
   "action.new-group": { zh: "新建分组…", en: "New group…" },
@@ -204,7 +196,6 @@ const messages: Record<MessageKey, Message> = {
   "action.collapse-group": { zh: "折叠子分组", en: "Collapse sub-groups" },
   "action.cancel": { zh: "取消", en: "Cancel" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
-  "badge.public": { zh: "公开", en: "Public" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
   "group.new-prompt": {
     zh: "输入分组名；用 父/子 新建二级分组",
@@ -230,6 +221,10 @@ const messages: Record<MessageKey, Message> = {
   "lang.label": { zh: "语言", en: "Language" },
   "state.loading": { zh: "加载中…", en: "Loading…" },
   "error.load": { zh: "加载文件列表失败", en: "Failed to load the file list" },
+  "error.copy": {
+    zh: "复制失败，请检查浏览器的剪贴板权限",
+    en: "Failed to copy; check the browser clipboard permission",
+  },
   "error.network": { zh: "网络异常", en: "Network error" },
 };
 

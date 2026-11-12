@@ -91,7 +91,6 @@ ul {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 8px;
 }
 
 .hidden-input {
@@ -426,8 +425,19 @@ ul {
   opacity: 0.35;
 }
 
-.group-drag-chosen {
+/* 拖拽中的分组高亮画在圆角的行 / chip 自身，不要给包装层铺方块底色。
+   顶级分组拖拽的是包装层，二级分组拖拽的元素本身就是按钮，两种都要覆盖。 */
+.nav-group-block.group-drag-chosen > .nav-group-row > .nav-item,
+.nav-item-subgroup.group-drag-chosen {
   background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chip-block.group-drag-chosen .chip,
+.chip-subgroup.group-drag-chosen {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .nav-empty {
@@ -518,6 +528,9 @@ ul {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  /* 分组视图会在标题旁多出 30px 高的「⋯」按钮：给标题行固定最小高度，
+     避免切换视图时标题行变高，把下面的标签页 / chips / 列表整体顶下去。 */
+  min-height: 30px;
 }
 
 /* 单分组视图标题旁的重命名入口 */
@@ -869,13 +882,6 @@ ul {
   min-width: 0;
 }
 
-.file-title-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
 .file-name {
   overflow: hidden;
   color: var(--ink);
@@ -883,19 +889,6 @@ ul {
   font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.badge {
-  flex: 0 0 auto;
-  padding: 1.5px 7px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.badge-public {
-  background: var(--accent-soft);
-  color: var(--accent-strong);
 }
 
 .file-meta {
@@ -975,8 +968,18 @@ ul {
   color: var(--amber);
 }
 
-.icon-btn.download:hover {
+.icon-btn.download:hover,
+.icon-btn.link:hover {
   color: var(--accent);
+}
+
+.icon-btn.link.on {
+  color: var(--green);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .icon-btn.group:hover,

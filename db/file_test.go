@@ -260,7 +260,6 @@ func TestFile(t *testing.T) {
 	store := testStore(t)
 	record := sampleFile("id-one", "sha", 123)
 	record.IsFavorite = true
-	record.IsPublic = true
 	if err := store.InsertFile(record); err != nil {
 		t.Fatalf("InsertFile() 报错: %v", err)
 	}
@@ -276,28 +275,6 @@ func TestFile(t *testing.T) {
 	}
 
 	if _, err := store.File("absent"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("不存在的记录应当返回 ErrNotFound，得到 %v", err)
-	}
-}
-
-func TestPublicFileHidesPrivateRecords(t *testing.T) {
-	store := testStore(t)
-	private := sampleFile("private", "sha1", 1)
-	public := sampleFile("public", "sha2", 2)
-	public.IsPublic = true
-	for _, file := range []File{private, public} {
-		if err := store.InsertFile(file); err != nil {
-			t.Fatalf("InsertFile() 报错: %v", err)
-		}
-	}
-
-	if got, err := store.PublicFile("public"); err != nil || got.ID != "public" {
-		t.Fatalf("PublicFile(公开) = %v, %v", got, err)
-	}
-	if _, err := store.PublicFile("private"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("私有记录应当返回 ErrNotFound，得到 %v", err)
-	}
-	if _, err := store.PublicFile("absent"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("不存在的记录应当返回 ErrNotFound，得到 %v", err)
 	}
 }
@@ -319,23 +296,6 @@ func TestToggleFavorite(t *testing.T) {
 	}
 
 	if _, err := store.ToggleFavorite("absent"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("不存在的记录应当返回 ErrNotFound，得到 %v", err)
-	}
-}
-
-func TestTogglePublic(t *testing.T) {
-	store := testStore(t)
-	if err := store.InsertFile(sampleFile("id-one", "sha", 1)); err != nil {
-		t.Fatalf("InsertFile() 报错: %v", err)
-	}
-	got, err := store.TogglePublic("id-one")
-	if err != nil {
-		t.Fatalf("TogglePublic() 报错: %v", err)
-	}
-	if !got {
-		t.Error("第一次切换后应当是公开")
-	}
-	if _, err := store.TogglePublic("absent"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("不存在的记录应当返回 ErrNotFound，得到 %v", err)
 	}
 }
