@@ -50,15 +50,16 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true},
 		{http.MethodPost, "/api/files/{file_id}/share", server.handleShareLink, true},
 		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
-		{http.MethodGet, "/api/files/{file_id}/download-ticket", server.handleFileDownloadTicket, true},
+		{http.MethodGet, "/api/files/{file_id}/download-url", server.handleDownloadURL, true},
 		{http.MethodPost, "/api/groups", server.handleCreateGroup, true},
 		{http.MethodPost, "/api/groups/rename", server.handleRenameGroup, true},
 		{http.MethodPost, "/api/groups/delete", server.handleDeleteGroup, true},
 		{http.MethodPut, "/api/groups/order", server.handleSetGroupOrder, true},
 		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true},
 		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true},
-		// /d?t= 是浏览器导航下载与分享链接入口：票据绑定单个文件，不需要 Authorization。
-		{http.MethodGet, "/d", server.handleTicketDownload, false},
+		// /s/{file_id}?sig=&exp= 是浏览器导航下载与分享链接入口：签名绑定单个文件，
+		// 不需要 Authorization。
+		{http.MethodGet, "/s/{file_id}", server.handleSignedDownload, false},
 	})
 	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
 	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
@@ -86,9 +87,9 @@ func (s *Server) register(mux *http.ServeMux, routes []route) {
 		allow := allowValue(methods)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", allow)
-			// /api/* 与 /d* 是给程序 / 浏览器下载用的接口，405 也要是 JSON 错误体。
+			// /api/* 与 /s* 是给程序 / 浏览器下载用的接口，405 也要是 JSON 错误体。
 			if strings.HasPrefix(r.URL.Path, "/api/") ||
-				r.URL.Path == "/d" || strings.HasPrefix(r.URL.Path, "/d/") {
+				r.URL.Path == "/s" || strings.HasPrefix(r.URL.Path, "/s/") {
 				fail(w, r, http.StatusMethodNotAllowed, "method-not-allowed")
 				return
 			}
@@ -109,8 +110,8 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	switch path := r.URL.Path; {
 	case strings.HasPrefix(path, "/api/"):
 		fail(w, r, http.StatusNotFound, "not-found")
-	case strings.HasPrefix(path, "/d/"):
-		// 下载入口只认 /d?t=，多余的路径一律按「链接无效」处理。
+	case path == "/s" || strings.HasPrefix(path, "/s/"):
+		// 下载入口只认 /s/{file_id}?sig=&exp=，其余一律按「链接无效」处理。
 		fail(w, r, http.StatusNotFound, "download.invalid")
 	default:
 		http.NotFound(w, r)

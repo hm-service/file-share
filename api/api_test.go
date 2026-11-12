@@ -9,7 +9,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -76,7 +78,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodPost, "/api/files/abc/favorite"},
 		{http.MethodPost, "/api/files/abc/share"},
 		{http.MethodGet, "/api/files/abc/download"},
-		{http.MethodGet, "/api/files/abc/download-ticket"},
+		{http.MethodGet, "/api/files/abc/download-url"},
 		{http.MethodPost, "/api/groups"},
 		{http.MethodPost, "/api/groups/rename"},
 		{http.MethodPut, "/api/groups/order"},
@@ -663,7 +665,8 @@ func TestDeleteFile(t *testing.T) {
 		http.StatusNotFound, "找不到该文件")
 }
 
-// 分享链接：登录后换取 /d?t= 地址，匿名可下载（支持 Range / HEAD）；票据无效一律 404。
+// 分享链接：登录后签一个 /s/{id}?sig=&exp= 地址（10 分钟有效），匿名可下载（支持 Range / HEAD）；
+// 签名无效、过期、路径被改一律 404。
 func TestShareLink(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
@@ -678,8 +681,8 @@ func TestShareLink(t *testing.T) {
 		URL string `json:"url"`
 	}
 	testenv.DecodeInto(t, recorder, &payload)
-	if !strings.HasPrefix(payload.URL, "/d?t=") {
-		t.Fatalf("url = %q，想要 /d?t=<ticket>", payload.URL)
+	if !strings.HasPrefix(payload.URL, "/s/"+record.ID+"?sig=") || !strings.Contains(payload.URL, "&exp=") {
+		t.Fatalf("url = %q，想要 /s/<id>?sig=…&exp=…", payload.URL)
 	}
 
 	t.Run("匿名可下载", func(t *testing.T) {
@@ -712,16 +715,35 @@ func TestShareLink(t *testing.T) {
 		}
 	})
 
-	t.Run("非法票据回 404", func(t *testing.T) {
-		for _, target := range []string{"/d", "/d?t=", "/d?t=nope", "/d?t=abc.def", "/d/extra"} {
+	t.Run("无效签名回 404", func(t *testing.T) {
+		_, query, _ := strings.Cut(payload.URL, "?")
+		for _, target := range []string{
+			"/s",
+			"/s/",
+			"/s/" + record.ID,
+			"/s/" + record.ID + "?sig=&exp=1",
+			"/s/" + record.ID + "?sig=nope&exp=1",
+			"/s/" + record.ID + "?sig=nope&exp=not-a-number",
+			payload.URL + "0",
+			"/s/" + strings.Repeat("0", len(record.ID)) + "?" + query,
+			"/s/" + record.ID + "/extra?" + query,
+		} {
 			recorder := testenv.Do(handler, http.MethodGet, target, "")
 			if recorder.Code != http.StatusNotFound {
 				t.Errorf("%s 状态码 = %d，想要 404", target, recorder.Code)
+				continue
 			}
 			if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 				t.Errorf("%s Content-Type = %q", target, got)
 			}
 		}
+	})
+
+	t.Run("过期链接回 404", func(t *testing.T) {
+		signer := core.NewURLSigner([]byte(instance.Config.URLSignatureKey))
+		expired := signer.SignedURL("/s/"+record.ID, time.Now().Add(-time.Minute).Unix())
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, expired, ""),
+			http.StatusNotFound, "下载链接无效或已过期")
 	})
 
 	t.Run("blob 丢失后链接回 404", func(t *testing.T) {
@@ -1310,14 +1332,15 @@ func TestConcurrentDuplicateUploads(t *testing.T) {
 	}
 }
 
-// 下载票据：登录后换成 /d?t= 短期地址，浏览器直接导航即可匿名下载（支持 Range / HEAD）。
-func TestFileDownloadTicket(t *testing.T) {
+// 下载地址：登录后签一个 /s/{id}?sig=&exp= 地址（到下一个 UTC 整点失效），
+// 浏览器直接导航即可匿名下载（支持 Range / HEAD）。
+func TestDownloadURL(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
-	content := []byte("ticket download body")
-	record := testenv.SeedUpload(t, instance, "票据.bin", content)
+	content := []byte("signed download body")
+	record := testenv.SeedUpload(t, instance, "signed.bin", content)
 
-	recorder := testenv.Do(handler, http.MethodGet, "/api/files/"+record.ID+"/download-ticket", token)
+	recorder := testenv.Do(handler, http.MethodGet, "/api/files/"+record.ID+"/download-url", token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
@@ -1325,11 +1348,27 @@ func TestFileDownloadTicket(t *testing.T) {
 		URL string `json:"url"`
 	}
 	testenv.DecodeInto(t, recorder, &payload)
-	if !strings.HasPrefix(payload.URL, "/d?t=") {
-		t.Fatalf("url = %q，想要 /d?t=<ticket>", payload.URL)
+	if !strings.HasPrefix(payload.URL, "/s/"+record.ID+"?sig=") || !strings.Contains(payload.URL, "&exp=") {
+		t.Fatalf("url = %q，想要 /s/<id>?sig=…&exp=…", payload.URL)
 	}
 
-	t.Run("票据可匿名下载", func(t *testing.T) {
+	parsed, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) 报错: %v", payload.URL, err)
+	}
+	exp, err := strconv.ParseInt(parsed.Query().Get("exp"), 10, 64)
+	if err != nil {
+		t.Fatalf("exp 不是整数: %v", err)
+	}
+	// 有效期取整到下一个 UTC 整点：exp 落在整点上，且最远一小时。
+	if exp%3600 != 0 {
+		t.Errorf("exp = %d，想要 UTC 整点", exp)
+	}
+	if now := time.Now().Unix(); exp <= now || exp > now+3600 {
+		t.Errorf("exp = %d，距当前 %d 秒，想要 (0, 3600]", exp, exp-now)
+	}
+
+	t.Run("签名地址可匿名下载", func(t *testing.T) {
 		recorder := testenv.Do(handler, http.MethodGet, payload.URL, "")
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
@@ -1345,7 +1384,7 @@ func TestFileDownloadTicket(t *testing.T) {
 		}
 	})
 
-	t.Run("票据同样支持 Range 与 HEAD", func(t *testing.T) {
+	t.Run("同样支持 Range 与 HEAD", func(t *testing.T) {
 		ranged := testenv.DoRequest(handler, http.MethodGet, payload.URL, nil, "", "",
 			map[string]string{"Range": "bytes=0-3"})
 		if ranged.Code != http.StatusPartialContent {
@@ -1353,12 +1392,21 @@ func TestFileDownloadTicket(t *testing.T) {
 		}
 		head := testenv.Do(handler, http.MethodHead, payload.URL, "")
 		if head.Code != http.StatusOK || head.Body.Len() != 0 {
-			t.Errorf("HEAD /d = %d，体长 %d", head.Code, head.Body.Len())
+			t.Errorf("HEAD 签名地址 = %d，体长 %d", head.Code, head.Body.Len())
 		}
 	})
 
-	t.Run("票据无效", func(t *testing.T) {
-		for _, target := range []string{"/d", "/d?t=", "/d?t=nope", "/d?t=abc.def", "/d/extra"} {
+	t.Run("签名无效回 404", func(t *testing.T) {
+		for _, target := range []string{
+			"/s",
+			"/s/",
+			"/s/" + record.ID,
+			"/s/" + record.ID + "?sig=&exp=1",
+			"/s/" + record.ID + "?sig=nope&exp=1",
+			"/s/" + record.ID + "?sig=nope&exp=not-a-number",
+			payload.URL + "0",
+			"/s/" + record.ID + "/extra?" + parsed.RawQuery,
+		} {
 			recorder := testenv.Do(handler, http.MethodGet, target, "")
 			if recorder.Code != http.StatusNotFound {
 				t.Errorf("%s 状态码 = %d，想要 404", target, recorder.Code)
@@ -1370,36 +1418,33 @@ func TestFileDownloadTicket(t *testing.T) {
 		}
 	})
 
-	t.Run("过期票据", func(t *testing.T) {
-		signer := core.NewTicketSigner([]byte(instance.Config.SessionSigningKey))
-		expired, err := signer.Issue(record.ID, time.Now().Add(-2*core.DownloadTicketTTL))
-		if err != nil {
-			t.Fatalf("Issue() 报错: %v", err)
-		}
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/d?t="+expired, ""),
+	t.Run("过期地址回 404", func(t *testing.T) {
+		signer := core.NewURLSigner([]byte(instance.Config.URLSignatureKey))
+		expired := signer.SignedURL("/s/"+record.ID, time.Now().Add(-time.Minute).Unix())
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, expired, ""),
 			http.StatusNotFound, "下载链接无效或已过期")
 	})
 
 	t.Run("记录不存在", func(t *testing.T) {
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/absent/download-ticket", token),
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/absent/download-url", token),
 			http.StatusNotFound, "找不到该文件")
 	})
 
 	t.Run("blob 丢失", func(t *testing.T) {
 		lost := testenv.SeedUpload(t, instance, "lost.bin", []byte("gone"))
 		testenv.RemoveBlob(t, instance, lost.SHA256)
-		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/"+lost.ID+"/download-ticket", token),
+		assertJSONError(t, testenv.Do(handler, http.MethodGet, "/api/files/"+lost.ID+"/download-url", token),
 			http.StatusNotFound, "找不到该文件")
 	})
 
 	t.Run("方法不对", func(t *testing.T) {
-		recorder := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/download-ticket", token)
+		recorder := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/download-url", token)
 		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
-			t.Errorf("票据接口 POST = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+			t.Errorf("下载地址接口 POST = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
 		}
-		recorder = testenv.Do(handler, http.MethodPost, "/d?t=x", "")
+		recorder = testenv.Do(handler, http.MethodPost, payload.URL, "")
 		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
-			t.Errorf("POST /d = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+			t.Errorf("POST 签名地址 = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
 		}
 	})
 }

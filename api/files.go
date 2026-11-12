@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -290,49 +291,44 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 	http.ServeContent(w, r, download.File.Filename, time.Time{}, download.Blob)
 }
 
-// handleFileDownloadTicket 签一张 60 秒有效的下载票据。前端拿 url 后让浏览器直接导航：
-// 流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
-func (s *Server) handleFileDownloadTicket(w http.ResponseWriter, r *http.Request) {
-	ticket, err := s.App.IssueFileDownloadTicket(r.PathValue("file_id"))
+// handleDownloadURL 签一个匿名下载地址（到下一个 UTC 整点失效）。前端拿 url 后让浏览器
+// 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
+func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
+	url, err := s.App.IssueDownloadURL(r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
+	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
 }
 
-// handleShareLink 签一条 1 小时有效的分享链接。链接是查询参数里的 HMAC 票据：
-// 对方免登录即可下载，票据过期或签名不对一律 404。
+// handleShareLink 签一条 ShareLinkTTL 内有效的分享链接：对方免登录即可下载，
+// 签名不对或过期一律 404。
 func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
-	ticket, err := s.App.IssueShareLink(r.PathValue("file_id"))
+	url, err := s.App.IssueShareLink(r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	httpx.Write(w, http.StatusOK, map[string]any{"url": ticketURL(ticket)})
+	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
 }
 
-// handleTicketDownload 是浏览器导航入口：票据绑定单个文件，不需要 Authorization ——
-// 凭据就是票据本身。分组「全部下载」由前端逐个文件调用这里，服务端不提供打包。
-func (s *Server) handleTicketDownload(w http.ResponseWriter, r *http.Request) {
-	fileID, err := s.App.VerifyDownloadTicket(r.URL.Query().Get("t"))
+// handleSignedDownload 是匿名下载入口：凭 URL 里的 sig/exp 下载单个文件，不需要 Authorization ——
+// 凭据就是签名本身。分组「全部下载」由前端逐个文件调用这里，服务端不提供打包。
+func (s *Server) handleSignedDownload(w http.ResponseWriter, r *http.Request) {
+	exp, err := strconv.ParseInt(r.URL.Query().Get("exp"), 10, 64)
 	if err != nil {
-		businessFail(w, r, err)
+		fail(w, r, http.StatusNotFound, "download.invalid")
 		return
 	}
-	download, err := s.App.OpenDownload(fileID)
+	download, err := s.App.OpenSignedDownload(
+		r.PathValue("file_id"), r.Method, r.URL.EscapedPath(), r.URL.Query().Get("sig"), exp)
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
 	defer download.Close()
 	serveDownload(w, r, download)
-}
-
-// ticketURL 拼出票据下载地址。票据是 base64url，字符集天然 URL 安全；
-// 票据放在查询参数而不是路径里，访问日志只记 /d，不会把凭据写进日志。
-func ticketURL(ticket string) string {
-	return "/d?t=" + ticket
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

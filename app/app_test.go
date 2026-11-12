@@ -2,8 +2,10 @@ package app_test
 
 import (
 	"errors"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -432,30 +434,118 @@ func TestDownload(t *testing.T) {
 	}
 }
 
-func TestShareLink(t *testing.T) {
+func TestSignedDownloadURLs(t *testing.T) {
 	instance := testenv.New(t)
-	record := testenv.SeedUpload(t, instance, "分享.txt", []byte("shared"))
+	content := []byte("shared")
+	record := testenv.SeedUpload(t, instance, "分享.txt", content)
 
-	ticket, err := instance.IssueShareLink(record.ID)
+	t.Run("分享链接", func(t *testing.T) {
+		raw, err := instance.IssueShareLink(record.ID)
+		if err != nil {
+			t.Fatalf("IssueShareLink() 报错: %v", err)
+		}
+		path, sig, exp := parseSigned(t, raw)
+		if path != "/s/"+record.ID {
+			t.Errorf("路径 = %q，想要 /s/%s", path, record.ID)
+		}
+		if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.ShareLinkTTL {
+			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.ShareLinkTTL)
+		}
+
+		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
+		if err != nil {
+			t.Fatalf("OpenSignedDownload() 报错: %v", err)
+		}
+		defer download.Close()
+		body, err := os.ReadFile(download.Blob.Name())
+		if err != nil || string(body) != string(content) {
+			t.Fatalf("blob 内容 = %q err=%v", body, err)
+		}
+		// HEAD 与 GET 共用签名。
+		head, err := instance.OpenSignedDownload(record.ID, "HEAD", path, sig, exp)
+		if err != nil {
+			t.Errorf("HEAD 应当通过: %v", err)
+		} else {
+			head.Close()
+		}
+
+		// 改路径、改过期时间、换文件都验不过；过期也拒绝。
+		if _, err := instance.OpenSignedDownload(record.ID, "GET", "/s/other", sig, exp); err == nil {
+			t.Error("换路径应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "download.invalid")
+		}
+		if _, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp+60); err == nil {
+			t.Error("改过期时间应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "download.invalid")
+		}
+		if _, err := instance.OpenSignedDownload("absent", "GET", "/s/absent", sig, exp); err == nil {
+			t.Error("换文件应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "download.invalid")
+		}
+	})
+
+	t.Run("下载地址", func(t *testing.T) {
+		raw, err := instance.IssueDownloadURL(record.ID)
+		if err != nil {
+			t.Fatalf("IssueDownloadURL() 报错: %v", err)
+		}
+		path, sig, exp := parseSigned(t, raw)
+		if path != "/s/"+record.ID {
+			t.Errorf("路径 = %q，想要 /s/%s", path, record.ID)
+		}
+		if exp%3600 != 0 {
+			t.Errorf("exp = %d，想要 UTC 整点", exp)
+		}
+		if now := time.Now().Unix(); exp <= now || exp > now+3600 {
+			t.Errorf("exp = %d，距当前 %d 秒，想要 (0, 3600]", exp, exp-now)
+		}
+		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
+		if err != nil {
+			t.Fatalf("OpenSignedDownload() 报错: %v", err)
+		}
+		download.Close()
+	})
+
+	t.Run("记录不存在或 blob 丢失时不签", func(t *testing.T) {
+		if _, err := instance.IssueShareLink("absent"); err == nil {
+			t.Fatal("不存在的记录签分享链接应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "file.not-found")
+		}
+		if _, err := instance.IssueDownloadURL("absent"); err == nil {
+			t.Fatal("不存在的记录签下载地址应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "file.not-found")
+		}
+		testenv.RemoveBlob(t, instance, record.SHA256)
+		if _, err := instance.IssueShareLink(record.ID); err == nil {
+			t.Fatal("blob 丢失时签分享链接应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "file.not-found")
+		}
+		if _, err := instance.IssueDownloadURL(record.ID); err == nil {
+			t.Fatal("blob 丢失时签下载地址应当 404")
+		} else {
+			assertBusinessError(t, err, 404, "file.not-found")
+		}
+	})
+}
+
+// parseSigned 拆出签名 URL 的路径、签名与过期时间，供断言使用。
+func parseSigned(t *testing.T, raw string) (path, sig string, exp int64) {
+	t.Helper()
+	parsed, err := neturl.Parse(raw)
 	if err != nil {
-		t.Fatalf("IssueShareLink() 报错: %v", err)
+		t.Fatalf("url.Parse(%q) 报错: %v", raw, err)
 	}
-	fileID, err := instance.VerifyDownloadTicket(ticket)
-	if err != nil || fileID != record.ID {
-		t.Fatalf("分享票据校验 = %q, %v，想要 %q", fileID, err, record.ID)
+	exp, err = strconv.ParseInt(parsed.Query().Get("exp"), 10, 64)
+	if err != nil {
+		t.Fatalf("exp 不是整数: %v", err)
 	}
-
-	if _, err := instance.IssueShareLink("absent"); err == nil {
-		t.Fatal("不存在的记录签分享链接应当 404")
-	} else {
-		assertBusinessError(t, err, 404, "file.not-found")
-	}
-	testenv.RemoveBlob(t, instance, record.SHA256)
-	if _, err := instance.IssueShareLink(record.ID); err == nil {
-		t.Fatal("blob 丢失时签分享链接应当 404")
-	} else {
-		assertBusinessError(t, err, 404, "file.not-found")
-	}
+	return parsed.Path, parsed.Query().Get("sig"), exp
 }
 
 func TestUpdateFile(t *testing.T) {

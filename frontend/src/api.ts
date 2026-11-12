@@ -4,8 +4,8 @@
  * - 每个请求都带 `Authorization: Bearer <session>` 与 `Accept-Language`（后端按它挑错误文案）。
  * - 除登录接口外，401 一律清 session 跳 /auth（登录页自己把 401 显示成「令牌不正确」）。
  * - 错误体是 `{"detail": "..."}`，直接作为 ApiError.message（后端已本地化）。
- * - 下载不能直接导航到需要 Bearer 的接口：先换 60 秒有效的下载票据，再让浏览器导航到
- *   票据地址，由浏览器完成流式下载（Range / 原生进度都在浏览器侧）。
+ * - 下载不能直接导航到需要 Bearer 的接口：先换一个签名 URL，再让浏览器导航到该地址，
+ *   由浏览器完成流式下载（Range / 原生进度都在浏览器侧）。
  */
 import { abortError, isAbortError } from "./abort";
 import { getLocale, t } from "./i18n";
@@ -13,7 +13,7 @@ import { getSession, toLogin } from "./session";
 import type {
   AuthResponse,
   CheckFileResponse,
-  DownloadTicketResponse,
+  DownloadURLResponse,
   FileItem,
   FileListResponse,
   FileOrderItem,
@@ -194,7 +194,7 @@ export function toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
   );
 }
 
-/** POST /api/files/{id}/share：签一条 1 小时有效的分享链接，返回可直接发给对方的相对地址。 */
+/** POST /api/files/{id}/share：签一条 10 分钟有效的分享链接，返回可直接发给对方的相对地址。 */
 export function createShareLink(id: string): Promise<{ url: string }> {
   return request<{ url: string }>(`/api/files/${encodeURIComponent(id)}/share`, {
     method: "POST",
@@ -273,13 +273,13 @@ export function reorderFiles(items: FileOrderItem[]): Promise<void> {
 }
 
 /**
- * 用票据 URL 触发浏览器下载。
+ * 用签名 URL 触发浏览器下载。
  *
  * 不能直接给 /api/files/{id}/download 加 href —— 导航带不了 Authorization 头；
  * 也不用 fetch + blob —— 大文件会整份进内存，而且 Safari 在异步回调里点 <a download>
- * 常常不生效。换成「先换短期票据，再让浏览器下载」：流式、可续传、原生进度都在浏览器侧。
+ * 常常不生效。换成「先换签名 URL，再让浏览器下载」：流式、可续传、原生进度都在浏览器侧。
  *
- * 必须带 download 属性：否则浏览器把 /d 当成一次同帧导航，连续点多个文件时后一次导航
+ * 必须带 download 属性：否则浏览器把 /s/<id> 当成一次同帧导航，连续点多个文件时后一次导航
  * 会取消前一次下载（分组「全部下载」只剩最后一个）。download 为空串时文件名取服务端的
  * Content-Disposition，重命名后的名字仍然正确。
  */
@@ -293,10 +293,10 @@ function startDownload(url: string): void {
   anchor.remove();
 }
 
-/** GET /api/files/{id}/download-ticket：换一个 60 秒有效的下载地址。 */
+/** GET /api/files/{id}/download-url：换一个匿名下载地址（到下一个 UTC 整点失效）。 */
 export async function downloadFile(id: string): Promise<void> {
-  const payload = await request<DownloadTicketResponse>(
-    `/api/files/${encodeURIComponent(id)}/download-ticket`,
+  const payload = await request<DownloadURLResponse>(
+    `/api/files/${encodeURIComponent(id)}/download-url`,
   );
   startDownload(payload.url);
 }

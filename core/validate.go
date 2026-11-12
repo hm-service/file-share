@@ -64,7 +64,7 @@ func ValidFilename(name string) bool {
 // 名单要和 main.go 的路由、web.go 的页面表以及前端的视图路由保持一致。
 var reservedGroupNames = map[string]struct{}{
 	"api":         {},
-	"d":           {},
+	"s":           {},
 	"auth":        {},
 	"assets":      {},
 	"readyz":      {},

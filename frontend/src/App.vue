@@ -462,7 +462,7 @@ async function onDownload(file: FileItem): Promise<void> {
 }
 
 /**
- * 分组「全部下载」：按当前分组顺序逐个换票据并触发下载，每个文件是独立的一次下载。
+ * 分组「全部下载」：按当前分组顺序逐个签下载地址并触发下载，每个文件是独立的一次下载。
  * 浏览器可能询问「是否允许下载多个文件」，允许后即可一次保存整组。
  */
 async function onDownloadGroup(): Promise<void> {

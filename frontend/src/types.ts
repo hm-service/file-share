@@ -37,8 +37,8 @@ export interface FileListResponse {
   groups: GroupItem[];
 }
 
-/** POST /api/files/{id}/download-ticket 与分组票据的响应：浏览器可直接导航的短期地址。 */
-export interface DownloadTicketResponse {
+/** GET /api/files/{id}/download-url 的响应：浏览器可直接导航的签名地址。 */
+export interface DownloadURLResponse {
   url: string;
 }
 

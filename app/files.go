@@ -200,19 +200,21 @@ func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
 	return nil
 }
 
-// IssueFileDownloadTicket 给一条记录签一张短期下载票据，浏览器凭它直接导航下载。
-// blob 已经丢了就当场按 404 拒绝，避免用户导航过去才看到一个错误页。
-func (a *App) IssueFileDownloadTicket(id string) (string, error) {
-	return a.issueTicket(id, a.tickets.Issue, "issue file download ticket failed")
+// IssueDownloadURL 给一条记录签匿名下载地址：浏览器凭它直接导航下载，
+// 地址到下一个 UTC 整点失效。blob 已经丢了就当场按 404 拒绝，
+// 避免用户导航过去才看到一个错误页。
+func (a *App) IssueDownloadURL(id string) (string, error) {
+	return a.issueSignedURL(id, core.DownloadURLExpiry(time.Now()), "issue download url failed")
 }
 
-// IssueShareLink 给一条记录签一张 1 小时有效的分享票据：登录后复制链接，对方免登录下载。
+// IssueShareLink 给一条记录签分享链接：登录后复制，对方 ShareLinkTTL 内免登录下载。
 func (a *App) IssueShareLink(id string) (string, error) {
-	return a.issueTicket(id, a.tickets.IssueShareLink, "issue share link failed")
+	return a.issueSignedURL(id, core.ShareURLExpiry(time.Now()), "issue share link failed")
 }
 
-// issueTicket 是两种票据共用的签发流程：记录与 blob 都在才签。
-func (a *App) issueTicket(id string, sign func(string, time.Time) (string, error), errorLog string) (string, error) {
+// issueSignedURL 是下载地址与分享链接共用的签发流程：记录与 blob 都在才签，
+// 签的路径固定为 /s/<id>，签名因此绑定单个文件。
+func (a *App) issueSignedURL(id string, exp int64, errorLog string) (string, error) {
 	record, err := a.Store.File(id)
 	if err != nil {
 		return "", storeFailure(err, "internal")
@@ -221,25 +223,20 @@ func (a *App) issueTicket(id string, sign func(string, time.Time) (string, error
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", core.Fail(404, "file.not-found")
 		}
-		slog.Error("stat blob for ticket failed", slog.Any("error", err))
+		slog.Error("stat blob for signed url failed", slog.Any("error", err))
 		return "", core.Fail(500, "internal")
 	}
-	ticket, err := sign(record.ID, time.Now())
-	if err != nil {
-		slog.Error(errorLog, slog.Any("error", err))
-		return "", core.Fail(500, "internal")
-	}
-	return ticket, nil
+	return a.signurl.SignedURL("/s/"+record.ID, exp), nil
 }
 
-// VerifyDownloadTicket 校验下载票据并返回文件 id。过期 / 签名不对 / 字段无效统一回一枚 404：
-// 下载路由不需要告诉匿名调用方「是过期了还是伪造的」。
-func (a *App) VerifyDownloadTicket(token string) (string, error) {
-	fileID, err := a.tickets.Verify(token, time.Now())
-	if err != nil {
-		return "", core.Fail(404, "download.invalid")
+// OpenSignedDownload 校验签名 URL 并打开 blob。校验失败一律 404：
+// 匿名调用方不需要知道是伪造、过期还是字段无效。escapedPath 传请求的 EscapedPath，
+// 与签出时逐字节一致才算数。
+func (a *App) OpenSignedDownload(fileID, method, escapedPath, sig string, exp int64) (*DownloadedFile, error) {
+	if err := a.signurl.Verify(method, escapedPath, sig, exp, time.Now()); err != nil {
+		return nil, core.Fail(404, "download.invalid")
 	}
-	return fileID, nil
+	return a.OpenDownload(fileID)
 }
 
 // SetOrder 批量重写列表顺序；任一条记录不存在就整体失败，原顺序保持不变。
@@ -279,7 +276,7 @@ type DownloadedFile struct {
 // Close 关闭 blob 文件句柄。
 func (d *DownloadedFile) Close() error { return d.Blob.Close() }
 
-// OpenDownload 打开一条记录的 blob（需要登录的下载，以及凭票据的匿名下载）。
+// OpenDownload 打开一条记录的 blob（需要登录的下载，以及凭签名 URL 的匿名下载）。
 func (a *App) OpenDownload(id string) (*DownloadedFile, error) {
 	record, err := a.Store.File(id)
 	if err != nil {

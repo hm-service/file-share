@@ -114,7 +114,7 @@ func TestNormalizeGroupPath(t *testing.T) {
 		{name: "顶级段以 .html 结尾", raw: "a.html"},
 		{name: "页面表占用 auth", raw: "auth"},
 		{name: "接口前缀占用 api", raw: "api"},
-		{name: "下载前缀占用 d", raw: "d"},
+		{name: "签名下载占用 s", raw: "s"},
 		{name: "静态资源占用 assets", raw: "assets"},
 		{name: "图标占用 favicon.svg", raw: "favicon.svg"},
 		{name: "前端视图占用 favorites", raw: "favorites"},

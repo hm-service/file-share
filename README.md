@@ -1,6 +1,6 @@
 # file-share
 
-自托管的轻量文件分享服务：单二进制、SQLite、内容寻址秒传、收藏与 1 小时有效的签名分享链接。
+自托管的轻量文件分享服务：单二进制、SQLite、内容寻址秒传、收藏与 10 分钟有效的签名分享链接。
 后端 Go（标准库 `net/http` + `modernc.org/sqlite`），前端 Vue 3 + Vite + TypeScript，
 前端构建产物通过 `go:embed` 编进二进制，运行期唯一的状态是 `DATA_DIR`。
 
@@ -22,7 +22,7 @@
 
 - **秒传与去重**：文件按 SHA-256 内容寻址；本地算指纹 → 服务端预检 → 命中即秒传，物理文件只存一份。
 - **上传与拖放**：点击上传或把文件拖到内容区任意位置；右下角滑出上传坞显示指纹计算 / 预检 / 上传进度与实时速度，支持取消与重试，完成后自动消失；每完成一个文件就增量刷新列表。单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB）。
-- **文件浏览**：侧栏（窄屏是标签页）切换最近 / 收藏；「最近」只列最近 20 个文件（按上传时间倒序、按本地日期分段，标题形如 `2026年11月7号`），搜索时在全部文件里匹配。顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻「下载、复制分享链接、收藏、分组、更多」五个按钮，并显示文件的 SHA-256。复制分享链接会换一张 1 小时有效的签名票据并复制绝对地址，对方免登录即可下载；「更多」菜单里可重命名、复制 curl 命令（同样使用签名地址）或删除。视图与地址栏一一对应：`/`、`/favorites`、`/ungrouped`、`/<顶级分组>`、`/<顶级>/<二级分组>`，可刷新、可前进后退、可直接打开链接。
+- **文件浏览**：侧栏（窄屏是标签页）切换最近 / 收藏；「最近」只列最近 20 个文件（按上传时间倒序、按本地日期分段，标题形如 `2026年11月7号`），搜索时在全部文件里匹配。顶部按文件名即时搜索，搜索框旁有独立刷新按钮；每行常驻「下载、复制分享链接、收藏、分组、更多」五个按钮，并显示文件的 SHA-256。复制分享链接会签一个 10 分钟有效的签名地址并复制绝对地址，对方免登录即可下载；「更多」菜单里可重命名、复制 curl 命令（同样使用签名地址）或删除。视图与地址栏一一对应：`/`、`/favorites`、`/ungrouped`、`/<顶级分组>`、`/<顶级>/<二级分组>`，可刷新、可前进后退、可直接打开链接。
 - **两级分组与排序**：分组最多两级（顶级 + 二级），侧栏缩进展示、移动端 chips 第二行展示当前顶级分组的子分组；每层各自独立拖拽排序，父分组带子分组整体移动；空分组保留，新建时输入 `父/子` 即建二级分组（父级不存在会一并创建）。分组条目右键（窄屏用标题旁的「⋯」）可重命名、创建子分组或删除：重命名只改最后一段，顶级分组改名时子分组与组内路径一起改，目标已存在则拒绝；删除会连带子分组，确认框里可勾选「同时删除这些文件」，不勾选则文件上移到上级分组（顶级分组上移到未分组）。在分组视图里上传的文件会直接归入该分组；分组视图可一键下载整组（逐个文件下载，浏览器可能询问是否允许下载多个文件）；「更多」菜单可移动到任意分组或新建分组，也可以直接把文件拖到左栏分组标签（移动端为分组 chips）上完成分组；分组 / 收藏 / 未分组视图内可拖拽行首 grip 调整顺序（SortableJS，桌面与触屏均可），顺序持久化在服务端；「最近」是固定的时间序，不参与拖拽。一级分组行尾的箭头可折叠它的子分组（折叠状态只在本页有效，刷新后恢复展开）。
 - **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
@@ -37,6 +37,7 @@
 export DATA_DIR=./.data
 export AUTH_TOKEN=change_me_please          # 16-128 位 [A-Za-z0-9_]
 export SESSION_SIGNING_KEY=change_me_please_1234567890  # 32-128 位 [A-Za-z0-9_]
+export URL_SIGNATURE_KEY=change_me_please_0987654321   # 32-128 位 [A-Za-z0-9_]
 export READYZ_TOKEN=optional_readyz_token   # 可选
 export MAX_FILE_SIZE=2GiB                   # 可选：单文件上限，默认 2GiB（也支持 MiB / 纯字节）
 just run
@@ -59,6 +60,7 @@ just run
 | `MAX_FILE_SIZE` | `2GiB` | 单个上传文件上限；纯整数按字节，支持 `GiB`/`MiB` 后缀（大小写不敏感） |
 | `AUTH_TOKEN` | 无，必填 | 登录令牌（Secret） |
 | `SESSION_SIGNING_KEY` | 无，必填 | 会话签名密钥（Secret），轮换即所有会话下线 |
+| `URL_SIGNATURE_KEY` | 无，必填 | 签名 URL 密钥（Secret），轮换即所有已签出的下载 / 分享链接失效 |
 | `READYZ_TOKEN` | 空 | 非空时 `/readyz` 需要 `?token=` |
 
 完整校验规则与安全模型见 [DESIGN.md](DESIGN.md)。
@@ -85,7 +87,7 @@ podman kube play k8s.file-share.yaml
 - `file-share.kube`：Podman Quadlet 模板（systemd 单元）。
 - CI（`.github/workflows/build-and-push-docker-image.yml`）在 push 到 `main` 时跑 Go/前端测试，
   并推送 `linux/amd64` + `linux/arm64` 镜像：日期 tag 与 `latest` 各一份（GHCR 与阿里云 ACR）。
-  首次部署前把 Secret 里的 `AUTH_TOKEN` / `SESSION_SIGNING_KEY` / `READYZ_TOKEN` 换成随机值。
+  首次部署前把 Secret 里的 `AUTH_TOKEN` / `SESSION_SIGNING_KEY` / `URL_SIGNATURE_KEY` / `READYZ_TOKEN` 换成随机值。
 - 镜像不设 `USER`，容器以 root 运行（配合 `readOnlyRootFilesystem` + `capabilities.drop: [ALL]`）。
   `DATA_DIR` 必须对容器用户可写：PVC / 具名卷默认满足；若用宿主机 bind mount，请先把该目录的属主
   或权限交给容器用户，否则启动时收紧权限（chmod 0700/0600）会因缺少 `CAP_FOWNER` 而失败。
@@ -99,7 +101,7 @@ podman kube play k8s.file-share.yaml
 | `POST` | `/api/check_file` | 秒传预检 |
 | `POST` | `/api/upload` | 上传（流式校验 SHA-256） |
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |
-| `POST` | `/api/files/{id}/share` | 签 1 小时有效的分享链接（`{"url":"/d?t=…"}`） |
+| `POST` | `/api/files/{id}/share` | 签 10 分钟有效的分享链接（`{"url":"/s/{id}?sig=…&exp=…"}`） |
 | `PATCH` | `/api/files/{id}` | 重命名 / 设置分组路径（`filename`、`group_path`，至少给一个） |
 | `POST` | `/api/groups` | 手动新建空分组（`path`，`父/子` 表示二级） |
 | `POST` | `/api/groups/rename` | 重命名分组最后一段（`path`、`new_name`） |
@@ -107,8 +109,8 @@ podman kube play k8s.file-share.yaml
 | `PUT` | `/api/groups/order` | 保存某一层分组的顺序（`parent`、`names`） |
 | `PUT` | `/api/files/order` | 批量保存拖拽后的顺序（`sort_order`） |
 | `GET` | `/api/files/{id}/download` | 登录下载（curl / 程序用） |
-| `GET` | `/api/files/{id}/download-ticket` | 换 60 秒有效的浏览器下载地址 |
-| `GET` | `/d?t=…` | 凭票据下载单个文件（无需登录凭据） |
+| `GET` | `/api/files/{id}/download-url` | 签浏览器下载地址（到下一个 UTC 整点失效） |
+| `GET` | `/s/{id}?sig=…&exp=…` | 凭签名下载单个文件（无需登录凭据） |
 | `DELETE` | `/api/files/{id}` | 删除 |
 | `GET` | `/livez` / `/readyz` | 存活 / 就绪探针 |
 
@@ -225,19 +227,19 @@ curl -s -X PUT -H "Authorization: Bearer $SESSION" -H 'Content-Type: application
 
 ### 下载接口
 
-curl / 程序可以直接带 Bearer 调 `GET /api/files/{id}/download`。浏览器里的下载按钮走短期票据：
-先 `GET /api/files/{id}/download-ticket`（需登录）换到 `{"url":"/d?t=…"}`，再让浏览器直接下载该地址。
-票据 60 秒有效、只绑定单个文件；下载路径不要求 `Authorization`，因此可以流式传输、支持 Range
-与浏览器原生进度，也不会把会话 token 写进地址栏或日志。
+curl / 程序可以直接带 Bearer 调 `GET /api/files/{id}/download`。浏览器里的下载按钮走签名 URL：
+先 `GET /api/files/{id}/download-url`（需登录）拿到 `{"url":"/s/{id}?sig=…&exp=…"}`，
+再让浏览器直接下载该地址。地址到下一个 UTC 整点失效（同一小时内重复签出的地址不变）、
+只绑定单个文件；下载路径不要求 `Authorization`，因此可以流式传输、支持 Range 与浏览器原生进度，
+也不会把会话 token 写进地址栏或日志。
 
-**分享链接**：行内「复制分享链接」会先 `POST /api/files/{id}/share`（需登录）换到
-`{"url":"/d?t=…"}`，拼上站点 origin 后复制；链接 1 小时内有效、只绑定单个文件，对方免登录即可下载。
-「更多」菜单里的「复制 curl 命令」也使用这张签名地址，得到
-`curl -f -o '<文件名>' '<origin>/d?t=…'`：粘到终端就把文件按原名下载到当前目录；
+**分享链接**：行内「复制分享链接」会先 `POST /api/files/{id}/share`（需登录）拿到
+`{"url":"/s/{id}?sig=…&exp=…"}`，拼上站点 origin 后复制；链接 10 分钟内有效、只绑定单个文件，
+对方免登录即可下载。「更多」菜单里的「复制 curl 命令」也使用这张签名地址，得到
+`curl -f -o '<文件名>' '<origin>/s/{id}?sig=…&exp=…'`：粘到终端就把文件按原名下载到当前目录；
 `-f` 保证链接过期或文件删除时直接失败，不会把 404 的错误响应存成文件。
-分享链接与浏览器下载票据共用同一套签名格式，区别只是签发时的 TTL。
 
-**分组「全部下载」**：在分组视图点按钮后，前端按组内顺序对每个文件各换一张票据、各触发一次下载
+**分组「全部下载」**：在分组视图点按钮后，前端按组内顺序对每个文件各签一个下载地址、各触发一次下载
 （不打包成 zip）。浏览器首次通常会询问是否允许本站下载多个文件，允许后整组文件会逐个保存；
 这些下载都是独立的，可以分别取消或续传。
 
@@ -282,10 +284,10 @@ just check   # vet/test + 前端 typecheck
 
 | 包 | 覆盖率 |
 | --- | --- |
-| `main`（仓库根） | 74.5% |
-| `api` | 87.4% |
-| `app` | 75.6% |
-| `core` | 93.0% |
+| `main`（仓库根） | 74.6% |
+| `api` | 87.7% |
+| `app` | 76.4% |
+| `core` | 93.9% |
 | `db` | 73.2% |
 | `httpx` | 90.6% |
 | `i18n` | 100.0% |

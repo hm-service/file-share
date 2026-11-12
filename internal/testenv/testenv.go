@@ -28,6 +28,7 @@ import (
 const (
 	AuthToken         = "test_auth_token_0123456789"
 	SessionSigningKey = "test_session_signing_key_0123456789"
+	URLSignatureKey   = "test_url_signature_key_0123456789"
 	ReadyzToken       = "test_readyz_token_0123456789"
 )
 
@@ -63,6 +64,7 @@ func NewWith(t *testing.T, mutate func(*app.Config)) *app.App {
 		DataDir:           t.TempDir(),
 		TrustedProxies:    httpx.DefaultTrustedProxies,
 		SessionSigningKey: SessionSigningKey,
+		URLSignatureKey:   URLSignatureKey,
 		AuthTokenHash:     authTokenHash(t),
 		ReadyzToken:       "",
 		MaxFileSize:       DefaultMaxFileSize,

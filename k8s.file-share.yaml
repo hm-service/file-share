@@ -25,6 +25,7 @@ stringData:
     AUTH_TOKEN: "your_auth_token_123"
     READYZ_TOKEN: "your_readyz_token"
     SESSION_SIGNING_KEY: "your_very_safe_session_signing_key"
+    URL_SIGNATURE_KEY: "your_very_safe_url_signature_key"
 
 ---
 apiVersion: v1

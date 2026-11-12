@@ -26,6 +26,7 @@ type Config struct {
 	DataDir           string
 	TrustedProxies    string
 	SessionSigningKey string
+	URLSignatureKey   string
 	AuthTokenHash     string
 	ReadyzToken       string
 	MaxFileSize       int64
@@ -39,7 +40,7 @@ type App struct {
 	filesDir string
 	dbPath   string
 	signer   *core.SessionSigner
-	tickets  *core.TicketSigner
+	signurl  *core.URLSigner
 	proxies  *httpx.Proxies
 
 	// mu 把「check_file 落记录 / 上传落 blob 与记录 / 删除记录与 blob / 改分组 / 批量排序」
@@ -92,7 +93,7 @@ func Open(cfg Config) (*App, error) {
 		filesDir: filesDir,
 		dbPath:   dbPath,
 		signer:   core.NewSessionSigner([]byte(cfg.SessionSigningKey)),
-		tickets:  core.NewTicketSigner([]byte(cfg.SessionSigningKey)),
+		signurl:  core.NewURLSigner([]byte(cfg.URLSignatureKey)),
 		proxies:  proxies,
 	}, nil
 }

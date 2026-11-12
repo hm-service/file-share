@@ -24,7 +24,7 @@ const emit = defineEmits<{
   favorite: [file: FileItem];
   download: [file: FileItem];
   rename: [file: FileItem];
-  /** 行内操作（如换分享票据）失败，交给父组件统一提示。 */
+  /** 行内操作（如签分享链接）失败，交给父组件统一提示。 */
   error: [error: unknown];
   delete: [file: FileItem];
   "move-group": [file: FileItem, groupName: string];

@@ -5,8 +5,8 @@
  * 行内只留「下载、分享链接、收藏、分组、更多」五个按钮：分享链接与分组都是高频操作，
  * 单独开按钮；重命名、复制 curl 命令、删除收进最右的「更多」菜单，避免一行里挤满图标。
  *
- * 分享链接与 curl 命令都先向服务端换一张 1 小时有效的签名票据，再复制带票据的绝对地址：
- * 换票请求中按钮禁用，成功后短暂显示勾；换票失败交给父组件统一提示。
+ * 分享链接与 curl 命令都先向服务端签一个 10 分钟有效的分享地址，再复制带签名的绝对地址：
+ * 签名请求中按钮禁用，成功后短暂显示勾；签名失败交给父组件统一提示。
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
  * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
@@ -102,7 +102,7 @@ const kind = computed<FileKind>(() => {
 
 /* ---------- 分享链接 / curl 命令 ---------- */
 
-/** 换票状态：请求中禁用行内按钮与 curl 菜单项，成功后短暂显示勾 / 已复制。 */
+/** 签名状态：请求中禁用行内按钮与 curl 菜单项，成功后短暂显示勾 / 已复制。 */
 const sharing = ref(false);
 const shared = ref(false);
 let sharedTimer = 0;
@@ -145,15 +145,15 @@ function shellQuote(value: string): string {
 }
 
 /**
- * 换一张 1 小时有效的签名票据，返回可直接发给对方的绝对地址。
- * 接口给的是同源相对地址（/d?t=...），拼上 origin 复制给别人才能直接打开。
+ * 签一个 10 分钟有效的分享链接，返回可直接发给对方的绝对地址。
+ * 接口给的是同源相对地址（/s/{id}?sig=…&exp=…），拼上 origin 复制给别人才能直接打开。
  */
 async function shareUrl(): Promise<string> {
   const payload = await createShareLink(props.file.id);
   return new URL(payload.url, location.origin).href;
 }
 
-/** 换票失败交给父组件提示；换票成功后按钮立即恢复，不占着禁用态等剪贴板。 */
+/** 签名失败交给父组件提示；签名成功后按钮立即恢复，不占着禁用态等剪贴板。 */
 async function shareUrlOrReport(): Promise<string | null> {
   sharing.value = true;
   try {
@@ -166,7 +166,7 @@ async function shareUrlOrReport(): Promise<string | null> {
   }
 }
 
-/** 行内分享：换票 → 复制绝对地址 → 短暂显示勾。 */
+/** 行内分享：签分享链接 → 复制绝对地址 → 短暂显示勾。 */
 async function shareLink(): Promise<void> {
   if (sharing.value) return;
   const url = await shareUrlOrReport();
@@ -360,7 +360,7 @@ onBeforeUnmount(() => {
         @click="emit('download')"
       ></button>
 
-      <!-- 分享链接独立成按钮：换 1 小时有效的签名票据并复制绝对地址，请求中禁用 -->
+      <!-- 分享链接独立成按钮：签 10 分钟有效的分享地址并复制绝对地址，请求中禁用 -->
       <button
         type="button"
         class="icon-btn link"

@@ -218,8 +218,8 @@ func TestRootHandlerGivesEachRouteGroupItsOwnGate(t *testing.T) {
 	instance := testenv.New(t)
 	handler := newRootHandler(instance, testSite(), concurrencyLimits{auth: 1, api: 1, static: 0})
 
-	// 页面与票据下载共用静态闸门：0 个槽位时两者都该排队。
-	for _, target := range []string{"/", "/d?t=whatever"} {
+	// 页面与签名下载共用静态闸门：0 个槽位时两者都该排队。
+	for _, target := range []string{"/", "/s/whatever?sig=x&exp=1"} {
 		blocked := make(chan struct{})
 		go func() {
 			defer close(blocked)
@@ -565,6 +565,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
 		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", testenv.ReadyzToken)
 		t.Setenv("HOST", "0.0.0.0")
 		t.Setenv("PORT", "18080")
@@ -594,12 +595,16 @@ func TestLoadConfig(t *testing.T) {
 		if left := os.Getenv("SESSION_SIGNING_KEY"); left != "" {
 			t.Errorf("SESSION_SIGNING_KEY 应当已从环境表删除: %q", left)
 		}
+		if left := os.Getenv("URL_SIGNATURE_KEY"); left != "" {
+			t.Errorf("URL_SIGNATURE_KEY 应当已从环境表删除: %q", left)
+		}
 	})
 
 	t.Run("MAX_FILE_SIZE 支持 GiB 后缀", func(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
 		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
 		t.Setenv("TZ", "")
 		t.Setenv("MAX_FILE_SIZE", "2GiB")
@@ -616,6 +621,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
 		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
 		t.Setenv("TZ", "")
 		t.Setenv("MAX_FILE_SIZE", "1.5GiB")
@@ -628,6 +634,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("DATA_DIR", "")
 		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
 		cfg, _, err := loadConfig()
 		if err != nil {
@@ -644,6 +651,7 @@ func TestLoadConfig(t *testing.T) {
 	}{
 		{name: "缺 AUTH_TOKEN", mutate: func() { t.Setenv("AUTH_TOKEN", "") }},
 		{name: "缺 SESSION_SIGNING_KEY", mutate: func() { t.Setenv("SESSION_SIGNING_KEY", "") }},
+		{name: "缺 URL_SIGNATURE_KEY", mutate: func() { t.Setenv("URL_SIGNATURE_KEY", "") }},
 		{name: "AUTH_TOKEN 太短", mutate: func() { t.Setenv("AUTH_TOKEN", "short") }},
 	}
 	for _, item := range missingCases {
@@ -651,6 +659,7 @@ func TestLoadConfig(t *testing.T) {
 			t.Setenv("DATA_DIR", t.TempDir())
 			t.Setenv("AUTH_TOKEN", testenv.AuthToken)
 			t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+			t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 			t.Setenv("READYZ_TOKEN", "")
 			t.Setenv("HOST", "")
 			t.Setenv("PORT", "")

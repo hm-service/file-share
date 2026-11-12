@@ -240,7 +240,7 @@ func TestBodyLimit(t *testing.T) {
 		{name: "页面不限制", path: "/"},
 		{name: "静态资源不限制", path: "/assets/app-abc.js"},
 		{name: "探针不限制", path: "/readyz"},
-		{name: "票据下载不限制", path: "/d?t=abc"},
+		{name: "签名下载不限制", path: "/s/abc?sig=nope&exp=1"},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
