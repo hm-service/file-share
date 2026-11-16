@@ -1035,7 +1035,6 @@ onBeforeUnmount(() => {
         <span class="upload-primary-icon" v-html="ICONS.upload"></span>
         {{ t("upload.button") }}
       </button>
-      <p class="upload-hint">{{ t("upload.hint") }}</p>
 
       <nav class="nav" :aria-label="t('nav.views')">
         <button type="button" class="nav-item" :class="{ active: isRecent }" :aria-current="isRecent ? 'page' : undefined" @click="showRecent">
@@ -1056,22 +1055,22 @@ onBeforeUnmount(() => {
         </button>
       </nav>
 
-      <div class="nav-sep"></div>
-      <p class="nav-section-title">{{ t("nav.groups") }}</p>
+      <!-- 分组标题与过滤框同一行，把竖向空间都留给下面的分组列表 -->
+      <div class="nav-groups-head">
+        <p class="nav-section-title">{{ t("nav.groups") }}</p>
+        <label class="group-search">
+          <span class="group-search-icon" v-html="ICONS.search"></span>
+          <input
+            v-model="groupQuery"
+            type="search"
+            class="group-search-input"
+            :placeholder="t('nav.group-search-placeholder')"
+            :aria-label="t('nav.group-search-placeholder')"
+          />
+        </label>
+      </div>
 
-      <!-- 分组过滤：只筛侧栏导航；点进分组后自动清空，避免侧栏停在子集上 -->
-      <label class="group-search">
-        <span class="group-search-icon" v-html="ICONS.search"></span>
-        <input
-          v-model="groupQuery"
-          type="search"
-          class="group-search-input"
-          :placeholder="t('nav.group-search-placeholder')"
-          :aria-label="t('nav.group-search-placeholder')"
-        />
-      </label>
-
-      <!-- 分组可拖拽排序：未分组不是真实分组，放在排序容器外，固定排在最后 -->
+      <!-- 分组可拖拽排序：未分组不是真实分组，跟随列表排在最后、不参与排序 -->
       <div class="nav nav-groups" :ref="(el) => setGroupContainer('nav:', '', el)">
         <div
           v-for="group in sidebarTopGroups"
@@ -1144,28 +1143,32 @@ onBeforeUnmount(() => {
         <p v-if="groupKeyword && !sidebarTopGroups.length" class="nav-empty">{{ t("nav.no-group-results") }}</p>
         <p v-else-if="!sidebarTopGroups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
       </div>
-      <div v-if="ungroupedCount > 0" class="nav nav-ungrouped">
-        <button
-          type="button"
-          class="nav-item nav-item-group"
-          :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
-          :aria-current="isUngrouped ? 'page' : undefined"
-          @click="showUngrouped"
-          @dragenter="onGroupDragEnter($event, '')"
-          @dragover="onGroupDragOver($event, '')"
-          @dragleave="onGroupDragLeave($event, '')"
-          @drop="onGroupDrop($event, '')"
-        >
-          <span class="nav-icon" v-html="ICONS.inbox"></span>
-          <span class="nav-label">{{ t("nav.ungrouped") }}</span>
-          <span class="nav-count">{{ ungroupedCount }}</span>
-        </button>
-      </div>
-      <div class="nav nav-new">
-        <button type="button" class="nav-item nav-item-new" @click="onCreateGroup">
-          <span class="nav-icon" v-html="ICONS.plus"></span>
-          <span class="nav-label">{{ t("action.new-group") }}</span>
-        </button>
+
+      <!-- 未分组与「新建分组」固定在分组列表下方，不随列表滚动 -->
+      <div class="nav-groups-foot">
+        <div v-if="ungroupedCount > 0" class="nav nav-ungrouped">
+          <button
+            type="button"
+            class="nav-item nav-item-group"
+            :class="{ active: isUngrouped, 'is-drop-target': groupDropTarget === '' }"
+            :aria-current="isUngrouped ? 'page' : undefined"
+            @click="showUngrouped"
+            @dragenter="onGroupDragEnter($event, '')"
+            @dragover="onGroupDragOver($event, '')"
+            @dragleave="onGroupDragLeave($event, '')"
+            @drop="onGroupDrop($event, '')"
+          >
+            <span class="nav-icon" v-html="ICONS.inbox"></span>
+            <span class="nav-label">{{ t("nav.ungrouped") }}</span>
+            <span class="nav-count">{{ ungroupedCount }}</span>
+          </button>
+        </div>
+        <div class="nav nav-new">
+          <button type="button" class="nav-item nav-item-new" @click="onCreateGroup">
+            <span class="nav-icon" v-html="ICONS.plus"></span>
+            <span class="nav-label">{{ t("action.new-group") }}</span>
+          </button>
+        </div>
       </div>
 
       <div class="sidebar-foot">
@@ -1441,7 +1444,10 @@ onBeforeUnmount(() => {
               <span class="desktop-only">{{ t("upload.hint") }}</span>
               <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
             </p>
-            <p v-else-if="isGroupView" class="empty-text">{{ t("upload.group-hint") }}</p>
+            <template v-else-if="isGroupView">
+              <p class="empty-text">{{ t("upload.group-hint") }}</p>
+              <p class="empty-text desktop-only">{{ t("upload.hint") }}</p>
+            </template>
             <button type="button" class="upload-secondary" @click="pickFiles">
               <span class="upload-secondary-icon" v-html="ICONS.upload"></span>
               {{ t("upload.button") }}
@@ -1545,9 +1551,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 0 0 var(--sidebar-width);
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   width: var(--sidebar-width);
-  padding: 22px 18px 18px;
+  padding: 18px 16px 14px;
   border-right: 1px solid var(--line);
   background: rgb(255 255 255 / 0.72);
   backdrop-filter: blur(10px);
@@ -1645,18 +1651,11 @@ onBeforeUnmount(() => {
   height: 17px;
 }
 
-.upload-hint {
-  margin-top: -8px;
-  color: var(--ink-3);
-  font-size: 10.5px;
-  text-align: center;
-}
-
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
+  gap: 2px;
+  margin-top: 2px;
 }
 
 .nav-item {
@@ -1664,7 +1663,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   /* 右侧多留 19px：一级分组行在那放折叠箭头，其余行留白，保证徽标对齐一竖列 */
-  padding: 9px 30px 9px 11px;
+  padding: 8px 30px 8px 10px;
   border-radius: 10px;
   color: var(--ink-2);
   font-size: 13px;
@@ -1739,14 +1738,18 @@ onBeforeUnmount(() => {
   color: var(--accent-strong);
 }
 
-/* 分组导航：最近/收藏之下，分组多时自己滚动 */
-.nav-sep {
-  margin: 10px 4px 8px;
+/* 分组区标题行：标题 + 过滤框并排，分组列表拿剩余的全部高度 */
+.nav-groups-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 
 .nav-section-title {
-  padding: 0 11px;
+  flex: 0 0 auto;
   color: var(--ink-3);
   font-size: 10.5px;
   font-weight: 650;
@@ -1754,12 +1757,14 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
-/* 分组过滤框：和侧栏其它控件同宽，够窄，不抢「上传」的层级 */
+/* 分组过滤框：与「分组」标题同行，占满标题右侧的剩余宽度 */
 .group-search {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   gap: 6px;
-  padding: 6px 9px;
+  min-width: 0;
+  padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--surface);
@@ -1799,7 +1804,8 @@ onBeforeUnmount(() => {
 }
 
 .nav-groups {
-  flex: 0 1 auto;
+  /* 侧栏里唯一可伸缩的块：窗口越高、分组列表越长，拿到的空间越多 */
+  flex: 1 1 auto;
   min-height: 0;
   /* 滚动条挪到侧栏的内边距里：负 margin 把它推到分组行右侧留白处，
      padding 再把内容拉回原位，滚动条就不会压住分组行 / 徽标 */
@@ -1892,7 +1898,7 @@ onBeforeUnmount(() => {
 }
 
 .nav-item-subgroup {
-  padding: 7px 30px 7px 11px;
+  padding: 6px 30px 6px 10px;
   font-size: 12.5px;
   font-weight: 500;
 }
@@ -1906,13 +1912,21 @@ onBeforeUnmount(() => {
   height: 14px;
 }
 
-.nav-ungrouped {
+/* 未分组 / 新建分组：固定在分组列表下方，不参与列表滚动 */
+.nav-groups-foot {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-ungrouped,
+.nav-new {
   flex: 0 0 auto;
 }
 
 .nav-new {
-  flex: 0 0 auto;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .nav-item-new {
@@ -1951,22 +1965,37 @@ onBeforeUnmount(() => {
 
 .sidebar-foot {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   margin-top: auto;
-  padding-top: 14px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+/* 侧栏拖到最窄（200px）时这一行也不能折行：语言切换与退出按钮各自不收缩 */
+.sidebar-foot :deep(.locale-switch) {
+  flex: 0 0 auto;
+}
+
+.sidebar-foot :deep(.locale-btn) {
+  padding: 2px 7px;
+  white-space: nowrap;
 }
 
 .logout-btn {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 7px;
-  padding: 7px 10px;
+  gap: 6px;
+  padding: 5px 6px;
   border-radius: 9px;
   color: var(--ink-3);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 550;
+  white-space: nowrap;
 }
 
 .logout-btn:hover {
