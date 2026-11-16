@@ -26,6 +26,8 @@ const props = defineProps<{
   groups: readonly GroupItem[];
   /** 可拖拽排序的列表才显示把手；搜索过滤时顺序不可提交，把手隐藏。 */
   draggable: boolean;
+  /** 在元信息行里额外显示所属分组（「最近」视图用）。 */
+  showGroup?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -345,7 +347,19 @@ onBeforeUnmount(() => {
 
     <div class="file-body">
       <p class="file-name" :title="file.filename">{{ file.filename }}</p>
-      <p class="file-meta">{{ formatTime(file.created_at) }} · {{ formatSize(file.size) }}</p>
+      <p class="file-meta">
+        <span>{{ formatTime(file.created_at) }} · {{ formatSize(file.size) }}</span>
+        <!-- 「最近」视图按时间混排所有分组，行内补一个分组标签，免得看不出归属 -->
+        <span
+          v-if="showGroup"
+          class="file-group"
+          :class="{ 'is-ungrouped': !file.group_path }"
+          :title="file.group_path || t('nav.ungrouped')"
+        >
+          <span class="file-group-icon" v-html="file.group_path ? ICONS.folder : ICONS.inbox"></span>
+          <span class="file-group-name">{{ file.group_path || t("nav.ungrouped") }}</span>
+        </span>
+      </p>
       <p class="file-hash" :title="file.sha256">
         <span class="file-hash-label">{{ t("file.sha256") }}</span>
         <span class="file-hash-value">{{ file.sha256 }}</span>
@@ -662,10 +676,49 @@ onBeforeUnmount(() => {
 }
 
 .file-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin-top: 2px;
   color: var(--ink-3);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 分组标签：一行里同时有时间和分组，窄容器时允许换行，路径过长省略 */
+.file-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: normal;
+}
+
+.file-group.is-ungrouped {
+  background: transparent;
+  padding-left: 3px;
+}
+
+.file-group-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.file-group-icon :deep(svg) {
+  width: 11px;
+  height: 11px;
+}
+
+.file-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 文件指纹：等宽字体、单行省略；完整值放在 title 里，文本可选中复制 */

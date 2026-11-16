@@ -18,6 +18,8 @@ const props = defineProps<{
   groups: readonly GroupItem[];
   /** 搜索过滤时 DOM 只是子集，提交顺序会打乱整段，所以直接禁用拖拽。 */
   sortable: boolean;
+  /** 行内额外显示文件所属分组（「最近」视图里看不出分组，需要它）。 */
+  showGroup?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -102,6 +104,7 @@ onBeforeUnmount(destroySortable);
       :file="file"
       :groups="groups"
       :draggable="sortable"
+      :show-group="showGroup"
       @favorite="emit('favorite', file)"
       @download="emit('download', file)"
       @rename="emit('rename', file)"

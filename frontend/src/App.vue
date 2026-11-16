@@ -56,6 +56,64 @@ const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 
+/* ---------- 侧栏宽度（桌面端拖右缘调节） ---------- */
+
+const SIDEBAR_DEFAULT_WIDTH = 264;
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_WIDTH_KEY = "file-share.sidebar-width";
+
+/** 上限取视口 2/3：主区至少留 1/3。 */
+function maxSidebarWidth(): number {
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * (2 / 3)));
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(Math.max(Math.round(width), SIDEBAR_MIN_WIDTH), maxSidebarWidth());
+}
+
+function loadSidebarWidth(): number {
+  const stored = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "", 10);
+  return Number.isFinite(stored) ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_WIDTH;
+}
+
+/** 侧栏宽度只存在本机：切视图、刷新、重启都保持用户拖出来的宽度。 */
+const sidebarWidth = ref(loadSidebarWidth());
+const resizingSidebar = ref(false);
+let stopSidebarResize: (() => void) | null = null;
+
+/**
+ * 按住两栏边界的 gridgrip 拖动：宽度实时跟随指针，放手后落盘。
+ * 移动 / 抬手监听挂在 window 上，指针滑出 grip 也能继续拖。
+ */
+function startSidebarResize(event: PointerEvent): void {
+  if (event.button !== 0 || resizingSidebar.value) return;
+  event.preventDefault();
+  const startX = event.clientX;
+  const startWidth = sidebarWidth.value;
+  resizingSidebar.value = true;
+
+  const onMove = (moveEvent: PointerEvent): void => {
+    sidebarWidth.value = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+  };
+  const finish = (): void => {
+    resizingSidebar.value = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    stopSidebarResize = null;
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
+  };
+  stopSidebarResize = finish;
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+}
+
+/** 窗口变窄时把侧栏夹回 2/3 以内（用户存下的宽度不覆盖，窗口变宽也不自动还原）。 */
+function onWindowResize(): void {
+  sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
+}
+
 /* ---------- 分组 ---------- */
 
 /** 全部分组（含空分组）。同一父级内的顺序由服务端 sort_order 决定（拖动可调整）。 */
@@ -103,6 +161,45 @@ function forgetFoldedGroup(path: string): void {
     else next.add(entry);
   }
   if (changed) foldedGroups.value = next;
+}
+
+/** 双击一级分组行：展开 / 收起它的子分组（单击仍然是进入分组）。 */
+function toggleGroupFoldByDoubleClick(path: string): void {
+  if (childrenOf(path).length) toggleGroupFold(path);
+}
+
+/* ---------- 侧栏分组过滤 ---------- */
+
+/** 侧栏分组过滤关键词：只筛侧栏导航，和文件列表的搜索框互不影响。 */
+const groupQuery = ref("");
+const groupKeyword = computed(() => groupQuery.value.trim().toLowerCase());
+
+function groupMatches(group: GroupItem): boolean {
+  return group.name.toLowerCase().includes(groupKeyword.value) || group.path.toLowerCase().includes(groupKeyword.value);
+}
+
+/** 侧栏展示的顶级分组：关键词命中自身或任一子分组时保留。 */
+const sidebarTopGroups = computed(() => {
+  if (!groupKeyword.value) return topGroups.value;
+  return topGroups.value.filter((group) => groupMatches(group) || childrenOf(group.path).some(groupMatches));
+});
+
+/**
+ * 侧栏里某个顶级分组下要展示的子分组：父分组自己命中时保留全部子分组，
+ * 只有子分组命中时才按关键词裁掉不相关的那些。
+ */
+function sidebarChildren(group: GroupItem): GroupItem[] {
+  const children = childrenOf(group.path);
+  if (!groupKeyword.value || groupMatches(group)) return children;
+  return children.filter(groupMatches);
+}
+
+/** 点击侧栏分组：先清掉过滤词，再进分组，否则侧栏会一直停在过滤后的子集上。 */
+function openSidebarGroup(path: string): void {
+  // 拖拽排序松手后浏览器补发的 click 由 showGroup 吞掉；这里也跳过，别顺手清了过滤词。
+  if (Date.now() < groupClickGuardUntil) return;
+  groupQuery.value = "";
+  showGroup(path);
 }
 
 /** 每个分组的直属文件数（父分组的 badge 不含子分组，和分组视图里看到的列表一致）。 */
@@ -901,6 +998,7 @@ onMounted(() => {
   document.addEventListener("drop", swallowDrop);
   document.addEventListener("dragend", endFileDrag);
   window.addEventListener("popstate", syncViewFromLocation);
+  window.addEventListener("resize", onWindowResize);
   syncViewFromLocation();
   void refresh();
 });
@@ -910,13 +1008,19 @@ onBeforeUnmount(() => {
   document.removeEventListener("drop", swallowDrop);
   document.removeEventListener("dragend", endFileDrag);
   window.removeEventListener("popstate", syncViewFromLocation);
+  window.removeEventListener("resize", onWindowResize);
+  stopSidebarResize?.();
   destroyGroupSortables();
   window.clearTimeout(actionErrorTimer);
 });
 </script>
 
 <template>
-  <div class="shell">
+  <div
+    class="shell"
+    :class="{ 'is-resizing': resizingSidebar }"
+    :style="{ '--sidebar-width': `${sidebarWidth}px` }"
+  >
     <!-- 桌面端侧栏：品牌 / 上传入口 / 视图切换 / 分组 / 语言与退出 -->
     <aside class="sidebar">
       <div class="brand">
@@ -955,10 +1059,22 @@ onBeforeUnmount(() => {
       <div class="nav-sep"></div>
       <p class="nav-section-title">{{ t("nav.groups") }}</p>
 
+      <!-- 分组过滤：只筛侧栏导航；点进分组后自动清空，避免侧栏停在子集上 -->
+      <label class="group-search">
+        <span class="group-search-icon" v-html="ICONS.search"></span>
+        <input
+          v-model="groupQuery"
+          type="search"
+          class="group-search-input"
+          :placeholder="t('nav.group-search-placeholder')"
+          :aria-label="t('nav.group-search-placeholder')"
+        />
+      </label>
+
       <!-- 分组可拖拽排序：未分组不是真实分组，放在排序容器外，固定排在最后 -->
       <div class="nav nav-groups" :ref="(el) => setGroupContainer('nav:', '', el)">
         <div
-          v-for="group in topGroups"
+          v-for="group in sidebarTopGroups"
           :key="group.path"
           class="nav-group-block"
           data-group-block
@@ -969,20 +1085,21 @@ onBeforeUnmount(() => {
           @dragleave="onGroupDragLeave($event, group.path)"
           @drop="onGroupDrop($event, group.path)"
         >
-          <div class="nav-group-row" @contextmenu="openGroupMenu($event, group)">
+          <div class="nav-group-row" @contextmenu="openGroupMenu($event, group)" @dblclick="toggleGroupFoldByDoubleClick(group.path)">
             <button
               type="button"
               class="nav-item nav-item-group"
               :class="{ active: isGroupRowActive(group.path) }"
               :aria-current="isGroupRowActive(group.path) ? 'page' : undefined"
-              @click="showGroup(group.path)"
+              @click="openSidebarGroup(group.path)"
             >
               <span class="nav-icon" v-html="ICONS.folder"></span>
               <span class="nav-label">{{ group.name }}</span>
               <span class="nav-count">{{ groupCounts.get(group.path) ?? 0 }}</span>
             </button>
+            <!-- 过滤时子分组自动展开，箭头没有意义，直接隐藏 -->
             <button
-              v-if="childrenOf(group.path).length"
+              v-if="!groupKeyword && sidebarChildren(group).length"
               type="button"
               class="nav-fold"
               :class="{ 'is-folded': isGroupFolded(group.path) }"
@@ -990,6 +1107,7 @@ onBeforeUnmount(() => {
               :aria-label="t(isGroupFolded(group.path) ? 'action.expand-group' : 'action.collapse-group')"
               :title="t(isGroupFolded(group.path) ? 'action.expand-group' : 'action.collapse-group')"
               @click="toggleGroupFold(group.path)"
+              @dblclick.stop
             >
               <span class="nav-fold-icon" v-html="ICONS.chevron"></span>
             </button>
@@ -997,12 +1115,12 @@ onBeforeUnmount(() => {
 
           <!-- 二级分组：缩进一层，只在本层内拖拽排序 -->
           <div
-            v-if="childrenOf(group.path).length && !isGroupFolded(group.path)"
+            v-if="sidebarChildren(group).length && (groupKeyword || !isGroupFolded(group.path))"
             class="nav nav-subgroups"
             :ref="(el) => setGroupContainer(`nav:${group.path}`, group.path, el)"
           >
             <button
-              v-for="child in childrenOf(group.path)"
+              v-for="child in sidebarChildren(group)"
               :key="child.path"
               type="button"
               class="nav-item nav-item-subgroup"
@@ -1010,7 +1128,7 @@ onBeforeUnmount(() => {
               :data-group-name="child.name"
               :class="{ active: isGroupActive(child.path), 'is-drop-target': groupDropTarget === child.path }"
               :aria-current="isGroupActive(child.path) ? 'page' : undefined"
-              @click="showGroup(child.path)"
+              @click="openSidebarGroup(child.path)"
               @contextmenu="openGroupMenu($event, child)"
               @dragenter.stop="onGroupDragEnter($event, child.path)"
               @dragover.stop="onGroupDragOver($event, child.path)"
@@ -1023,7 +1141,8 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <p v-if="!topGroups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
+        <p v-if="groupKeyword && !sidebarTopGroups.length" class="nav-empty">{{ t("nav.no-group-results") }}</p>
+        <p v-else-if="!sidebarTopGroups.length" class="nav-empty">{{ t("nav.no-groups") }}</p>
       </div>
       <div v-if="ungroupedCount > 0" class="nav nav-ungrouped">
         <button
@@ -1057,6 +1176,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </aside>
+
+    <!-- 两栏之间的 gridgrip：只覆盖边界几像素，按住左右拖动调侧栏宽度 -->
+    <div
+      class="sidebar-grip"
+      :class="{ 'is-active': resizingSidebar }"
+      role="separator"
+      aria-orientation="vertical"
+      :aria-label="t('nav.resize-sidebar')"
+      :title="t('nav.resize-sidebar')"
+      @pointerdown="startSidebarResize"
+    ></div>
 
     <main
       class="main"
@@ -1289,6 +1419,7 @@ onBeforeUnmount(() => {
               :files="section.files"
               :groups="groups"
               :sortable="canSort"
+              :show-group="isRecent"
               @favorite="onFavorite"
               @download="onDownload"
               @rename="onRename"
@@ -1395,23 +1526,62 @@ onBeforeUnmount(() => {
 
 /* ================= 应用外壳 ================= */
 .shell {
+  --sidebar-width: 264px; /* 桌面端拖动 gridgrip 时由行内 style 覆盖 */
+  position: relative;
   display: flex;
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
 }
 
+/* 拖动分栏时整页禁用选中，避免把列表文字一起抹蓝 */
+.shell.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* ================= 侧栏（桌面） ================= */
 .sidebar {
   display: flex;
-  flex: 0 0 264px;
+  flex: 0 0 var(--sidebar-width);
   flex-direction: column;
   gap: 16px;
-  width: 264px;
+  width: var(--sidebar-width);
   padding: 22px 18px 18px;
   border-right: 1px solid var(--line);
   background: rgb(255 255 255 / 0.72);
   backdrop-filter: blur(10px);
+}
+
+/* 两栏边界的 gridgrip：绝对定位，不占布局宽度；只压住边界两侧几像素 */
+.sidebar-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-width) - 2px);
+  z-index: 6;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* 悬停 / 拖动时显示一条细线，提示这里是可拖拽的分界 */
+.sidebar-grip::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.sidebar-grip:hover::before,
+.sidebar-grip.is-active::before {
+  opacity: 0.6;
 }
 
 .brand {
@@ -1584,11 +1754,81 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
+/* 分组过滤框：和侧栏其它控件同宽，够窄，不抢「上传」的层级 */
+.group-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink-3);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.group-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(91 91 224 / 0.12);
+}
+
+.group-search-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.group-search-icon :deep(svg) {
+  width: 13px;
+  height: 13px;
+}
+
+.group-search-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.group-search-input::placeholder {
+  color: var(--ink-3);
+}
+
 .nav-groups {
   flex: 0 1 auto;
   min-height: 0;
+  /* 滚动条挪到侧栏的内边距里：负 margin 把它推到分组行右侧留白处，
+     padding 再把内容拉回原位，滚动条就不会压住分组行 / 徽标 */
+  margin-right: -12px;
+  padding-right: 12px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+  scrollbar-color: rgb(20 23 44 / 0.16) transparent;
+}
+
+/* 细滚动条：轨道透明，拇指内缩成圆角胶囊 */
+.nav-groups::-webkit-scrollbar {
+  width: 8px;
+}
+
+.nav-groups::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-groups::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: rgb(20 23 44 / 0.16);
+}
+
+.nav-groups::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(20 23 44 / 0.28);
 }
 
 .nav-item-group .nav-icon {
@@ -1683,17 +1923,7 @@ onBeforeUnmount(() => {
   color: var(--accent-strong);
 }
 
-/* 分组拖拽：整项可拖；ghost 半透明，chosen 高亮 */
-[data-group-block],
-[data-subgroup] {
-  cursor: grab;
-}
-
-[data-group-block]:active,
-[data-subgroup]:active {
-  cursor: grabbing;
-}
-
+/* 分组拖拽：ghost 半透明，chosen 高亮。分组行不设 grab 光标，沿用按钮的默认指针。 */
 .group-drag-ghost {
   opacity: 0.35;
 }
@@ -1971,6 +2201,29 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 20px 34px 34px;
   overflow-y: auto;
+  /* 常驻滚动条槽位：切换视图时列表宽度不跳，滚动条也落在内边距里不压卡片 */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(20 23 44 / 0.16) transparent;
+}
+
+.content::-webkit-scrollbar {
+  width: 12px;
+}
+
+.content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.content::-webkit-scrollbar-thumb {
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: rgb(20 23 44 / 0.16);
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(20 23 44 / 0.28);
 }
 
 .banners {
@@ -2119,6 +2372,11 @@ onBeforeUnmount(() => {
   }
 
   .sidebar {
+    display: none;
+  }
+
+  /* 窄屏没有两栏布局，边界 gridgrip 一并隐藏 */
+  .sidebar-grip {
     display: none;
   }
 

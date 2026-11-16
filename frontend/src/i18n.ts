@@ -47,6 +47,9 @@ export type MessageKey =
   | "nav.no-groups"
   | "nav.ungrouped"
   | "nav.search-placeholder"
+  | "nav.group-search-placeholder"
+  | "nav.no-group-results"
+  | "nav.resize-sidebar"
   | "nav.file-count"
   | "nav.recent-count"
   | "nav.no-results"
@@ -142,6 +145,9 @@ const messages: Record<MessageKey, Message> = {
   "nav.no-groups": { zh: "暂无分组", en: "No groups yet" },
   "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
   "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
+  "nav.group-search-placeholder": { zh: "搜索分组…", en: "Search groups…" },
+  "nav.no-group-results": { zh: "没有匹配的分组", en: "No matching groups" },
+  "nav.resize-sidebar": { zh: "拖动调整侧栏宽度", en: "Drag to resize sidebar" },
   "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
   "nav.recent-count": {
     zh: "显示最近 {shown} 个，共 {total} 个文件",
