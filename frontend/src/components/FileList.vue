@@ -28,6 +28,8 @@ const emit = defineEmits<{
   error: [error: unknown];
   delete: [file: FileItem];
   "move-group": [file: FileItem, groupName: string];
+  /** 「移动到分组」菜单里的新建分组，交给父组件统一弹输入框。 */
+  "new-group": [file: FileItem];
   reorder: [orderedIds: string[]];
   "drag-start": [file: FileItem];
   "drag-end": [];
@@ -106,6 +108,24 @@ onBeforeUnmount(destroySortable);
       @error="emit('error', $event)"
       @delete="emit('delete', file)"
       @move-group="(groupName) => emit('move-group', file, groupName)"
+      @new-group="emit('new-group', file)"
     />
   </ul>
 </template>
+
+<style scoped>
+.list-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  container-type: inline-size;
+}
+
+@media (max-width: 900px) {
+  .list-card {
+    border-radius: 16px;
+  }
+}
+</style>

@@ -19,6 +19,7 @@ import Sortable from "sortablejs";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import FileList from "@/components/FileList.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
+import PromptDialog from "@/components/PromptDialog.vue";
 import UploadDock from "@/components/UploadDock.vue";
 import {
   ApiError,
@@ -479,22 +480,151 @@ async function onDownloadGroup(): Promise<void> {
   }
 }
 
-/** 重命名：用 prompt 保持与「新建分组」一致的最小交互；取消 / 空名 / 同名都不发请求。 */
-async function onRename(file: FileItem): Promise<void> {
-  const input = window.prompt(t("rename.prompt"), file.filename);
-  if (input === null) return;
-  const filename = input.trim();
-  if (!filename || filename === file.filename) return;
-  try {
-    await renameFile(file.id, filename);
-    await refresh();
-  } catch (error) {
-    showActionError(error);
+/* ---------- 输入 / 确认对话框 ---------- */
+
+/**
+ * 输入对话框正在问什么：所有「输入一个名字」的操作都列在这里，由同一个 PromptDialog 渲染。
+ *
+ * 不用 window.prompt / confirm：原生对话框带「阻止此页面创建更多对话框」勾选项，一旦被勾上
+ * 就再也不出现，而页面又依赖它的返回值，等于相关操作永久失效、且极难改回来。
+ */
+type PromptState =
+  | { kind: "rename-file"; file: FileItem }
+  | { kind: "new-group" }
+  /** 重命名分组：只改路径最后一段，父路径不变。 */
+  | { kind: "rename-group"; path: string; name: string }
+  /** 在某个分组下新建子分组：只输入子分组名。 */
+  | { kind: "new-subgroup"; parent: string }
+  /** 「移动到分组」菜单里新建分组：名字可以是 父/子，随后把文件移进去。 */
+  | { kind: "move-file-new-group"; file: FileItem };
+
+const promptState = ref<PromptState | null>(null);
+
+/** 等待确认删除的文件。 */
+const deleteFileTarget = ref<FileItem | null>(null);
+
+/** 当前输入对话框的标题 / 说明 / 初始值 / 确认按钮文案。 */
+const promptDialog = computed(() => {
+  const state = promptState.value;
+  if (!state) return null;
+  switch (state.kind) {
+    case "rename-file":
+      return {
+        title: t("rename.title"),
+        hint: "",
+        value: state.file.filename,
+        confirmLabel: t("action.rename"),
+      };
+    case "new-group":
+      return {
+        title: t("group.new-title"),
+        hint: t("group.new-hint"),
+        value: "",
+        confirmLabel: t("action.create"),
+      };
+    case "rename-group":
+      return {
+        title: t("group.rename-title"),
+        hint: "",
+        value: state.name,
+        confirmLabel: t("action.rename"),
+      };
+    case "new-subgroup":
+      return {
+        title: t("group.new-subgroup-title"),
+        hint: "",
+        value: "",
+        confirmLabel: t("action.create"),
+      };
+    case "move-file-new-group":
+      return {
+        title: t("group.new-title"),
+        hint: t("group.new-hint"),
+        value: "",
+        confirmLabel: t("action.move-group"),
+      };
+  }
+});
+
+/** 输入确认：先关对话框，再执行打开它的那个操作；失败统一进顶部提示。 */
+async function onPromptConfirm(value: string): Promise<void> {
+  const state = promptState.value;
+  if (!state) return;
+  promptState.value = null;
+  switch (state.kind) {
+    case "rename-file": {
+      if (value === state.file.filename) return;
+      try {
+        await renameFile(state.file.id, value);
+        await refresh();
+      } catch (error) {
+        showActionError(error);
+      }
+      return;
+    }
+    case "new-group": {
+      try {
+        const created = await createGroup(value);
+        await refresh();
+        applyView({ kind: "group", group: created.path });
+      } catch (error) {
+        showActionError(error);
+      }
+      return;
+    }
+    case "rename-group": {
+      if (value === state.name) return;
+      const slash = state.path.lastIndexOf("/");
+      const parent = slash < 0 ? "" : state.path.slice(0, slash);
+      const nextPath = parent ? `${parent}/${value}` : value;
+      try {
+        await renameGroup(state.path, value);
+        renameFoldedGroup(state.path, nextPath);
+        const current = view.value;
+        if (
+          current.kind === "group" &&
+          (current.group === state.path || current.group.startsWith(`${state.path}/`))
+        ) {
+          const rest = current.group.slice(state.path.length);
+          applyView({ kind: "group", group: `${nextPath}${rest}` }, "replace");
+        }
+        await refresh();
+      } catch (error) {
+        showActionError(error);
+      }
+      return;
+    }
+    case "new-subgroup": {
+      try {
+        const created = await createGroup(`${state.parent}/${value}`);
+        await refresh();
+        applyView({ kind: "group", group: created.path });
+      } catch (error) {
+        showActionError(error);
+      }
+      return;
+    }
+    case "move-file-new-group": {
+      await onMoveGroup(state.file, value);
+      return;
+    }
   }
 }
 
-async function onDelete(file: FileItem): Promise<void> {
-  if (!window.confirm(t("confirm.delete", { name: file.filename }))) return;
+/** 重命名文件：输入框预填当前名字；名字没改就不发请求。 */
+function onRename(file: FileItem): void {
+  promptState.value = { kind: "rename-file", file };
+}
+
+/** 删除文件：先让用户确认，确认后不可恢复。 */
+function onDelete(file: FileItem): void {
+  deleteFileTarget.value = file;
+}
+
+async function confirmDeleteFile(): Promise<void> {
+  const file = deleteFileTarget.value;
+  if (!file) return;
+  deleteFileTarget.value = null;
   try {
     await deleteFile(file.id);
     await refresh();
@@ -509,46 +639,17 @@ const currentUploadGroup = computed(() => {
 });
 
 /** 手动新建空分组：输入 "父/子" 建二级分组；创建后直接进入该分组，方便马上往里传文件。 */
-async function onCreateGroup(): Promise<void> {
-  const input = window.prompt(t("group.new-prompt"));
-  if (input === null) return;
-  const path = input.trim();
-  if (!path) return;
-  try {
-    const created = await createGroup(path);
-    await refresh();
-    applyView({ kind: "group", group: created.path });
-  } catch (error) {
-    showActionError(error);
-  }
+function onCreateGroup(): void {
+  promptState.value = { kind: "new-group" };
 }
 
-/** 重命名当前分组：只改最后一段，父路径不变；成功后地址同步改名。 */
 /**
  * 重命名分组：只改路径最后一段。
  * 当前视图正看着这个分组（或它的子分组）时，地址按新路径同步改名 —— 改名顶级分组会
- * 级联改子分组路径，所以当前停在子分组上也要跟着走。
+ * 级联改子分组路径，所以当前停在子分组上也要跟着走。这些在确认处理里做。
  */
-async function onRenameGroup(path: string, currentName: string): Promise<void> {
-  const input = window.prompt(t("group.rename-prompt"), currentName);
-  if (input === null) return;
-  const newName = input.trim();
-  if (!newName || newName === currentName) return;
-  const slash = path.lastIndexOf("/");
-  const parent = slash < 0 ? "" : path.slice(0, slash);
-  const nextPath = parent ? `${parent}/${newName}` : newName;
-  try {
-    await renameGroup(path, newName);
-    renameFoldedGroup(path, nextPath);
-    const current = view.value;
-    if (current.kind === "group" && (current.group === path || current.group.startsWith(`${path}/`))) {
-      const rest = current.group.slice(path.length);
-      applyView({ kind: "group", group: `${nextPath}${rest}` }, "replace");
-    }
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
+function onRenameGroup(path: string, currentName: string): void {
+  promptState.value = { kind: "rename-group", path, name: currentName };
 }
 
 /* ---------- 分组右键菜单（创建子分组 / 删除） ---------- */
@@ -604,21 +705,11 @@ watch(groupMenu, (value) => {
 });
 
 /** 在分组下新建子分组：只输入子分组名，父路径沿用右键的那一项。 */
-async function onCreateSubgroup(): Promise<void> {
+function onCreateSubgroup(): void {
   const parent = groupMenu.value;
   closeGroupMenu();
   if (!parent) return;
-  const input = window.prompt(t("group.new-subgroup-prompt"));
-  if (input === null) return;
-  const name = input.trim();
-  if (!name) return;
-  try {
-    const created = await createGroup(`${parent.path}/${name}`);
-    await refresh();
-    applyView({ kind: "group", group: created.path });
-  } catch (error) {
-    showActionError(error);
-  }
+  promptState.value = { kind: "new-subgroup", parent: parent.path };
 }
 
 /** 分组（含子分组）里的文件数：删除确认框据此说明影响范围。 */
@@ -681,6 +772,11 @@ async function onMoveGroup(file: FileItem, groupPath: string): Promise<void> {
   } catch (error) {
     showActionError(error);
   }
+}
+
+/** 「移动到分组」菜单里的新建分组：输入名字（可带 父/），随后把文件移进去。 */
+function onNewGroupForFile(file: FileItem): void {
+  promptState.value = { kind: "move-file-new-group", file };
 }
 
 /* ---------- 把文件拖到左栏分组标签 ---------- */
@@ -1199,6 +1295,7 @@ onBeforeUnmount(() => {
               @error="showActionError"
               @delete="onDelete"
               @move-group="onMoveGroup"
+              @new-group="onNewGroupForFile"
               @reorder="onReorder"
               @drag-start="startFileDrag"
               @drag-end="endFileDrag"
@@ -1268,6 +1365,1029 @@ onBeforeUnmount(() => {
       @cancel="deleteTarget = null"
     />
 
+    <ConfirmDialog
+      v-if="deleteFileTarget"
+      :title="t('confirm.delete', { name: deleteFileTarget.filename })"
+      :confirm-label="t('action.delete')"
+      @confirm="confirmDeleteFile"
+      @cancel="deleteFileTarget = null"
+    />
+
+    <PromptDialog
+      v-if="promptDialog"
+      :title="promptDialog.title"
+      :hint="promptDialog.hint"
+      :value="promptDialog.value"
+      :confirm-label="promptDialog.confirmLabel"
+      @confirm="onPromptConfirm"
+      @cancel="promptState = null"
+    />
+
     <UploadDock ref="uploadDock" :target-group="currentUploadGroup" @uploaded="refresh" />
   </div>
 </template>
+
+<style scoped>
+/* 同一位置按断点切换的两套文案。 */
+.mobile-only {
+  display: none;
+}
+
+/* ================= 应用外壳 ================= */
+.shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* ================= 侧栏（桌面） ================= */
+.sidebar {
+  display: flex;
+  flex: 0 0 264px;
+  flex-direction: column;
+  gap: 16px;
+  width: 264px;
+  padding: 22px 18px 18px;
+  border-right: 1px solid var(--line);
+  background: rgb(255 255 255 / 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.brand-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-sub {
+  overflow: hidden;
+  margin-top: 1px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), #7c6cf6);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 650;
+  box-shadow: 0 12px 22px -12px rgb(91 91 224 / 0.9);
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+
+.upload-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 26px -12px rgb(91 91 224 / 0.95);
+}
+
+.upload-primary-icon {
+  display: inline-flex;
+}
+
+.upload-primary-icon :deep(svg) {
+  width: 17px;
+  height: 17px;
+}
+
+.upload-hint {
+  margin-top: -8px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 右侧多留 19px：一级分组行在那放折叠箭头，其余行留白，保证徽标对齐一竖列 */
+  padding: 9px 30px 9px 11px;
+  border-radius: 10px;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+}
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.nav-icon {
+  display: inline-flex;
+  color: inherit;
+  opacity: 0.8;
+}
+
+.nav-icon :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.nav-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-count {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgb(20 23 44 / 0.05);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-item.active .nav-count {
+  background: rgb(91 91 224 / 0.14);
+  color: var(--accent-strong);
+}
+
+/* 文件拖到分组标签上时的落点高亮：虚线画在元素内侧，避免被滚动容器裁掉。 */
+.nav-item.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.nav-item.is-drop-target .nav-count {
+  background: rgb(91 91 224 / 0.18);
+  color: var(--accent-strong);
+}
+
+/* 顶级分组把落点高亮画在它自己那一行上（wrapper 还包着子分组列表） */
+.nav-group-block.is-drop-target > .nav-group-row > .nav-item-group {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* 分组导航：最近/收藏之下，分组多时自己滚动 */
+.nav-sep {
+  margin: 10px 4px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.nav-section-title {
+  padding: 0 11px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav-groups {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.nav-item-group .nav-icon {
+  opacity: 0.7;
+}
+
+/* 顶级分组的一项：自己的一行 + 它的子分组列表，整体参与顶层拖拽 */
+.nav-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 顶级分组的一行：分组按钮 + 右侧折叠箭头（箭头压在按钮右侧留白上） */
+.nav-group-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-fold {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: var(--ink-3);
+  transform: translateY(-50%);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-fold:hover {
+  background: rgb(20 23 44 / 0.07);
+  color: var(--ink-2);
+}
+
+.nav-fold-icon {
+  display: inline-flex;
+  transition: transform 0.15s;
+}
+
+.nav-fold-icon :deep(svg) {
+  width: 13px;
+  height: 13px;
+}
+
+/* 折叠时箭头从「朝下（展开）」转到「朝右（收起）」 */
+.nav-fold.is-folded .nav-fold-icon {
+  transform: rotate(-90deg);
+}
+
+/* 二级分组缩进一层，只在本层内拖拽排序 */
+.nav-subgroups {
+  margin-top: 0;
+  padding-left: 14px;
+}
+
+.nav-item-subgroup {
+  padding: 7px 30px 7px 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.nav-item-subgroup .nav-icon {
+  opacity: 0.55;
+}
+
+.nav-item-subgroup .nav-icon :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.nav-ungrouped {
+  flex: 0 0 auto;
+}
+
+.nav-new {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.nav-item-new {
+  color: var(--ink-3);
+}
+
+.nav-item-new:hover {
+  color: var(--accent-strong);
+}
+
+/* 分组拖拽：整项可拖；ghost 半透明，chosen 高亮 */
+[data-group-block],
+[data-subgroup] {
+  cursor: grab;
+}
+
+[data-group-block]:active,
+[data-subgroup]:active {
+  cursor: grabbing;
+}
+
+.group-drag-ghost {
+  opacity: 0.35;
+}
+
+/* 拖拽中的分组高亮画在圆角的行 / chip 自身，不要给包装层铺方块底色。
+   顶级分组拖拽的是包装层，二级分组拖拽的元素本身就是按钮，两种都要覆盖。 */
+.nav-group-block.group-drag-chosen > .nav-group-row > .nav-item,
+.nav-item-subgroup.group-drag-chosen {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chip-block.group-drag-chosen .chip,
+.chip-subgroup.group-drag-chosen {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.nav-empty {
+  padding: 4px 11px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.logout-btn:hover {
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
+.logout-icon {
+  display: inline-flex;
+}
+
+.logout-icon :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+/* ================= 主区域 ================= */
+.main {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main.is-drop-target {
+  cursor: copy;
+}
+
+.mobile-bar {
+  display: none;
+}
+
+.page-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 28px 34px 0;
+}
+
+.page-title {
+  color: var(--ink);
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.page-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* 分组视图会在标题旁多出 30px 高的「⋯」按钮：给标题行固定最小高度，
+     避免切换视图时标题行变高，把下面的标签页 / chips / 列表整体顶下去。 */
+  min-height: 30px;
+}
+
+/* 单分组视图标题旁的重命名入口 */
+.title-action {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--ink-3);
+  transition:
+    color 0.15s,
+    background-color 0.15s;
+}
+
+.title-action:hover,
+.title-action.on {
+  background: var(--surface-2);
+  color: var(--accent-strong);
+}
+
+.title-action :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.page-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 单分组视图的整包下载入口：和搜索框同高 */
+.group-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.group-download:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.group-download-icon {
+  display: inline-flex;
+}
+
+.group-download-icon :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+/* 手动刷新：上传自动刷新之外的独立入口，刷新中图标旋转 */
+.refresh-btn {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-3);
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.refresh-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.refresh-btn :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.refresh-btn.spinning :deep(svg) {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 300px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-3);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(91 91 224 / 0.12);
+}
+
+.search-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.search-icon :deep(svg) {
+  width: 15px;
+  height: 15px;
+}
+
+.search-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.search-input::placeholder {
+  color: var(--ink-3);
+}
+
+.tabs {
+  display: none;
+}
+
+/* 窄屏分组 chips：桌面端由侧栏承担分组导航，这里隐藏 */
+.chips {
+  display: none;
+}
+
+.content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px 34px 34px;
+  overflow-y: auto;
+}
+
+.banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.banner {
+  padding: 10px 14px;
+  border: 1px solid #ffd0da;
+  border-radius: 11px;
+  background: var(--rose-soft);
+  color: #b3123a;
+  font-size: 12.5px;
+}
+
+/* 「最近」视图按日期分段：每段一个标题 + 一张卡片，段与段之间留出呼吸空间 */
+.file-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.file-section-title {
+  margin: 0 4px 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+/* 分组条目的右键菜单：和行内菜单同一套外观，靠点击点定位 */
+.group-menu-pop {
+  z-index: 120;
+}
+
+/* ================= 空状态 ================= */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 360px;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent);
+}
+
+.empty-icon :deep(svg) {
+  width: 26px;
+  height: 26px;
+}
+
+.empty-title {
+  color: var(--ink);
+  font-size: 14.5px;
+  font-weight: 620;
+}
+
+.empty-text {
+  max-width: 340px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.upload-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 9px 16px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.upload-secondary:hover {
+  background: #e2e0ff;
+}
+
+.upload-secondary-icon {
+  display: inline-flex;
+}
+
+.upload-secondary-icon :deep(svg) {
+  width: 15px;
+  height: 15px;
+}
+
+/* ================= 拖放覆盖层 ================= */
+.drop-overlay {
+  position: absolute;
+  inset: 14px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 22px;
+  background: rgb(91 91 224 / 0.08);
+  color: var(--accent-strong);
+  pointer-events: none;
+}
+
+.drop-overlay-icon :deep(svg) {
+  width: 54px;
+  height: 54px;
+}
+
+.drop-overlay-text {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+/* ================= 窄屏 ================= */
+@media (max-width: 900px) {
+  .desktop-only {
+    display: none;
+  }
+
+  .mobile-only {
+    display: inline;
+  }
+
+  .shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .mobile-bar {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 10px;
+    border-bottom: 1px solid var(--line);
+    background: rgb(255 255 255 / 0.8);
+    backdrop-filter: blur(10px);
+  }
+
+  .brand-mobile {
+    gap: 9px;
+  }
+
+  .brand-mobile .brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .brand-mobile .brand-mark :deep(svg) {
+    width: 16px;
+    height: 16px;
+  }
+
+  .brand-mobile .brand-name {
+    font-size: 15px;
+  }
+
+  .mobile-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .mobile-upload {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    background: linear-gradient(135deg, var(--accent), #7c6cf6);
+    color: #fff;
+    box-shadow: 0 10px 18px -10px rgb(91 91 224 / 0.9);
+  }
+
+  .mobile-upload :deep(svg) {
+    width: 17px;
+    height: 17px;
+  }
+
+  .mobile-logout {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    color: var(--ink-3);
+  }
+
+  .mobile-logout:hover {
+    background: var(--surface-2);
+  }
+
+  .mobile-logout :deep(svg) {
+    width: 16px;
+    height: 16px;
+  }
+
+  .page-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px 16px 0;
+  }
+
+  .page-title {
+    font-size: 22px;
+  }
+
+  .page-actions {
+    gap: 8px;
+  }
+
+  .page-actions .search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 12px 16px 0;
+  }
+
+  .tab {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  .tab.active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .tab-count {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgb(20 23 44 / 0.06);
+    color: inherit;
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tab.active .tab-count {
+    background: rgb(255 255 255 / 0.22);
+  }
+
+  /* 标签页之下的分组 chips：分组横向滚动、可拖拽排序；未分组固定在右侧 */
+  .chips {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 10px 16px 0;
+    overflow: hidden;
+  }
+
+  .chips-groups {
+    display: flex;
+    flex: 0 1 auto;
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .chips-groups::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chip-ungrouped {
+    flex: 0 0 auto;
+  }
+
+  /* chips 也按层级分块：顶级 chip 单独一层，第二行只放当前顶级分组的子分组 */
+  .chip-block {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+  }
+
+  .chips-subgroups {
+    padding-top: 6px;
+  }
+
+  .chip-subgroup {
+    border-style: dashed;
+    color: var(--ink-3);
+    font-weight: 550;
+  }
+
+  .chip-subgroup.active {
+    border-style: solid;
+    color: var(--accent-strong);
+  }
+
+  /* 新建分组：虚线边框的窄按钮，排在分组 chips 之后 */
+  .chip-new {
+    flex: 0 0 auto;
+    padding: 6px 9px;
+    border-style: dashed;
+    color: var(--ink-3);
+  }
+
+  .chip-new:hover {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+  }
+
+  .chip {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 11px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .chip-icon {
+    display: inline-flex;
+    color: var(--ink-3);
+  }
+
+  .chip-icon :deep(svg) {
+    display: block;
+    width: 13px;
+    height: 13px;
+  }
+
+  .chip.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .chip.active .chip-icon {
+    color: var(--accent-strong);
+  }
+
+  .chip.is-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .chip-block.is-drop-target .chip {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .content {
+    padding: 12px 12px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .empty {
+    min-height: 300px;
+    padding: 32px 16px;
+  }
+
+  .drop-overlay {
+    inset: 10px;
+    border-radius: 18px;
+  }
+}
+
+@media (max-width: 560px) {
+  .mobile-bar .brand-sub {
+    display: none;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+}
+</style>

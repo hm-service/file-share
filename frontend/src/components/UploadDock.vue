@@ -400,3 +400,253 @@ defineExpose({ addFiles, pick: openPicker });
     </section>
   </Transition>
 </template>
+
+<style scoped>
+.hidden-input {
+  display: none;
+}
+
+/* ================= 上传坞 ================= */
+.upload-dock {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 384px;
+  max-width: calc(100vw - 40px);
+  max-height: min(60vh, 480px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.dock-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.upload-dock:not(.collapsed) .dock-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.dock-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.dock-icon :deep(svg) {
+  width: 17px;
+  height: 17px;
+}
+
+.dock-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dock-title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.dock-sub {
+  margin-top: 1px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-toggle {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--ink-3);
+}
+
+.dock-toggle:hover {
+  background: var(--surface-2);
+}
+
+.dock-toggle :deep(svg) {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.2s ease;
+}
+
+.upload-dock.collapsed .dock-toggle :deep(svg) {
+  transform: rotate(180deg);
+}
+
+.dock-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 6px 8px 10px;
+  overflow-y: auto;
+}
+
+.dock-item {
+  padding: 9px 10px 11px;
+  border-radius: 12px;
+}
+
+.dock-item:hover {
+  background: var(--surface-2);
+}
+
+.dock-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dock-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-size {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dock-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dock-status {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-status.working {
+  color: var(--accent-strong);
+}
+
+.dock-status.done {
+  color: var(--green);
+}
+
+.dock-status.failed {
+  color: var(--rose);
+}
+
+.dock-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.dock-action {
+  padding: 3px 8px;
+  border-radius: 7px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dock-action:hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.dock-action.cancel:hover {
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
+.dock-action.retry {
+  color: var(--accent);
+}
+
+.dock-action.retry:hover {
+  background: var(--accent-soft);
+}
+
+.dock-progress {
+  height: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.dock-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #8b5cf6);
+  transition: width 0.2s ease;
+}
+
+.dock-bar.done {
+  background: var(--green);
+}
+
+.dock-bar.failed {
+  background: var(--rose);
+}
+
+.dock-bar.cancelled {
+  background: #c8ccd8;
+}
+
+.dock-enter-active,
+.dock-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.dock-enter-from,
+.dock-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+}
+
+@media (max-width: 900px) {
+  .upload-dock {
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    left: 12px;
+    width: auto;
+    max-width: none;
+    max-height: 58vh;
+    border-radius: 18px;
+  }
+}
+</style>

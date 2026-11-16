@@ -1,15 +1,13 @@
 <script setup lang="ts">
 /**
- * 通用确认对话框：Teleport 到 body，覆盖一层磨砂黑色半透明遮罩。
+ * 通用确认对话框：内容骑在 DialogFrame 上，支持一个可选的勾选项。
  *
- * 删除分组要顺带问「是否连组内文件一起删」，所以支持一个可选的勾选项；
- * 勾选项每次打开都回到未勾选 —— 连带删除这种不可逆动作必须显式选择。
- *
- * Esc 与点遮罩都等于取消；打开时把焦点放到取消按钮上，避免回车误触破坏性操作。
+ * 删除分组要顺带问「是否连组内文件一起删」，所以有勾选项；勾选项每次打开都回到未勾选 ——
+ * 连带删除这种不可逆动作必须显式选择。回车误触由外壳把初始焦点放在「取消」上避免。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ref, watch } from "vue";
 
-import { t } from "@/i18n";
+import DialogFrame from "@/components/DialogFrame.vue";
 
 const props = defineProps<{
   title: string;
@@ -27,13 +25,6 @@ const emit = defineEmits<{
 }>();
 
 const checked = ref(false);
-const cancelButton = ref<HTMLButtonElement | null>(null);
-
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key !== "Escape") return;
-  event.stopPropagation();
-  emit("cancel");
-}
 
 // 勾选状态是「每次打开都重置」的一次性选择：对话框由父组件用 v-if 控制，重开即重建。
 watch(
@@ -42,41 +33,52 @@ watch(
     checked.value = false;
   },
 );
-
-onMounted(() => {
-  window.addEventListener("keydown", onKeydown, true);
-  cancelButton.value?.focus();
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onKeydown, true);
-});
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="dialog-mask" @click.self="emit('cancel')">
-      <div class="dialog" role="dialog" aria-modal="true" :aria-label="title">
-        <h2 class="dialog-title">{{ title }}</h2>
-        <p v-if="message" class="dialog-message">{{ message }}</p>
-
-        <label v-if="checkbox" class="dialog-check">
-          <input v-model="checked" type="checkbox" />
-          <span class="dialog-check-text">
-            {{ checkbox }}
-            <span v-if="checked && checkboxHint" class="dialog-check-hint">{{ checkboxHint }}</span>
-          </span>
-        </label>
-
-        <div class="dialog-actions">
-          <button ref="cancelButton" type="button" class="dialog-btn" @click="emit('cancel')">
-            {{ t("action.cancel") }}
-          </button>
-          <button type="button" class="dialog-btn is-danger" @click="emit('confirm', checked)">
-            {{ confirmLabel }}
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <DialogFrame
+    :title="title"
+    :hint="message"
+    :confirm-label="confirmLabel"
+    tone="danger"
+    @confirm="emit('confirm', checked)"
+    @cancel="emit('cancel')"
+  >
+    <label v-if="checkbox" class="dialog-check">
+      <input v-model="checked" type="checkbox" />
+      <span class="dialog-check-text">
+        {{ checkbox }}
+        <span v-if="checked && checkboxHint" class="dialog-check-hint">{{ checkboxHint }}</span>
+      </span>
+    </label>
+  </DialogFrame>
 </template>
+
+<style scoped>
+.dialog-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.dialog-check input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  accent-color: var(--rose);
+}
+
+.dialog-check-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--rose);
+  font-size: 11.5px;
+}
+</style>

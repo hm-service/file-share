@@ -35,6 +35,8 @@ const emit = defineEmits<{
   error: [error: unknown];
   delete: [];
   "move-group": [groupPath: string];
+  /** 「移动到分组」菜单里新建分组：弹窗由父组件统一负责。 */
+  "new-group": [];
 }>();
 
 /** 顶级分组，以及某个分组下的子分组：菜单按两级缩进展示。 */
@@ -310,7 +312,7 @@ function chooseGroup(path: string): void {
   emit("move-group", path);
 }
 
-/** 菜单里的重命名：先关菜单再交给父组件，避免 prompt 压在下拉菜单上。 */
+/** 菜单里的重命名：先关菜单再交给父组件，避免输入对话框压在下拉菜单上。 */
 function chooseRename(): void {
   closeMenu();
   emit("rename");
@@ -322,10 +324,10 @@ function chooseDelete(): void {
   emit("delete");
 }
 
-function promptNewGroup(): void {
+/** 新建分组也是输入框：关菜单后交给父组件，和全局的新建分组共用一个对话框。 */
+function chooseNewGroup(): void {
   closeMenu();
-  const input = window.prompt(t("group.new-prompt"))?.trim();
-  if (input) emit("move-group", input);
+  emit("new-group");
 }
 
 onBeforeUnmount(() => {
@@ -465,7 +467,7 @@ onBeforeUnmount(() => {
 
         <div class="row-menu-sep" role="separator"></div>
 
-        <button type="button" class="row-menu-item is-new" role="menuitem" @click="promptNewGroup">
+        <button type="button" class="row-menu-item is-new" role="menuitem" @click="chooseNewGroup">
           <span class="row-menu-check"></span>
           <span class="row-menu-icon" v-html="ICONS.plus"></span>
           <span class="row-menu-label">{{ t("action.new-group") }}</span>
@@ -509,3 +511,292 @@ onBeforeUnmount(() => {
     </Teleport>
   </li>
 </template>
+
+<style scoped>
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  transition: background-color 0.15s;
+}
+
+.file-row + .file-row {
+  border-top: 1px solid var(--line);
+}
+
+.file-row:hover {
+  background: #fafbff;
+}
+
+/* 拖拽把手：常显低透明度，hover 加深；触屏长按 120ms 才进入拖拽 */
+.drag-handle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  margin: 0 -6px 0 -4px;
+  color: var(--ink-3);
+  cursor: grab;
+  opacity: 0.45;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
+}
+
+.drag-handle :deep(svg) {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.drag-handle:hover {
+  color: var(--ink-2);
+  opacity: 1;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.file-row.drag-ghost {
+  border-radius: 12px;
+  background: var(--accent-soft);
+  opacity: 0.6;
+}
+
+.file-row.drag-chosen {
+  background: #fafbff;
+}
+
+.file-row.drag-dragging {
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.file-tile {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.file-tile :deep(svg) {
+  width: 21px;
+  height: 21px;
+}
+
+/* 文件类型配色：同一类型一个颜色，图标形状各不相同。 */
+.kind-image {
+  background: #e7f8f0;
+  color: #0f9d63;
+}
+
+.kind-video {
+  background: #fdeef3;
+  color: #db2777;
+}
+
+.kind-audio {
+  background: #e9f6ff;
+  color: #0284c7;
+}
+
+.kind-archive {
+  background: #fff5e6;
+  color: #d97706;
+}
+
+.kind-pdf {
+  background: #ffeef1;
+  color: #e11d48;
+}
+
+.kind-doc {
+  background: #eef0ff;
+  color: #4f5bd5;
+}
+
+.kind-sheet {
+  background: #e8f8f2;
+  color: #0d9488;
+}
+
+.kind-slides {
+  background: #fff1e4;
+  color: #ea580c;
+}
+
+.kind-code {
+  background: #f2ecff;
+  color: #7c3aed;
+}
+
+.kind-text {
+  background: #f1f3f9;
+  color: #64748b;
+}
+
+.kind-other {
+  background: #f1f2f8;
+  color: #6b7280;
+}
+
+.file-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.file-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-meta {
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 文件指纹：等宽字体、单行省略；完整值放在 title 里，文本可选中复制 */
+.file-hash {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 1px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.file-hash-label {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.file-hash-value {
+  overflow: hidden;
+  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 1px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--ink-3);
+  transition:
+    color 0.15s,
+    background-color 0.15s;
+}
+
+.icon-btn :deep(svg) {
+  display: block;
+  width: 17px;
+  height: 17px;
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.icon-btn.star {
+  color: #c4c8d6;
+}
+
+.icon-btn.star.on {
+  color: var(--amber);
+}
+
+.icon-btn.star:hover {
+  color: var(--amber);
+}
+
+.icon-btn.download:hover,
+.icon-btn.link:hover {
+  color: var(--accent);
+}
+
+.icon-btn.link.on {
+  color: var(--green);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.icon-btn.group:hover,
+.icon-btn.group.on,
+.icon-btn.more.on {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+@container (max-width: 620px) {
+/* 内容区很窄（手机 / 小窗口）时，操作按钮换到第二行，文件名拿回整行。 */
+  .file-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .file-body {
+    flex-basis: calc(100% - 54px);
+  }
+
+  .file-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+@media (max-width: 560px) {
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .file-tile {
+    width: 38px;
+    height: 38px;
+  }
+
+  .file-tile :deep(svg) {
+    width: 19px;
+    height: 19px;
+  }
+}
+</style>

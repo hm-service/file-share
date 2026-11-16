@@ -105,3 +105,260 @@ async function submit(): Promise<void> {
     </main>
   </div>
 </template>
+
+<style scoped>
+/* ================= 登录页 ================= */
+.login-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.login-aside {
+  position: relative;
+  display: flex;
+  flex: 0 0 46%;
+  flex-direction: column;
+  justify-content: space-between;
+  max-width: 620px;
+  padding: 42px;
+  overflow: hidden;
+  background:
+    radial-gradient(700px 420px at 90% 0%, rgb(139 92 246 / 0.45), transparent 60%),
+    radial-gradient(600px 480px at 0% 100%, rgb(59 130 246 / 0.28), transparent 55%),
+    linear-gradient(155deg, #15162f 0%, #232449 60%, #1d1e3c 100%);
+  color: #fff;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark-inverse {
+  background: rgb(255 255 255 / 0.14);
+  box-shadow: none;
+}
+
+.login-brand-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.login-brand-sub {
+  margin-top: 1px;
+  color: rgb(255 255 255 / 0.55);
+  font-size: 11px;
+}
+
+.login-hero {
+  max-width: 420px;
+}
+
+.login-headline {
+  color: #fff;
+  font-size: 40px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+}
+
+.login-sub {
+  margin-top: 14px;
+  color: rgb(255 255 255 / 0.62);
+  font-size: 14px;
+}
+
+.login-points {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 38px;
+}
+
+.login-points li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgb(255 255 255 / 0.8);
+  font-size: 13px;
+}
+
+.login-point-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.07);
+  color: #c9caff;
+}
+
+.login-point-icon :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.login-aside-foot {
+  color: rgb(255 255 255 / 0.3);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.login-main {
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  padding: 28px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 404px;
+  padding: 30px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.login-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.login-card-kicker {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.login-title {
+  color: var(--ink);
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.login-hint {
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.field {
+  display: block;
+  margin-top: 22px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.field-input {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.field-input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgb(91 91 224 / 0.13);
+}
+
+.primary-btn {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px 14px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--accent), #7c6cf6);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 650;
+  transition:
+    filter 0.15s,
+    transform 0.15s;
+}
+
+.primary-btn:hover {
+  filter: brightness(1.05);
+}
+
+.primary-btn:active {
+  transform: translateY(1px);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+}
+
+.login-error {
+  margin-top: 14px;
+  color: var(--rose);
+  font-size: 12.5px;
+}
+
+@media (max-width: 900px) {
+  /* 登录页：品牌条 + 登录卡 */
+  .login-shell {
+    flex-direction: column;
+  }
+
+  .login-aside {
+    flex: 0 0 auto;
+    max-width: none;
+    padding: calc(20px + env(safe-area-inset-top, 0px)) 20px 20px;
+  }
+
+  .login-hero,
+  .login-aside-foot {
+    display: none;
+  }
+
+  .login-main {
+    flex: 1 1 auto;
+    align-items: flex-start;
+    padding: 18px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .login-card {
+    max-width: none;
+    margin-top: 6px;
+    padding: 24px;
+    border-radius: 18px;
+    box-shadow: var(--shadow-md);
+  }
+}
+
+@media (max-width: 560px) {
+  .login-card {
+    padding: 20px;
+  }
+
+  .login-headline {
+    font-size: 30px;
+  }
+}
+</style>

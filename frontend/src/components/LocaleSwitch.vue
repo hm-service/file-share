@@ -19,3 +19,33 @@ import { LANGUAGES, locale, setLocale, t } from "@/i18n";
     </button>
   </div>
 </template>
+
+<style scoped>
+/* ================= 语言切换 ================= */
+.locale-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.locale-btn {
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.locale-btn:hover {
+  color: var(--ink-2);
+}
+
+.locale-btn.active {
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+}
+</style>

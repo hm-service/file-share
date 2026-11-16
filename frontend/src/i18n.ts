@@ -90,20 +90,22 @@ export type MessageKey =
   | "action.group-menu"
   | "action.create-subgroup"
   | "action.delete-group"
+  | "action.create"
   | "action.expand-group"
   | "action.collapse-group"
   | "action.cancel"
   | "action.logout"
   | "file.sha256"
-  | "group.new-prompt"
-  | "group.rename-prompt"
-  | "group.new-subgroup-prompt"
+  | "group.new-title"
+  | "group.new-hint"
+  | "group.rename-title"
+  | "group.new-subgroup-title"
   | "group.delete-title"
   | "group.delete-message"
   | "group.delete-empty"
   | "group.delete-files"
   | "group.delete-files-hint"
-  | "rename.prompt"
+  | "rename.title"
   | "confirm.delete"
   | "date.group-heading"
   | "meta.unknown-time"
@@ -192,17 +194,19 @@ const messages: Record<MessageKey, Message> = {
   "action.group-menu": { zh: "分组操作", en: "Group actions" },
   "action.create-subgroup": { zh: "创建子分组", en: "New sub-group" },
   "action.delete-group": { zh: "删除分组", en: "Delete group" },
+  "action.create": { zh: "创建", en: "Create" },
   "action.expand-group": { zh: "展开子分组", en: "Expand sub-groups" },
   "action.collapse-group": { zh: "折叠子分组", en: "Collapse sub-groups" },
   "action.cancel": { zh: "取消", en: "Cancel" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
-  "group.new-prompt": {
+  "group.new-title": { zh: "新建分组", en: "New group" },
+  "group.new-hint": {
     zh: "输入分组名；用 父/子 新建二级分组",
     en: "Group name; use parent/child for a sub-group",
   },
-  "group.rename-prompt": { zh: "输入新的分组名", en: "Enter a new group name" },
-  "group.new-subgroup-prompt": { zh: "输入子分组名", en: "Enter a sub-group name" },
+  "group.rename-title": { zh: "重命名分组", en: "Rename group" },
+  "group.new-subgroup-title": { zh: "新建子分组", en: "New sub-group" },
   "group.delete-title": { zh: "删除分组「{name}」？", en: 'Delete group "{name}"?' },
   "group.delete-empty": { zh: "这个分组里没有文件。", en: "This group has no files." },
   "group.delete-message": {
@@ -214,7 +218,7 @@ const messages: Record<MessageKey, Message> = {
     zh: "这些文件会被永久删除，无法恢复。",
     en: "These files will be permanently deleted.",
   },
-  "rename.prompt": { zh: "输入新的文件名", en: "Enter a new file name" },
+  "rename.title": { zh: "重命名文件", en: "Rename file" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
