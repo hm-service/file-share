@@ -11,8 +11,14 @@ const MaxFilenameBytes = 255
 // MaxGroupNameBytes 是分组名（路径里的一段）的上限（UTF-8 字节数）：分组只是标签，64 字节够用。
 const MaxGroupNameBytes = 64
 
-// MaxGroupDepth 是分组层数上限：只支持顶级与二级（"父/子"），三级及以上一律拒绝。
-const MaxGroupDepth = 2
+// MaxGroupDepth 是分组层数上限：一级 / 二级是分层（各自有页面路由），
+// 三级只是分组（在二级分组的内容区里分段展示，不产生路由）。第 4 级一律拒绝。
+const MaxGroupDepth = 3
+
+// MaxViewSegments 是页面路由最多认的路径段数：地址栏只到二级分组，
+// 三级分组只在内容区分段里出现，所以 /a/b/c 这种路径仍然不是视图。
+// 和 MaxGroupDepth 分开是为了让「能存多深」与「能路由多深」各自独立。
+const MaxViewSegments = 2
 
 // 批量排序输入的边界：一次最多重排 2000 条，sort_order 落在 [0, 1e9]。
 const (
@@ -74,9 +80,9 @@ var reservedGroupNames = map[string]struct{}{
 	"favicon.svg": {},
 }
 
-// NormalizeGroupPath 校验并规范化分组路径：空串表示未分组，其余形如 "顶级" 或 "顶级/二级"。
-// 每段按 NormalizeGroupSegment 规则规范化（去掉首尾空白），层数不超过 MaxGroupDepth。
-// 第二段起不参与顶层路由，因此只有第一段受 reservedGroupNames 约束。
+// NormalizeGroupPath 校验并规范化分组路径：空串表示未分组，其余形如 "顶级"、"顶级/二级"
+// 或 "顶级/二级/三级"。每段按 NormalizeGroupSegment 规则规范化（去掉首尾空白），
+// 层数不超过 MaxGroupDepth。第二段起不参与顶层路由，因此只有第一段受 reservedGroupNames 约束。
 func NormalizeGroupPath(raw string) (string, bool) {
 	path := strings.TrimSpace(raw)
 	if path == "" {

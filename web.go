@@ -87,14 +87,15 @@ var reservedViewRoots = map[string]struct{}{
 
 // isViewRoute 判断路径是不是前端视图路由：一到两段非空路径，最多到二级分组。
 // 分组名由用户输入、直接作为路径段出现，所以这里只能按形状判断，不能枚举。
-// *.html 与保留根路径下面的多段路径仍然只认产物里的真实文件，未知的一律 404。
+// 三级分组只是内容区里的分组，不产生路由：/a/b/c 仍然只认产物里的真实文件，未知的一律 404。
+// *.html 与保留根路径下面的多段路径同样只认产物里的真实文件。
 func isViewRoute(path string) bool {
 	segments, found := strings.CutPrefix(path, "/")
 	if !found {
 		return false
 	}
 	parts := strings.Split(segments, "/")
-	if len(parts) < 1 || len(parts) > core.MaxGroupDepth {
+	if len(parts) < 1 || len(parts) > core.MaxViewSegments {
 		return false
 	}
 	for _, part := range parts {

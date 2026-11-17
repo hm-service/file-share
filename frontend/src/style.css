@@ -180,9 +180,13 @@ ul {
   background: var(--rose-soft);
 }
 
-/* 二级分组在菜单里缩进一层，和侧栏的层级感一致 */
+/* 二级 / 三级分组在菜单里逐层缩进，和分组层级保持一致 */
 .row-menu-item.is-child {
   padding-left: 26px;
+}
+
+.row-menu-item.is-grandchild {
+  padding-left: 42px;
 }
 
 .row-menu-title {

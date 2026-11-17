@@ -7,7 +7,7 @@ export interface FileItem {
   sha256: string;
   size: number;
   is_favorite: boolean;
-  /** 分组路径（"顶级" 或 "顶级/二级"）；空串表示未分组。 */
+  /** 分组路径（"顶级"、"顶级/二级" 或 "顶级/二级/三级"）；空串表示未分组。 */
   group_path: string;
   /** 所在分组（或未分组段）内的排序序号，0..n-1。 */
   sort_order: number;
@@ -23,7 +23,7 @@ export interface FileOrderItem {
 
 /** GET /api/files 里的一条分组。 */
 export interface GroupItem {
-  /** 完整路径，最多两段，段之间用 "/" 分隔。 */
+  /** 完整路径，最多三段，段之间用 "/" 分隔。三级分组只在内容区分段里展示。 */
   path: string;
   /** 父分组路径；顶级分组为空串。 */
   parent: string;

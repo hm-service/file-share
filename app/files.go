@@ -142,7 +142,7 @@ func (a *App) UpdateFile(id string, filename, rawGroupPath *string) (*db.File, e
 	return record, nil
 }
 
-// RenameGroup 改写一个分组路径的最后一段，同级位置不变；顶级分组的子分组与组内文件一起改名。
+// RenameGroup 改写一个分组路径的最后一段，同级位置不变；它下面的全部后代分组与组内文件一起改名。
 // 目标分组已存在时拒绝（不做隐式合并）；源分组不存在按 404 返回。
 func (a *App) RenameGroup(rawPath, rawNewName string) error {
 	path, ok := core.NormalizeGroupPath(rawPath)
@@ -165,8 +165,8 @@ func (a *App) RenameGroup(rawPath, rawNewName string) error {
 	return storeFailure(err, "store.rename")
 }
 
-// DeleteGroup 删除一个分组，子分组一并删除；deleteFiles 决定组内文件是一起删掉还是上移
-// 到被删分组的父路径（顶级分组上移到未分组）。目标分组不存在按 404 返回。
+// DeleteGroup 删除一个分组，它的全部后代分组一并删除；deleteFiles 决定组内文件是一起删掉
+// 还是上移到被删分组的父路径（顶级分组上移到未分组）。目标分组不存在按 404 返回。
 func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
 	path, ok := core.NormalizeGroupPath(rawPath)
 	if !ok || path == "" {

@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"file-share/core"
@@ -700,6 +701,125 @@ func TestDeleteGroup(t *testing.T) {
 	}
 	if groups := mustGroups(t, store); len(groups) != 0 {
 		t.Errorf("分组应当清空，得到 %v", groupPaths(groups))
+	}
+}
+
+// 三级分组：二级分组只是「分层」，三级是它内容区里的分组。
+// 改名 / 删除都要把整棵子树一起处理，不能只认一层。
+func TestThreeLevelGroups(t *testing.T) {
+	store := testStore(t)
+	for _, item := range []struct {
+		id   string
+		path string
+	}{
+		{"aa", "工作"},
+		{"bb", "工作/项目A"},
+		{"cc", "工作/项目A/归档"},
+		{"dd", "工作/项目A/草稿"},
+		{"ee", "工作/项目B"},
+	} {
+		file := sampleFile(item.id, "sha-"+item.id, 100)
+		file.GroupPath = item.path
+		if err := store.InsertFile(file); err != nil {
+			t.Fatalf("InsertFile() 报错: %v", err)
+		}
+	}
+
+	// 路径与父路径逐级对齐：三级分组的 parent 是二级分组。
+	groups := mustGroups(t, store)
+	byParent := groupsByParent(groups)
+	if !samePaths(byParent[""], "工作") {
+		t.Fatalf("顶层分组 = %v，想要 [工作]", byParent[""])
+	}
+	if !samePaths(byParent["工作"], "工作/项目A", "工作/项目B") {
+		t.Fatalf("工作下 = %v", byParent["工作"])
+	}
+	if !samePaths(byParent["工作/项目A"], "工作/项目A/归档", "工作/项目A/草稿") {
+		t.Fatalf("三级分组 = %v", byParent["工作/项目A"])
+	}
+
+	// 二级分组改名：三级分组的路径与父路径一起改，同级位置不变。
+	changed, err := store.RenameGroup("工作/项目A", "项目X")
+	if err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	if changed != 3 {
+		t.Errorf("重命名影响文件数 = %d，想要 3", changed)
+	}
+	byParent = groupsByParent(mustGroups(t, store))
+	if !samePaths(byParent["工作"], "工作/项目X", "工作/项目B") {
+		t.Fatalf("改名后 工作 下 = %v", byParent["工作"])
+	}
+	if !samePaths(byParent["工作/项目X"], "工作/项目X/归档", "工作/项目X/草稿") {
+		t.Fatalf("改名后三级分组 = %v", byParent["工作/项目X"])
+	}
+	for id, want := range map[string]string{
+		"bb": "工作/项目X",
+		"cc": "工作/项目X/归档",
+		"dd": "工作/项目X/草稿",
+	} {
+		got, err := store.File(id)
+		if err != nil || got.GroupPath != want {
+			t.Errorf("%s 的 group_path = %+v, %v，想要 %q", id, got, err, want)
+		}
+	}
+
+	// 顶级分组改名：整棵树一起改。
+	if _, err := store.RenameGroup("工作", "工作区"); err != nil {
+		t.Fatalf("RenameGroup() 报错: %v", err)
+	}
+	byParent = groupsByParent(mustGroups(t, store))
+	for parent, want := range map[string][]string{
+		"工作区":     {"工作区/项目X", "工作区/项目B"},
+		"工作区/项目X": {"工作区/项目X/归档", "工作区/项目X/草稿"},
+	} {
+		if !samePaths(byParent[parent], want...) {
+			t.Fatalf("%s 下 = %v，想要 %v", parent, byParent[parent], want)
+		}
+	}
+	files, err := store.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	for _, file := range files {
+		if !strings.HasPrefix(file.GroupPath, "工作区") {
+			t.Errorf("%s 的 group_path = %q，没有跟着改名", file.ID, file.GroupPath)
+		}
+	}
+
+	// 删除二级分组：三级分组一并删掉，文件上移到顶级分组。
+	if _, err := store.DeleteGroup("工作区/项目X", false); err != nil {
+		t.Fatalf("DeleteGroup() 报错: %v", err)
+	}
+	byParent = groupsByParent(mustGroups(t, store))
+	if _, ok := byParent["工作区/项目X"]; ok {
+		t.Fatalf("删除后仍有三级分组: %v", groupPaths(mustGroups(t, store)))
+	}
+	for _, id := range []string{"bb", "cc", "dd"} {
+		got, err := store.File(id)
+		if err != nil || got.GroupPath != "工作区" {
+			t.Errorf("%s 的 group_path = %+v, %v，想要上移到 工作区", id, got, err)
+		}
+	}
+	if got, err := store.File("ee"); err != nil || got.GroupPath != "工作区/项目B" {
+		t.Errorf("ee 不该被移动: %+v, %v", got, err)
+	}
+
+	// 删除顶级分组：留下的二级 / 三级分组一起删，文件回到未分组。
+	if _, err := store.DeleteGroup("工作区", false); err != nil {
+		t.Fatalf("DeleteGroup() 报错: %v", err)
+	}
+	if groups := mustGroups(t, store); len(groups) != 0 {
+		t.Errorf("删除后 groups = %v，想要空", groupPaths(groups))
+	}
+	files, err = store.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles() 报错: %v", err)
+	}
+	for _, file := range files {
+		if file.GroupPath != "" {
+			t.Errorf("%s 的 group_path = %q，想要空串", file.ID, file.GroupPath)
+		}
 	}
 }
 

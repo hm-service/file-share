@@ -101,6 +101,10 @@ export type MessageKey =
   | "file.sha256"
   | "group.new-title"
   | "group.new-hint"
+  | "group.all"
+  | "group.direct-files"
+  | "group.empty-child"
+  | "group.upload-target"
   | "group.rename-title"
   | "group.new-subgroup-title"
   | "group.delete-title"
@@ -208,9 +212,13 @@ const messages: Record<MessageKey, Message> = {
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
   "group.new-title": { zh: "新建分组", en: "New group" },
   "group.new-hint": {
-    zh: "输入分组名；用 父/子 新建二级分组",
-    en: "Group name; use parent/child for a sub-group",
+    zh: "输入分组名；用 父/子/孙 一次建多层，三级分组只在分组内容区里分段",
+    en: "Group name; use parent/child/grandchild for deeper levels",
   },
+  "group.all": { zh: "全部", en: "All" },
+  "group.direct-files": { zh: "直属文件", en: "Direct files" },
+  "group.empty-child": { zh: "这个分组里还没有文件", en: "No files in this group yet" },
+  "group.upload-target": { zh: "上传到「{name}」", en: 'Uploading to "{name}"' },
   "group.rename-title": { zh: "重命名分组", en: "Rename group" },
   "group.new-subgroup-title": { zh: "新建子分组", en: "New sub-group" },
   "group.delete-title": { zh: "删除分组「{name}」？", en: 'Delete group "{name}"?' },

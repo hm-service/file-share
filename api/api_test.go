@@ -1622,7 +1622,8 @@ func TestGroupOrderRoute(t *testing.T) {
 	})
 }
 
-// 两级分组：子分组挂在父分组下，同级独立排序；父分组改名时子分组与文件路径一起改。
+// 分层分组：二级挂在顶级下、三级挂在二级下，同级独立排序；
+// 父分组改名 / 删除时全部后代分组与文件路径一起改。
 func TestNestedGroupRoute(t *testing.T) {
 	instance, handler := newAPI(t)
 	token := testenv.Token(t, instance)
@@ -1647,14 +1648,20 @@ func TestNestedGroupRoute(t *testing.T) {
 		t.Fatalf("groups = %+v，想要顶层「工作」+ 子分组「工作/项目A」", groups)
 	}
 
-	// 三级路径拒绝。
+	// 三级分组：二级之下的分组只是内容区里的分组，路径最长三段。
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+		map[string]any{"path": "工作/项目A/归档"}, token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("三级分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	// 四级路径拒绝。
 	if recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
-		map[string]any{"path": "a/b/c"}, token); recorder.Code != http.StatusBadRequest {
-		t.Errorf("三级路径状态码 = %d，想要 400", recorder.Code)
+		map[string]any{"path": "a/b/c/d"}, token); recorder.Code != http.StatusBadRequest {
+		t.Errorf("四级路径状态码 = %d，想要 400", recorder.Code)
 	}
 
 	// 新建子分组：追加到父级末尾。
-	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups",
+	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups",
 		map[string]any{"path": "工作/项目B"}, token)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("新建子分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
@@ -1674,19 +1681,28 @@ func TestNestedGroupRoute(t *testing.T) {
 		t.Fatalf("子分组重排状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	groups = listGroups()
-	if len(groups) != 3 || groups[1].Path != "工作/项目B" || groups[2].Path != "工作/项目A" {
+	if len(groups) != 4 || groups[1].Path != "工作/项目B" ||
+		groups[2].Path != "工作/项目A" || groups[3].Path != "工作/项目A/归档" {
 		t.Fatalf("重排后 groups = %+v", groups)
 	}
 
-	// 父分组改名：子分组路径与文件的分组路径一起改。
+	// 三级分组里放一个文件：父级改名时它要跟着一起改。
+	third := testenv.SeedUpload(t, instance, "third.txt", []byte("third"))
+	if recorder := testenv.DoJSON(handler, http.MethodPatch, "/api/files/"+third.ID,
+		map[string]any{"group_path": "工作/项目A/归档"}, token); recorder.Code != http.StatusOK {
+		t.Fatalf("设置三级分组失败: %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+
+	// 父分组改名：两级后代分组与文件的分组路径一起改。
 	recorder = testenv.DoJSON(handler, http.MethodPost, "/api/groups/rename",
 		map[string]any{"path": "工作", "new_name": "工作区"}, token)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("父分组改名状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
 	groups = listGroups()
-	if len(groups) != 3 || groups[0].Path != "工作区" ||
-		groups[1].Path != "工作区/项目B" || groups[2].Path != "工作区/项目A" {
+	if len(groups) != 4 || groups[0].Path != "工作区" ||
+		groups[1].Path != "工作区/项目B" || groups[2].Path != "工作区/项目A" ||
+		groups[3].Path != "工作区/项目A/归档" || groups[3].Parent != "工作区/项目A" {
 		t.Fatalf("改名后 groups = %+v", groups)
 	}
 	var files struct {
@@ -1696,8 +1712,30 @@ func TestNestedGroupRoute(t *testing.T) {
 		} `json:"files"`
 	}
 	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &files)
-	if len(files.Files) != 1 || files.Files[0].GroupPath != "工作区/项目A" {
-		t.Fatalf("改名后文件 = %+v，想要 group_path 工作区/项目A", files.Files)
+	if len(files.Files) != 2 {
+		t.Fatalf("改名后文件数 = %d，想要 2", len(files.Files))
+	}
+	for _, file := range files.Files {
+		want := map[string]string{first.ID: "工作区/项目A", third.ID: "工作区/项目A/归档"}[file.ID]
+		if file.GroupPath != want {
+			t.Errorf("%s 的 group_path = %q，想要 %q", file.ID, file.GroupPath, want)
+		}
+	}
+
+	// 删除二级分组：三级分组一并删掉，文件上移到被删分组的上级。
+	if recorder := testenv.DoJSON(handler, http.MethodPost, "/api/groups/delete",
+		map[string]any{"path": "工作区/项目A"}, token); recorder.Code != http.StatusNoContent {
+		t.Fatalf("删除二级分组状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	groups = listGroups()
+	if len(groups) != 2 || groups[0].Path != "工作区" || groups[1].Path != "工作区/项目B" {
+		t.Fatalf("删除后 groups = %+v", groups)
+	}
+	testenv.DecodeInto(t, testenv.Do(handler, http.MethodGet, "/api/files", token), &files)
+	for _, file := range files.Files {
+		if file.GroupPath != "工作区" {
+			t.Errorf("%s 的 group_path = %q，想要上移到 工作区", file.ID, file.GroupPath)
+		}
 	}
 }
 

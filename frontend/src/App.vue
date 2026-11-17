@@ -128,6 +128,28 @@ function childrenOf(path: string): GroupItem[] {
 }
 
 /**
+ * 分组层数上限（与服务端 core.MaxGroupDepth 对齐）：
+ * 一级 / 二级是分层，各自有页面路由；三级只是分组，只在二级的内容区分段里出现。
+ */
+const MAX_GROUP_DEPTH = 3;
+
+/** 路径层数："a" → 1，"a/b" → 2，"a/b/c" → 3。 */
+function groupDepth(path: string): number {
+  return path.split("/").length;
+}
+
+/** 上一级路径："a/b/c" → "a/b"，顶级分组 → 空串。 */
+function parentPathOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
+/** 还能不能再建下一级：三级分组没有子分组，因此菜单里不再出现「创建子分组」。 */
+function canCreateSubgroup(path: string): boolean {
+  return groupDepth(path) < MAX_GROUP_DEPTH;
+}
+
+/**
  * 折叠起来的一级分组路径：只影响侧栏是否展开它的子分组，
  * 不写进地址栏、不落盘，刷新后恢复全部展开。
  */
@@ -202,11 +224,18 @@ function openSidebarGroup(path: string): void {
   showGroup(path);
 }
 
-/** 每个分组的直属文件数（父分组的 badge 不含子分组，和分组视图里看到的列表一致）。 */
-const groupCounts = computed(() => {
+/**
+ * 每个分组（含更深层分组）的文件数：侧栏徽标用它。
+ * 三级分组只是分组，文件常常沉在三级里，父分组再按直属数显示就会是 0。
+ */
+const groupSubtreeCounts = computed(() => {
   const counts = new Map<string, number>();
   for (const file of files.value) {
-    if (file.group_path) counts.set(file.group_path, (counts.get(file.group_path) ?? 0) + 1);
+    let path = file.group_path;
+    while (path) {
+      counts.set(path, (counts.get(path) ?? 0) + 1);
+      path = parentPathOf(path);
+    }
   }
   return counts;
 });
@@ -227,6 +256,13 @@ const sortedFiles = computed(() => {
     return a.id.localeCompare(b.id);
   });
 });
+
+/** 某个分组（含更深层分组）下的全部文件，按列表顺序。 */
+function subtreeFiles(path: string): FileItem[] {
+  return sortedFiles.value.filter(
+    (file) => file.group_path === path || file.group_path.startsWith(`${path}/`),
+  );
+}
 
 const keyword = computed(() => query.value.trim().toLowerCase());
 /** 搜索过滤中不允许拖拽：DOM 里只是子集，提交顺序会打乱整段。 */
@@ -269,6 +305,122 @@ const visibleFiles = computed(() => {
   }
 });
 
+/* ---------- 二级分组里的三级分组：内容区分段 ---------- */
+
+/**
+ * 三级分组只是分组：不进侧栏、不产生路由，只在二级分组的内容区里分段展示。
+ *
+ * 分段规则：当前分组下的每个子分组一段，段内是该子分组（含更深层）的全部文件；
+ * 直接挂在当前分组上的文件单独成一段「直属文件」，只有存在时才出现。
+ * 一级视图用同一套规则按二级分组分段，所以点一级分组也能看到它下面的全部文件。
+ */
+interface GroupSection {
+  key: string;
+  title: string;
+  /** 段对应的子分组；「直属文件」段没有分组。 */
+  group?: GroupItem;
+  files: FileItem[];
+}
+
+/** 段筛选：all / direct（直属文件段）/ 某个子分组路径。 */
+const sectionFilter = ref("all");
+/** 折叠起来的段（按段 key），只影响展示。 */
+const foldedSections = ref<Set<string>>(new Set());
+
+const currentSubgroups = computed(() => {
+  const current = view.value;
+  return current.kind === "group" ? childrenOf(current.group) : [];
+});
+
+const groupSections = computed<GroupSection[]>(() => {
+  const current = view.value;
+  if (current.kind !== "group") return [];
+  const children = currentSubgroups.value;
+  if (!children.length) return [];
+  const sections: GroupSection[] = [];
+  const direct = sortedFiles.value.filter((file) => file.group_path === current.group);
+  if (direct.length) sections.push({ key: "direct", title: t("group.direct-files"), files: direct });
+  for (const child of children) {
+    sections.push({ key: child.path, title: child.name, group: child, files: subtreeFiles(child.path) });
+  }
+  return sections;
+});
+
+/** 有子分组的分组视图才按段展示；没有子分组时仍是原来的平铺列表。 */
+const isGroupedView = computed(() => groupSections.value.length > 0);
+
+/**
+ * 生效的段筛选：搜索时放宽到全部段 —— 命中可能落在别的段，只看当前段会漏。
+ * 搜索结束后自动恢复原来选中的段。
+ */
+const effectiveSectionFilter = computed(() => (keyword.value ? "all" : sectionFilter.value));
+
+/** 段筛选 + 文件名搜索后的段；搜索时只留下有命中的段。 */
+const visibleGroupSections = computed<GroupSection[]>(() => {
+  const filter = effectiveSectionFilter.value;
+  const searching = keyword.value.length > 0;
+  return groupSections.value
+    .filter((section) => filter === "all" || section.key === filter)
+    .map((section) => ({ ...section, files: section.files.filter(matchesQuery) }))
+    .filter((section) => !searching || section.files.length > 0);
+});
+
+/** 当前视图里「看得见」的文件：分组视图下等于分段筛选 / 搜索之后的结果。 */
+const pageFiles = computed(() =>
+  isGroupedView.value
+    ? visibleGroupSections.value.flatMap((section) => section.files)
+    : visibleFiles.value,
+);
+
+/** 分组视图的总文件数（含更深层分组）：一级视图是整棵子树，二级视图是它下面的全部文件。 */
+const currentGroupFiles = computed(() => {
+  const current = view.value;
+  return current.kind === "group" ? subtreeFiles(current.group) : [];
+});
+
+function isSectionFolded(key: string): boolean {
+  return foldedSections.value.has(key);
+}
+
+function toggleSectionFold(key: string): void {
+  // 拖拽排序松手后浏览器还会补一个 click，别让它顺手把段折起来。
+  if (Date.now() < sectionClickGuardUntil) return;
+  const next = new Set(foldedSections.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  foldedSections.value = next;
+}
+
+/** 点段胶囊切换段：搜索中先清掉搜索，否则筛选会被「搜索放宽到全部段」盖住，点了看不出反应。 */
+function selectSectionFilter(value: string): void {
+  sectionFilter.value = value;
+  if (query.value) query.value = "";
+}
+
+/** 段内文件来自同一个分组时才开放拖拽排序：一级视图的段混着多个三级分组，排序没有意义。 */
+const sectionSortable = computed(
+  () => canSort.value && view.value.kind === "group" && groupDepth(view.value.group) === 2,
+);
+
+/** 一级视图的段里混着三级分组的文件，行内补一个分组标签才看得出归属。 */
+const sectionShowGroup = computed(
+  () => view.value.kind === "group" && groupDepth(view.value.group) < 2,
+);
+
+/** 直属文件段：有直属文件时才出现，所以筛选条里也只有这时才有这一项。 */
+const directSection = computed(() => groupSections.value.find((section) => section.key === "direct"));
+
+/** 拖文件到段头 / 段胶囊时的目标分组：「直属文件」段落到当前分组本身。 */
+function sectionDropPath(section: GroupSection): string {
+  if (section.group) return section.group.path;
+  return view.value.kind === "group" ? view.value.group : "";
+}
+
+/** 段头右键：段有对应分组时打开分组菜单。 */
+function openSectionMenu(event: MouseEvent, section: GroupSection): void {
+  if (section.group) openGroupMenu(event, section.group);
+}
+
 /** 列表分段：标题为空表示只有一段（收藏 / 分组 / 未分组视图不显示日期标题）。 */
 interface FileSection {
   key: string;
@@ -309,7 +461,7 @@ const pageTitle = computed(() => {
       return t("nav.recent");
   }
 });
-const pageCount = computed(() => visibleFiles.value.length);
+const pageCount = computed(() => pageFiles.value.length);
 /** 「最近」列表被截断：只有这时副标题才解释「20 个 / 共 N 个」。 */
 const recentCapped = computed(
   () => isRecent.value && keyword.value.length === 0 && files.value.length > RECENT_LIMIT,
@@ -357,35 +509,74 @@ const currentChildren = computed(() =>
 /** 只有按 sort_order 排列的视图才开放拖拽；「最近」是固定时间序，搜索时 DOM 只是子集。 */
 const canSort = computed(() => !sortingDisabled.value && !isRecent.value);
 
-/** 当前分组内的文件数（与搜索过滤无关）：为 0 时不显示「全部下载」。 */
-const currentGroupCount = computed(() => {
-  if (view.value.kind !== "group" || !view.value.group) return 0;
-  return groupCounts.value.get(view.value.group) ?? 0;
-});
+/** 地址栏查询参数：q = 搜索词，section = 内容区选中的分组段（direct / 分组路径）。 */
+const SEARCH_PARAM = "q";
+const SECTION_PARAM = "section";
+
+/**
+ * 把视图、搜索词与段筛选写进地址栏，链接复制出去就能定位到同一处。
+ *
+ * 换视图用 push 进历史；搜索词与段筛选用 replace：一次输入 / 一次点击不值得各留一条历史，
+ * 但地址栏随时是完整的可分享状态。
+ */
+function syncLocation(mode: "push" | "replace"): void {
+  const params = new URLSearchParams();
+  const search = query.value.trim();
+  if (search) params.set(SEARCH_PARAM, search);
+  // 段筛选只属于分组视图：三级分组没有路由，靠这个参数定位到某一段。
+  if (view.value.kind === "group" && sectionFilter.value !== "all") {
+    params.set(SECTION_PARAM, sectionFilter.value);
+  }
+  const queryString = params.toString();
+  const url = `${viewPath(view.value)}${queryString ? `?${queryString}` : ""}`;
+  if (location.pathname + location.search === url) return;
+  if (mode === "push") history.pushState(null, "", url);
+  else history.replaceState(null, "", url);
+}
 
 /**
  * 切换视图并同步地址栏。点导航用 push（进历史）；回退 / 修正失效链接用 replace
  * （不留下一个打开就跳走的条目）。
+ *
+ * 换视图时重置段筛选与折叠：上一组选中的三级分组不该带到另一个分组里。
+ * 新建三级分组只改筛选、不换视图，所以同一路径的重设要放过去（否则刚选中的段会被清掉）。
  */
 function applyView(next: View, mode: "push" | "replace" = "push"): void {
-  view.value = next;
-  const path = viewPath(next);
-  if (location.pathname === path) return;
-  if (mode === "push") history.pushState(null, "", path);
-  else history.replaceState(null, "", path);
-}
-
-/** 按地址栏还原视图（首次加载与前进 / 后退都走这里）；解不开的路径回退到「最近」。 */
-function syncViewFromLocation(): void {
-  const next = viewFromPath(location.pathname);
-  if (!next) {
-    applyView({ kind: "recent" }, "replace");
-    return;
+  if (viewPath(next) !== viewPath(view.value)) {
+    sectionFilter.value = "all";
+    foldedSections.value = new Set();
   }
   view.value = next;
-  const canonical = viewPath(next);
-  if (location.pathname !== canonical) history.replaceState(null, "", canonical);
+  syncLocation(mode);
 }
+
+/** 按地址栏还原视图、搜索词与段筛选（首次加载与前进 / 后退都走这里）。 */
+function syncViewFromLocation(): void {
+  const next = viewFromPath(location.pathname);
+  const params = new URLSearchParams(location.search);
+  const search = params.get(SEARCH_PARAM) ?? "";
+  const section = params.get(SECTION_PARAM) ?? "";
+  if (!next) {
+    // 路径解不开：回到「最近」，搜索词还能用，段筛选没有归属。
+    if (viewPath(view.value) !== "/") foldedSections.value = new Set();
+    view.value = { kind: "recent" };
+    query.value = search;
+    sectionFilter.value = "all";
+    syncLocation("replace");
+    return;
+  }
+  if (viewPath(next) !== viewPath(view.value)) foldedSections.value = new Set();
+  view.value = next;
+  query.value = search;
+  sectionFilter.value =
+    next.kind === "group" && section && section !== "all" ? section : "all";
+  syncLocation("replace");
+  // 段筛选是否存在要等分组列表就绪后才校验；首次加载时由 refresh 之后的 validateView 兜底。
+  if (loaded.value) validateView();
+}
+
+// 搜索词与段筛选任何来源的改动（输入、点胶囊、删除 / 改名后回退）都立即写回地址栏。
+watch([query, sectionFilter], () => syncLocation("replace"));
 
 function showRecent(): void {
   applyView({ kind: "recent" });
@@ -412,6 +603,17 @@ function validateView(): void {
     applyView({ kind: "recent" }, "replace");
   } else if (current.kind === "ungrouped" && ungroupedCount.value === 0) {
     applyView({ kind: "recent" }, "replace");
+  }
+  // 段筛选指向的分组不在了（被删除 / 改名），或分享链接里的段已经不存在时，回到「全部」。
+  const filter = sectionFilter.value;
+  const validChild =
+    filter !== "all" &&
+    filter !== "direct" &&
+    currentSubgroups.value.some((group) => group.path === filter);
+  if (filter !== "all" && filter !== "direct" && !validChild) {
+    sectionFilter.value = "all";
+  } else if (filter === "direct" && !directSection.value) {
+    sectionFilter.value = "all";
   }
 }
 
@@ -494,6 +696,77 @@ async function applyGroupOrder(parent: string, ordered: string[]): Promise<void>
   }
 }
 
+/* ---------- 内容区分段拖拽排序（子分组顺序） ---------- */
+
+/**
+ * 分段顺序就是子分组的 sort_order：拖段头调整，落定后提交服务端。
+ *
+ * 「直属文件」段不是分组，固定在最上面：用 onMove 拦住别的段越过它。
+ * 搜索 / 按段筛选时有些段不在 DOM 里，这时禁用拖动，免得把看不见的段顺序挤乱。
+ * 一级视图的段是二级分组、二级视图的段是三级分组，两层都是同一个父级下的兄弟分组。
+ */
+const sectionOrderEnabled = computed(
+  () =>
+    !keyword.value &&
+    sectionFilter.value === "all" &&
+    groupSections.value.filter((section) => section.group).length > 1,
+);
+
+let sectionOrderSortable: Sortable | null = null;
+/** 段拖拽结束后的短暂刻度：用来吞掉松手时补发的 click。 */
+let sectionClickGuardUntil = 0;
+
+function createSectionOrderSortable(el: HTMLElement): Sortable {
+  const instance = Sortable.create(el, {
+    animation: 150,
+    forceFallback: true,
+    fallbackOnBody: true,
+    fallbackTolerance: 2,
+    draggable: "[data-group-name]",
+    // 只有段头能起拖：段体里是文件行，它有自己的拖拽与排序。
+    handle: ".section-head",
+    // 段头右侧的下载 / 菜单按钮不参与拖拽。
+    filter: ".section-action",
+    preventOnFilter: false,
+    ghostClass: "group-drag-ghost",
+    chosenClass: "group-drag-chosen",
+    delay: 120,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 4,
+    onMove: (event) => !(event.related as HTMLElement).matches("[data-section-fixed]"),
+    onEnd: () => {
+      sectionClickGuardUntil = Date.now() + 250;
+      if (!sectionOrderEnabled.value) return;
+      const current = view.value;
+      if (current.kind !== "group") return;
+      const ordered = Array.from(el.querySelectorAll<HTMLElement>("[data-group-name]"))
+        .map((node) => node.dataset.groupName ?? "")
+        .filter((name) => name !== "");
+      const children = childrenOf(current.group);
+      if (ordered.length !== children.length) return;
+      if (ordered.join("\n") === children.map((group) => group.name).join("\n")) return;
+      void applyGroupOrder(current.group, ordered);
+    },
+  });
+  instance.option("disabled", !sectionOrderEnabled.value);
+  return instance;
+}
+
+/** v-if 的 ref 回调：分段容器挂上 / 卸载时创建 / 销毁排序实例。 */
+function setSectionOrderContainer(el: unknown): void {
+  if (!(el instanceof HTMLElement)) {
+    sectionOrderSortable?.destroy();
+    sectionOrderSortable = null;
+    return;
+  }
+  if (!sectionOrderSortable) sectionOrderSortable = createSectionOrderSortable(el);
+}
+
+// 搜索或按段筛选时不具备完整段集合，随时开关拖动。
+watch(sectionOrderEnabled, (enabled) => {
+  sectionOrderSortable?.option("disabled", !enabled);
+});
+
 /* ---------- 列表数据与操作 ---------- */
 
 function isUnauthorized(error: unknown): boolean {
@@ -560,13 +833,10 @@ async function onDownload(file: FileItem): Promise<void> {
 }
 
 /**
- * 分组「全部下载」：按当前分组顺序逐个签下载地址并触发下载，每个文件是独立的一次下载。
- * 浏览器可能询问「是否允许下载多个文件」，允许后即可一次保存整组。
+ * 逐个签下载地址并触发下载，每个文件是独立的一次下载。
+ * 浏览器可能询问「是否允许下载多个文件」，允许后即可一次保存整批。
  */
-async function onDownloadGroup(): Promise<void> {
-  if (view.value.kind !== "group") return;
-  const groupName = view.value.group;
-  const targets = sortedFiles.value.filter((file) => file.group_path === groupName);
+async function onDownloadFiles(targets: FileItem[]): Promise<void> {
   if (!targets.length) return;
   try {
     for (const file of targets) {
@@ -575,6 +845,12 @@ async function onDownloadGroup(): Promise<void> {
   } catch (error) {
     showActionError(error);
   }
+}
+
+/** 分组「全部下载」：下载当前视图里看得见的文件（含三级分组段筛选 / 搜索的结果）。 */
+async function onDownloadGroup(): Promise<void> {
+  if (view.value.kind !== "group") return;
+  await onDownloadFiles(pageFiles.value);
 }
 
 /* ---------- 输入 / 确认对话框 ---------- */
@@ -663,7 +939,7 @@ async function onPromptConfirm(value: string): Promise<void> {
       try {
         const created = await createGroup(value);
         await refresh();
-        applyView({ kind: "group", group: created.path });
+        openCreatedGroup(created.path);
       } catch (error) {
         showActionError(error);
       }
@@ -677,6 +953,11 @@ async function onPromptConfirm(value: string): Promise<void> {
       try {
         await renameGroup(state.path, value);
         renameFoldedGroup(state.path, nextPath);
+        const filter = sectionFilter.value;
+        if (filter === state.path) sectionFilter.value = nextPath;
+        else if (filter.startsWith(`${state.path}/`)) {
+          sectionFilter.value = nextPath + filter.slice(state.path.length);
+        }
         const current = view.value;
         if (
           current.kind === "group" &&
@@ -695,7 +976,7 @@ async function onPromptConfirm(value: string): Promise<void> {
       try {
         const created = await createGroup(`${state.parent}/${value}`);
         await refresh();
-        applyView({ kind: "group", group: created.path });
+        openCreatedGroup(created.path);
       } catch (error) {
         showActionError(error);
       }
@@ -730,12 +1011,35 @@ async function confirmDeleteFile(): Promise<void> {
   }
 }
 
-/** 当前分组视图内的上传目标；在其它视图上传仍然等同于未分组。 */
+/**
+ * 上传目标：选中某个三级分组段时传到它，否则传到当前分组本身（其它视图等同于未分组）。
+ * 和侧栏 / 段筛选保持一致，用户不用再选一次目标。
+ */
 const currentUploadGroup = computed(() => {
-  return view.value.kind === "group" ? view.value.group : "";
+  if (view.value.kind !== "group") return "";
+  const filter = sectionFilter.value;
+  if (filter !== "all" && filter !== "direct") return filter;
+  return view.value.group;
 });
 
-/** 手动新建空分组：输入 "父/子" 建二级分组；创建后直接进入该分组，方便马上往里传文件。 */
+/** 选中三级分组段时，标题下注明上传会落到哪一组。 */
+const uploadTargetName = computed(() => {
+  const filter = sectionFilter.value;
+  if (view.value.kind !== "group" || filter === "all" || filter === "direct") return "";
+  return groups.value.find((group) => group.path === filter)?.name ?? "";
+});
+
+/** 新建分组后落到哪：二级及以内直接进视图；三级分组没有路由，进父分组并选中它那一段。 */
+function openCreatedGroup(path: string): void {
+  if (groupDepth(path) < MAX_GROUP_DEPTH) {
+    applyView({ kind: "group", group: path });
+    return;
+  }
+  applyView({ kind: "group", group: parentPathOf(path) });
+  sectionFilter.value = path;
+}
+
+/** 手动新建空分组：输入 "父/子" 建二级分组，也可以 "父/子/孙" 一次建到三级。 */
 function onCreateGroup(): void {
   promptState.value = { kind: "new-group" };
 }
@@ -785,6 +1089,12 @@ function openGroupMenuFromButton(event: MouseEvent): void {
   openGroupMenuAt(rect.left, rect.bottom + 6, group);
 }
 
+/** 三级分组段头旁的「⋯」：锚在按钮左下角，触摸屏没有右键时用它。 */
+function openGroupMenuFromSection(event: MouseEvent, group: GroupItem): void {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  openGroupMenuAt(rect.left - GROUP_MENU_WIDTH + 36, rect.bottom + 6, group);
+}
+
 function closeGroupMenu(): void {
   groupMenu.value = null;
 }
@@ -807,6 +1117,13 @@ function onCreateSubgroup(): void {
   closeGroupMenu();
   if (!parent) return;
   promptState.value = { kind: "new-subgroup", parent: parent.path };
+}
+
+/** 段胶囊行末尾的「+」：直接在当前分组下新建三级分组。 */
+function onCreateChildGroup(): void {
+  const current = view.value;
+  if (current.kind !== "group") return;
+  promptState.value = { kind: "new-subgroup", parent: current.group };
 }
 
 /** 分组（含子分组）里的文件数：删除确认框据此说明影响范围。 */
@@ -848,6 +1165,9 @@ async function confirmDeleteGroup(deleteFiles: boolean): Promise<void> {
   try {
     await deleteGroup(target.path, deleteFiles);
     forgetFoldedGroup(target.path);
+    const filter = sectionFilter.value;
+    if (filter === target.path || filter.startsWith(`${target.path}/`)) sectionFilter.value = "all";
+    foldedSections.value = new Set();
     // 视图停在被删分组（或它的子分组）里时，先回退到上级，避免刷新后闪一下「最近」。
     const current = view.value;
     if (current.kind === "group" && (current.group === target.path || current.group.startsWith(`${target.path}/`))) {
@@ -1094,7 +1414,7 @@ onBeforeUnmount(() => {
             >
               <span class="nav-icon" v-html="ICONS.folder"></span>
               <span class="nav-label">{{ group.name }}</span>
-              <span class="nav-count">{{ groupCounts.get(group.path) ?? 0 }}</span>
+              <span class="nav-count">{{ groupSubtreeCounts.get(group.path) ?? 0 }}</span>
             </button>
             <!-- 过滤时子分组自动展开，箭头没有意义，直接隐藏 -->
             <button
@@ -1136,7 +1456,7 @@ onBeforeUnmount(() => {
             >
               <span class="nav-icon" v-html="ICONS.folder"></span>
               <span class="nav-label">{{ child.name }}</span>
-              <span class="nav-count">{{ groupCounts.get(child.path) ?? 0 }}</span>
+              <span class="nav-count">{{ groupSubtreeCounts.get(child.path) ?? 0 }}</span>
             </button>
           </div>
         </div>
@@ -1251,12 +1571,15 @@ onBeforeUnmount(() => {
                 ? t("nav.recent-count", { shown: pageCount, total: files.length })
                 : t("nav.file-count", { count: pageCount })
             }}
+            <span v-if="uploadTargetName" class="page-sub-target">
+              · {{ t("group.upload-target", { name: uploadTargetName }) }}
+            </span>
           </p>
         </div>
         <div class="page-actions">
           <!-- 只看单个分组时提供「全部下载」；「最近 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
           <button
-            v-if="isGroupView && currentGroupCount > 0"
+            v-if="isGroupView && pageCount > 0"
             type="button"
             class="group-download"
             :title="t('action.download-group')"
@@ -1408,14 +1731,153 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <!-- 三级分组筛选：只做内容区的分段切换，不进导航、不产生路由 -->
+      <div
+        v-if="isGroupedView"
+        class="group-filters"
+        role="tablist"
+        :aria-label="t('nav.groups')"
+      >
+        <button
+          type="button"
+          class="filter-chip"
+          role="tab"
+          :class="{ on: effectiveSectionFilter === 'all' }"
+          :aria-selected="effectiveSectionFilter === 'all'"
+          @click="selectSectionFilter('all')"
+        >
+          {{ t("group.all") }}
+          <span class="filter-count">{{ currentGroupFiles.length }}</span>
+        </button>
+        <button
+          v-if="directSection"
+          type="button"
+          class="filter-chip"
+          role="tab"
+          :class="{ on: effectiveSectionFilter === 'direct' }"
+          :aria-selected="effectiveSectionFilter === 'direct'"
+          @click="selectSectionFilter('direct')"
+        >
+          {{ t("group.direct-files") }}
+          <span class="filter-count">{{ directSection.files.length }}</span>
+        </button>
+        <button
+          v-for="child in currentSubgroups"
+          :key="child.path"
+          type="button"
+          class="filter-chip"
+          role="tab"
+          :class="{ on: effectiveSectionFilter === child.path, 'is-drop-target': groupDropTarget === child.path }"
+          :aria-selected="effectiveSectionFilter === child.path"
+          @click="selectSectionFilter(child.path)"
+          @contextmenu="openGroupMenu($event, child)"
+          @dragenter.stop="onGroupDragEnter($event, child.path)"
+          @dragover.stop="onGroupDragOver($event, child.path)"
+          @dragleave.stop="onGroupDragLeave($event, child.path)"
+          @drop.stop="onGroupDrop($event, child.path)"
+        >
+          {{ child.name }}
+          <span class="filter-count">{{ groupSubtreeCounts.get(child.path) ?? 0 }}</span>
+        </button>
+        <button
+          type="button"
+          class="filter-chip filter-new"
+          :title="t('action.create-subgroup')"
+          :aria-label="t('action.create-subgroup')"
+          @click="onCreateChildGroup"
+        >
+          <span class="filter-plus" v-html="ICONS.plus"></span>
+        </button>
+      </div>
+
       <section class="content">
         <div v-if="loadError || actionError" class="banners">
           <p v-if="loadError" class="banner" role="alert">{{ loadError }}</p>
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
+        <!-- 有子分组的分组视图：内容区按子分组分段（二级视图里就是三级分组） -->
+        <div
+          v-if="isGroupedView && (pageFiles.length || !keyword.trim())"
+          :ref="setSectionOrderContainer"
+          class="group-sections"
+        >
+          <section
+            v-for="section in visibleGroupSections"
+            :key="section.key"
+            class="group-section"
+            :data-group-name="section.group?.name"
+            :data-section-fixed="section.group ? undefined : ''"
+          >
+            <div
+              class="section-head"
+              :class="{ 'is-drop-target': groupDropTarget === sectionDropPath(section) }"
+              @click="toggleSectionFold(section.key)"
+              @contextmenu="openSectionMenu($event, section)"
+              @dragenter.stop="onGroupDragEnter($event, sectionDropPath(section))"
+              @dragover.stop="onGroupDragOver($event, sectionDropPath(section))"
+              @dragleave.stop="onGroupDragLeave($event, sectionDropPath(section))"
+              @drop.stop="onGroupDrop($event, sectionDropPath(section))"
+            >
+              <span
+                class="section-fold"
+                :class="{ folded: isSectionFolded(section.key) }"
+                v-html="ICONS.chevron"
+              ></span>
+              <span
+                class="section-icon"
+                :class="{ muted: !section.group }"
+                v-html="section.group ? ICONS.folder : ICONS.inbox"
+              ></span>
+              <span class="section-name">{{ section.title }}</span>
+              <span class="section-count">{{ section.files.length }}</span>
+              <span class="section-actions" @click.stop>
+                <button
+                  v-if="section.files.length"
+                  type="button"
+                  class="section-action"
+                  :title="t('action.download-group')"
+                  :aria-label="t('action.download-group')"
+                  v-html="ICONS.download"
+                  @click="onDownloadFiles(section.files)"
+                ></button>
+                <button
+                  v-if="section.group"
+                  type="button"
+                  class="section-action"
+                  :title="t('action.group-menu')"
+                  :aria-label="t('action.group-menu')"
+                  aria-haspopup="menu"
+                  v-html="ICONS.more"
+                  @click="openGroupMenuFromSection($event, section.group)"
+                ></button>
+              </span>
+            </div>
+            <div v-if="!isSectionFolded(section.key)" class="section-body">
+              <FileList
+                v-if="section.files.length"
+                :files="section.files"
+                :groups="groups"
+                :sortable="sectionSortable"
+                :show-group="sectionShowGroup"
+                @favorite="onFavorite"
+                @download="onDownload"
+                @rename="onRename"
+                @error="showActionError"
+                @delete="onDelete"
+                @move-group="onMoveGroup"
+                @new-group="onNewGroupForFile"
+                @reorder="onReorder"
+                @drag-start="startFileDrag"
+                @drag-end="endFileDrag"
+              />
+              <p v-else class="section-empty">{{ t("group.empty-child") }}</p>
+            </div>
+          </section>
+        </div>
+
         <!-- 最近视图按上传时间倒序、按本地日期分段；其余视图按 sort_order 平铺成一张卡片 -->
-        <div v-if="visibleFiles.length" class="file-sections">
+        <div v-else-if="!isGroupedView && visibleFiles.length" class="file-sections">
           <section v-for="section in visibleSections" :key="section.key" class="file-section">
             <h2 v-if="section.title" class="file-section-title">{{ section.title }}</h2>
             <FileList
@@ -1475,7 +1937,13 @@ onBeforeUnmount(() => {
           <span class="row-menu-icon" v-html="ICONS.pencil"></span>
           <span class="row-menu-label">{{ t("action.rename-group") }}</span>
         </button>
-        <button type="button" class="row-menu-item" role="menuitem" @click="onCreateSubgroup">
+        <button
+          v-if="canCreateSubgroup(groupMenu.path)"
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          @click="onCreateSubgroup"
+        >
           <span class="row-menu-icon" v-html="ICONS.folder"></span>
           <span class="row-menu-label">{{ t("action.create-subgroup") }}</span>
         </button>
@@ -2271,6 +2739,243 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 
+/* 标题下补一句上传目标：选中三级分组段时上传落到它，免得传错组 */
+.page-sub-target {
+  color: var(--ink-2);
+}
+
+/* ================= 三级分组筛选（内容区） ================= */
+/* 三级分组只是分组：这条筛选只切换内容区的分段，不进地址栏、也不进侧栏 */
+.group-filters {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 34px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.group-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.filter-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.filter-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.filter-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.filter-count {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-chip.on .filter-count {
+  color: var(--accent-strong);
+}
+
+/* 文件拖到三级分组胶囊上 = 移动到该分组 */
+.filter-chip.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+}
+
+.filter-chip.filter-new {
+  padding: 6px 9px;
+  border-style: dashed;
+  color: var(--ink-3);
+}
+
+.filter-chip.filter-new:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.filter-plus {
+  display: inline-flex;
+}
+
+.filter-plus :deep(svg) {
+  width: 13px;
+  height: 13px;
+}
+
+/* ================= 内容区：按三级分组分段 ================= */
+.group-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.group-section {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, #fbfbff, #f7f8fc);
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-head:hover {
+  background: #f4f5fd;
+}
+
+/* 正在拖动的段：段头高亮，和侧栏分组拖拽保持同一套视觉 */
+.group-section.group-drag-chosen .section-head {
+  background: var(--accent-soft);
+}
+
+/* 文件拖到段头上 = 移动到这一段的分组 */
+.section-head.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  background: var(--accent-soft);
+}
+
+/* ICONS.chevron 本来就是朝下的：展开不转，折叠时转到朝右 */
+.section-fold {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--ink-3);
+  transition: transform 0.15s;
+}
+
+.section-fold.folded {
+  transform: rotate(-90deg);
+}
+
+.section-fold :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.section-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ink-3);
+}
+
+.section-icon.muted {
+  opacity: 0.75;
+}
+
+.section-icon :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.section-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-count {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgb(20 23 44 / 0.05);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.section-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.section-action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--ink-3);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.section-action:hover {
+  background: rgb(22 25 38 / 0.06);
+  color: var(--ink);
+}
+
+.section-action :deep(svg) {
+  width: 15px;
+  height: 15px;
+}
+
+/* 段内沿用 FileList 的卡片，但段头已经是一层卡片边：内层不再重复边框与阴影 */
+.section-body {
+  padding: 6px 10px 10px;
+}
+
+.section-body :deep(.list-card) {
+  border: 0;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+/* 段拖拽的 fallback 克隆体：只留段头，很长的段也不会拖出一堵墙。
+   克隆挂在 body 上但复制了 scope 属性，所以这条 scoped 选择器仍然命中。 */
+.sortable-fallback .section-body {
+  display: none;
+}
+
+.section-empty {
+  padding: 8px 10px 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
 /* 「最近」视图按日期分段：每段一个标题 + 一张卡片，段与段之间留出呼吸空间 */
 .file-sections {
   display: flex;
@@ -2655,6 +3360,18 @@ onBeforeUnmount(() => {
 
   .content {
     padding: 12px 12px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .group-filters {
+    padding: 10px 16px 0;
+  }
+
+  .group-section {
+    border-radius: 16px;
+  }
+
+  .section-head {
+    padding: 9px 10px;
   }
 
   .empty {

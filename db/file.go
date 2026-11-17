@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strings"
 
 	"file-share/core"
 )
@@ -316,7 +317,7 @@ func (s *Store) CreateGroup(path string) (*Group, error) {
 }
 
 // RenameGroup 只改写分组的最后一段名字，父路径与同级 sort_order 不变；
-// 顶级分组的子分组与组内文件的路径一起跟着改。返回受影响的文件条数。
+// 它下面的全部后代分组（子分组、孙分组）与组内文件的路径一起跟着改。返回受影响的文件条数。
 //
 // 源分组不存在返回 ErrNotFound；目标路径已存在返回 ErrGroupExists（不做隐式合并）。
 func (s *Store) RenameGroup(path, newName string) (int64, error) {
@@ -350,49 +351,21 @@ func (s *Store) RenameGroup(path, newName string) (int64, error) {
 		}
 	}
 
+	// 一次性取回自己与全部后代：先记下旧路径，再统一换算成新路径，避免边改边查。
+	affected, err := groupPathsInSubtree(tx, path)
+	if err != nil {
+		return 0, err
+	}
+
 	changed := int64(0)
-	// 先改自身，再改子分组：子分组的上限是一层，逐个改路径与父路径。
-	if _, err := tx.Exec("UPDATE groups SET path = ?, name = ? WHERE path = ?", newPath, newName, path); err != nil {
-		return 0, err
-	}
-	rows, err := tx.Query("SELECT name FROM groups WHERE parent = ?", path)
-	if err != nil {
-		return 0, err
-	}
-	var children []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
+	for _, oldPath := range affected {
+		target := newPath + strings.TrimPrefix(oldPath, path)
+		newParent, _ := core.SplitGroupPath(target)
+		if _, err := tx.Exec("UPDATE groups SET path = ?, parent = ? WHERE path = ?",
+			target, newParent, oldPath); err != nil {
 			return 0, err
 		}
-		children = append(children, name)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	rows.Close()
-
-	for _, name := range children {
-		if _, err := tx.Exec("UPDATE groups SET path = ?, parent = ? WHERE parent = ? AND name = ?",
-			newPath+"/"+name, newPath, path, name); err != nil {
-			return 0, err
-		}
-	}
-
-	// 文件跟着路径走：先改直属，再逐个改子分组的。
-	result, err := tx.Exec("UPDATE file SET group_path = ? WHERE group_path = ?", newPath, path)
-	if err != nil {
-		return 0, err
-	}
-	changed, err = result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	for _, name := range children {
-		result, err := tx.Exec("UPDATE file SET group_path = ? WHERE group_path = ?",
-			newPath+"/"+name, path+"/"+name)
+		result, err := tx.Exec("UPDATE file SET group_path = ? WHERE group_path = ?", target, oldPath)
 		if err != nil {
 			return 0, err
 		}
@@ -401,6 +374,10 @@ func (s *Store) RenameGroup(path, newName string) (int64, error) {
 			return 0, err
 		}
 		changed += moved
+	}
+	// 最后改自己的名字（后代的路径已经全部换成新前缀，这里只动 name 一段）。
+	if _, err := tx.Exec("UPDATE groups SET name = ? WHERE path = ?", newName, newPath); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -429,25 +406,11 @@ func (s *Store) DeleteGroup(path string, deleteFiles bool) ([]string, error) {
 		return nil, ErrNotFound
 	}
 
-	// 受影响的路径：分组自己 + 它下面的子分组（最多一层）。
-	targets := []string{path}
-	rows, err := tx.Query("SELECT path FROM groups WHERE parent = ?", path)
+	// 受影响的路径：分组自己 + 它下面的全部后代分组（最多两级后代）。
+	targets, err := groupPathsInSubtree(tx, path)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var child string
-		if err := rows.Scan(&child); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		targets = append(targets, child)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
 
 	shas := []string{}
 	if deleteFiles {
@@ -575,6 +538,29 @@ func (s *Store) SetGroupOrder(parent string, names []string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// groupPathsInSubtree 返回某个分组自己及其全部后代的路径。
+//
+// 顶层分组最多能带两级后代，所以不能只查 "parent = ?"（那只认一层）；
+// 分组表很小，直接全表按路径前缀筛，既不用递归查询，也避开 LIKE 里 % / _ 需要转义的坑。
+func groupPathsInSubtree(tx *sql.Tx, prefix string) ([]string, error) {
+	rows, err := tx.Query("SELECT path FROM groups ORDER BY path")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	paths := []string{}
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			paths = append(paths, path)
+		}
+	}
+	return paths, rows.Err()
 }
 
 // scanGroup 读一行分组。

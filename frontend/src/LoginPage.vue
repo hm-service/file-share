@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * 登录页（/auth）：输入访问令牌换会话。
- * 401 显示 auth.error，网络层失败显示 error.network；成功后写 localStorage 再回主页面。
+ * 401 显示 auth.error，网络层失败显示 error.network；成功后写 localStorage，
+ * 回到进入登录页前的位置（?next= 带你打开的那个深链接，比如带搜索词 / 分组段的地址）。
  *
  * 桌面端是「左侧品牌介绍 + 右侧登录卡」的分栏，窄屏收成品牌条 + 登录卡。
  */
@@ -17,6 +18,13 @@ const token = ref("");
 const submitting = ref(false);
 const error = ref("");
 
+/** 登录成功后回哪里：只接受站内路径，避免被 ?next= 带到别的站点。 */
+function afterLoginURL(): string {
+  const next = new URLSearchParams(location.search).get("next") ?? "";
+  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/auth")) return "/";
+  return next;
+}
+
 async function submit(): Promise<void> {
   if (submitting.value) return;
   const value = token.value.trim();
@@ -29,7 +37,7 @@ async function submit(): Promise<void> {
   try {
     const session = await login(value);
     saveSession({ token: session.token, expires_at: session.expires_at });
-    location.href = "/";
+    location.href = afterLoginURL();
   } catch (cause) {
     // 401 = 令牌不对；status 0 = 网络层失败；其余（400 之类）也按登录失败处理
     if (cause instanceof ApiError && cause.status === 0) error.value = t("error.network");

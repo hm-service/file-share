@@ -233,7 +233,7 @@ export function reorderGroups(parent: string, names: string[]): Promise<void> {
   });
 }
 
-/** POST /api/groups：手动新建一个空分组（"父/子" 表示二级分组），成功返回规范化后的路径。 */
+/** POST /api/groups：手动新建一个空分组（"父/子/孙" 表示三层），成功返回规范化后的路径。 */
 export function createGroup(path: string): Promise<{ path: string }> {
   return request<{ path: string }>("/api/groups", {
     method: "POST",
@@ -243,7 +243,7 @@ export function createGroup(path: string): Promise<{ path: string }> {
 }
 
 /**
- * POST /api/groups/delete：删除分组，子分组一并删除（成功 204）。
+ * POST /api/groups/delete：删除分组，各级后代分组一并删除（成功 204）。
  * deleteFiles 为 true 时组内文件一起删掉，否则上移到上级分组 / 未分组。
  */
 export function deleteGroup(path: string, deleteFiles: boolean): Promise<void> {

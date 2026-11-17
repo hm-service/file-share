@@ -41,7 +41,7 @@ const emit = defineEmits<{
   "new-group": [];
 }>();
 
-/** 顶级分组，以及某个分组下的子分组：菜单按两级缩进展示。 */
+/** 顶级分组、子分组与孙分组：菜单按层级缩进展示（一级 / 二级 / 三级分组）。 */
 const topGroups = computed(() => props.groups.filter((group) => group.parent === ""));
 function childrenOf(path: string): GroupItem[] {
   return props.groups.filter((group) => group.parent === path);
@@ -425,7 +425,7 @@ onBeforeUnmount(() => {
     </div>
 
     <Teleport to="body">
-      <!-- 移动到分组：两级缩进，分组多时整张菜单滚动 -->
+      <!-- 移动到分组：按层级缩进（三级分组缩进两层），分组多时整张菜单滚动 -->
       <div
         v-if="openMenu === 'group'"
         ref="menuEl"
@@ -462,21 +462,36 @@ onBeforeUnmount(() => {
             <span class="row-menu-icon" v-html="ICONS.folder"></span>
             <span class="row-menu-label">{{ group.name }}</span>
           </button>
-          <button
-            v-for="child in childrenOf(group.path)"
-            :key="child.path"
-            type="button"
-            class="row-menu-item is-child"
-            role="menuitemradio"
-            :aria-checked="file.group_path === child.path"
-            @click="chooseGroup(child.path)"
-          >
-            <span class="row-menu-check">
-              <span v-if="file.group_path === child.path" v-html="ICONS.check"></span>
-            </span>
-            <span class="row-menu-icon" v-html="ICONS.folder"></span>
-            <span class="row-menu-label">{{ child.name }}</span>
-          </button>
+          <template v-for="child in childrenOf(group.path)" :key="child.path">
+            <button
+              type="button"
+              class="row-menu-item is-child"
+              role="menuitemradio"
+              :aria-checked="file.group_path === child.path"
+              @click="chooseGroup(child.path)"
+            >
+              <span class="row-menu-check">
+                <span v-if="file.group_path === child.path" v-html="ICONS.check"></span>
+              </span>
+              <span class="row-menu-icon" v-html="ICONS.folder"></span>
+              <span class="row-menu-label">{{ child.name }}</span>
+            </button>
+            <button
+              v-for="grandchild in childrenOf(child.path)"
+              :key="grandchild.path"
+              type="button"
+              class="row-menu-item is-child is-grandchild"
+              role="menuitemradio"
+              :aria-checked="file.group_path === grandchild.path"
+              @click="chooseGroup(grandchild.path)"
+            >
+              <span class="row-menu-check">
+                <span v-if="file.group_path === grandchild.path" v-html="ICONS.check"></span>
+              </span>
+              <span class="row-menu-icon" v-html="ICONS.folder"></span>
+              <span class="row-menu-label">{{ grandchild.name }}</span>
+            </button>
+          </template>
         </template>
 
         <div class="row-menu-sep" role="separator"></div>
