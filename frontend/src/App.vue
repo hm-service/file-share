@@ -1237,24 +1237,31 @@ function isDraggedFileInGroup(path: string): boolean {
   return files.value.find((file) => file.id === fileId)?.group_path === path;
 }
 
+/**
+ * 分组落点（段卡片、侧栏分组、分组胶囊）：内部文件拖过去是「移入这一组」，
+ * 外部文件拖过去是「上传到这一组」，两者都点亮落点。
+ */
 function onGroupDragEnter(event: DragEvent, groupName: string): void {
-  if (draggingFileId.value === null) return; // 外部文件交给整页拖放
+  const internal = isInternalDrag();
+  if (!internal && !hasFiles(event)) return;
   event.preventDefault();
-  event.stopPropagation();
-  groupDropTarget.value = isDraggedFileInGroup(groupName) ? null : groupName;
+  // 外部文件的 dragenter 继续冒泡，让整页拖放的遮罩亮起来
+  if (internal) event.stopPropagation();
+  groupDropTarget.value = internal && isDraggedFileInGroup(groupName) ? null : groupName;
 }
 
 function onGroupDragOver(event: DragEvent, groupName: string): void {
-  if (draggingFileId.value === null) return;
+  const internal = isInternalDrag();
+  if (!internal && !hasFiles(event)) return;
   event.preventDefault();
   event.stopPropagation();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  groupDropTarget.value = isDraggedFileInGroup(groupName) ? null : groupName;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = internal ? "move" : "copy";
+  groupDropTarget.value = internal && isDraggedFileInGroup(groupName) ? null : groupName;
 }
 
 function onGroupDragLeave(event: DragEvent, groupName: string): void {
-  if (draggingFileId.value === null) return;
-  event.stopPropagation();
+  if (!isInternalDrag() && !hasFiles(event)) return;
+  if (isInternalDrag()) event.stopPropagation();
   const current = event.currentTarget as HTMLElement;
   if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
   if (groupDropTarget.value === groupName) groupDropTarget.value = null;
@@ -1275,9 +1282,17 @@ async function moveDraggedFileTo(groupPath: string): Promise<void> {
   }
 }
 
-/** 松手即改分组：段卡片（整组范围）与分组胶囊都走这里。 */
+/** 松手：内部文件移入该组；外部文件上传到该组（空串 = 未分组 / 直属文件段）。 */
 async function onGroupDrop(event: DragEvent, groupPath: string): Promise<void> {
-  if (draggingFileId.value === null) return; // 外部文件交给整页拖放上传
+  if (!isInternalDrag()) {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const dropped = event.dataTransfer?.files;
+    resetDropState();
+    uploadDock.value?.addFiles(dropped, groupPath);
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   await moveDraggedFileTo(groupPath);
@@ -1321,18 +1336,24 @@ function pickFiles(): void {
 
 /* ---------- 整页拖放 ---------- */
 
-const dropDepth = ref(0);
-const dropActive = computed(() => dropDepth.value > 0);
+/** 外部文件拖进页面时显示遮罩；进入/离开用布尔状态，不用计数（子元素会重复触发 dragenter）。 */
+const dropActive = ref(false);
 
 function hasFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+/** 清掉整页拖放的遮罩与分组落点高亮。 */
+function resetDropState(): void {
+  dropActive.value = false;
+  groupDropTarget.value = null;
 }
 
 function onDragEnter(event: DragEvent): void {
   if (isInternalDrag()) return;
   if (!hasFiles(event)) return;
   event.preventDefault();
-  dropDepth.value += 1;
+  dropActive.value = true;
 }
 
 function onDragOver(event: DragEvent): void {
@@ -1348,13 +1369,16 @@ function onDragOver(event: DragEvent): void {
   if (!hasFiles(event)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  // 落在没有自己落点的区域（内容区空白）：只保留全局遮罩
+  groupDropTarget.value = null;
 }
 
 function onDragLeave(event: DragEvent): void {
+  if (isInternalDrag()) return;
   // 子元素之间移动会冒泡 dragleave，只有真正离开 main 才收起遮罩
   const current = event.currentTarget as HTMLElement;
   if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
-  if (dropDepth.value > 0) dropDepth.value -= 1;
+  resetDropState();
 }
 
 function onDrop(event: DragEvent): void {
@@ -1364,13 +1388,19 @@ function onDrop(event: DragEvent): void {
     if (current.kind === "group") void moveDraggedFileTo(current.group);
     return;
   }
-  dropDepth.value = 0;
-  uploadDock.value?.addFiles(event.dataTransfer?.files);
+  if (!hasFiles(event)) return;
+  const dropped = event.dataTransfer?.files;
+  const target = currentUploadGroup.value;
+  resetDropState();
+  uploadDock.value?.addFiles(dropped, target);
 }
 
 /** 拖到页面任何地方都吞掉默认行为，免得浏览器直接打开文件、把页面顶掉。 */
 function swallowDrop(event: DragEvent): void {
-  if (hasFiles(event)) event.preventDefault();
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  // 落在没有接收方的区域（侧栏空白等）也要收起遮罩
+  if (event.type === "drop") resetDropState();
 }
 
 onMounted(() => {

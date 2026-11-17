@@ -77,8 +77,9 @@ function queueId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-/** 入队；用户可以边传边继续加文件（整页拖放也走这里）。 */
-function addFiles(files: FileList | File[] | null | undefined): void {
+/** 入队；用户可以边传边继续加文件（整页拖放也走这里）。
+ * group 覆盖本次上传目标（外部文件拖到某个分组落点时），省略则传到当前上传目标。 */
+function addFiles(files: FileList | File[] | null | undefined, group?: string): void {
   const list = Array.from(files ?? []);
   if (!list.length) return;
   for (const file of list) {
@@ -93,7 +94,7 @@ function addFiles(files: FileList | File[] | null | undefined): void {
       loaded: 0,
       speed: 0,
       startedAt: 0,
-      group: props.targetGroup ?? "",
+      group: group ?? props.targetGroup ?? "",
       error: "",
       controller: null,
     });
