@@ -2,18 +2,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-    name: env
+    name: file-share-env
 data:
+    # 应用默认只监听 127.0.0.1，容器里必须显式放开（其余变量都有应用默认值，不重复写）
     HOST: "0.0.0.0"
-    PORT: "8080"
-    TZ: "Asia/Shanghai"
-    DATA_DIR: "/data"
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
-    MAX_API_CONCURRENCY: 128
-    MAX_AUTH_CONCURRENCY: 32
-    MAX_STATIC_CONCURRENCY: 64
-    MAX_FILE_SIZE: "2GiB"
-    GOMEMLIMIT: "128MiB"
 
 ---
 apiVersion: v1
@@ -64,7 +57,7 @@ spec:
 
           envFrom:
               - configMapRef:
-                    name: env
+                    name: file-share-env
               - secretRef:
                     name: secrets
           ports:
