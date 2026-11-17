@@ -4,7 +4,7 @@
 FROM --platform=$BUILDPLATFORM node:26.13.0-alpine AS frontend
 
 # 版本在模板生成时注入
-RUN npm install -g pnpm@12.16.1
+RUN npm install -g pnpm@12.21.0
 
 WORKDIR /build/frontend
 
@@ -17,7 +17,7 @@ RUN pnpm build
 # ==========================================
 # 第二阶段：构建 Go 二进制
 # ==========================================
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
