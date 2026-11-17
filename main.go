@@ -254,12 +254,12 @@ func checkTimezone() error {
 	return nil
 }
 
-// readHost 读 HOST：没设就用 127.0.0.1，设了就必须是 IP 或合法的 RFC 1123 主机名 ——
+// readHost 读 HOST：没设就用 0.0.0.0，设了就必须是 IP 或合法的 RFC 1123 主机名 ——
 // 带空格、斜杠的值会让 net.JoinHostPort 拼成另一个地址，宁可在启动时拦下。
 func readHost() (string, error) {
 	host := os.Getenv("HOST")
 	if host == "" {
-		return "127.0.0.1", nil
+		return "0.0.0.0", nil
 	}
 	if net.ParseIP(host) == nil && !validHostname(host) {
 		return "", fmt.Errorf("HOST must be an IP address or a valid hostname, got %q", host)
