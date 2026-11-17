@@ -1238,19 +1238,23 @@ function isDraggedFileInGroup(path: string): boolean {
 }
 
 function onGroupDragEnter(event: DragEvent, groupName: string): void {
-  if (draggingFileId.value === null) return;
+  if (draggingFileId.value === null) return; // 外部文件交给整页拖放
   event.preventDefault();
+  event.stopPropagation();
   groupDropTarget.value = isDraggedFileInGroup(groupName) ? null : groupName;
 }
 
 function onGroupDragOver(event: DragEvent, groupName: string): void {
   if (draggingFileId.value === null) return;
   event.preventDefault();
+  event.stopPropagation();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   groupDropTarget.value = isDraggedFileInGroup(groupName) ? null : groupName;
 }
 
 function onGroupDragLeave(event: DragEvent, groupName: string): void {
+  if (draggingFileId.value === null) return;
+  event.stopPropagation();
   const current = event.currentTarget as HTMLElement;
   if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
   if (groupDropTarget.value === groupName) groupDropTarget.value = null;
@@ -1273,7 +1277,9 @@ async function moveDraggedFileTo(groupPath: string): Promise<void> {
 
 /** 松手即改分组：段卡片（整组范围）与分组胶囊都走这里。 */
 async function onGroupDrop(event: DragEvent, groupPath: string): Promise<void> {
+  if (draggingFileId.value === null) return; // 外部文件交给整页拖放上传
   event.preventDefault();
+  event.stopPropagation();
   await moveDraggedFileTo(groupPath);
 }
 
@@ -1344,7 +1350,10 @@ function onDragOver(event: DragEvent): void {
   if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
 }
 
-function onDragLeave(): void {
+function onDragLeave(event: DragEvent): void {
+  // 子元素之间移动会冒泡 dragleave，只有真正离开 main 才收起遮罩
+  const current = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
   if (dropDepth.value > 0) dropDepth.value -= 1;
 }
 
@@ -1500,10 +1509,10 @@ onBeforeUnmount(() => {
               :aria-current="isGroupActive(child.path) ? 'page' : undefined"
               @click="openSidebarGroup(child.path)"
               @contextmenu="openGroupMenu($event, child)"
-              @dragenter.stop="onGroupDragEnter($event, child.path)"
-              @dragover.stop="onGroupDragOver($event, child.path)"
-              @dragleave.stop="onGroupDragLeave($event, child.path)"
-              @drop.stop="onGroupDrop($event, child.path)"
+              @dragenter="onGroupDragEnter($event, child.path)"
+              @dragover="onGroupDragOver($event, child.path)"
+              @dragleave="onGroupDragLeave($event, child.path)"
+              @drop="onGroupDrop($event, child.path)"
             >
               <span class="nav-icon" v-html="ICONS.folder"></span>
               <span class="nav-label">{{ child.name }}</span>
@@ -1771,10 +1780,10 @@ onBeforeUnmount(() => {
             :aria-selected="isGroupActive(child.path)"
             @click="showGroup(child.path)"
             @contextmenu="openGroupMenu($event, child)"
-            @dragenter.stop="onGroupDragEnter($event, child.path)"
-            @dragover.stop="onGroupDragOver($event, child.path)"
-            @dragleave.stop="onGroupDragLeave($event, child.path)"
-            @drop.stop="onGroupDrop($event, child.path)"
+            @dragenter="onGroupDragEnter($event, child.path)"
+            @dragover="onGroupDragOver($event, child.path)"
+            @dragleave="onGroupDragLeave($event, child.path)"
+            @drop="onGroupDrop($event, child.path)"
           >
             <span class="chip-icon" v-html="ICONS.folder"></span>
             <span class="chip-label">{{ child.name }}</span>
@@ -1823,10 +1832,10 @@ onBeforeUnmount(() => {
           :aria-selected="effectiveSectionFilter === child.path"
           @click="selectSectionFilter(child.path)"
           @contextmenu="openGroupMenu($event, child)"
-          @dragenter.stop="onGroupDragEnter($event, child.path)"
-          @dragover.stop="onGroupDragOver($event, child.path)"
-          @dragleave.stop="onGroupDragLeave($event, child.path)"
-          @drop.stop="onGroupDrop($event, child.path)"
+          @dragenter="onGroupDragEnter($event, child.path)"
+          @dragover="onGroupDragOver($event, child.path)"
+          @dragleave="onGroupDragLeave($event, child.path)"
+          @drop="onGroupDrop($event, child.path)"
         >
           {{ child.name }}
           <span class="filter-count">{{ sectionFileCount(child.path) }}</span>
@@ -1861,10 +1870,10 @@ onBeforeUnmount(() => {
             :class="{ 'is-drop-target': groupDropTarget === sectionDropPath(section) }"
             :data-group-name="section.group?.name"
             :data-section-fixed="section.group ? undefined : ''"
-            @dragenter.stop="onGroupDragEnter($event, sectionDropPath(section))"
-            @dragover.stop="onGroupDragOver($event, sectionDropPath(section))"
-            @dragleave.stop="onGroupDragLeave($event, sectionDropPath(section))"
-            @drop.stop="onGroupDrop($event, sectionDropPath(section))"
+            @dragenter="onGroupDragEnter($event, sectionDropPath(section))"
+            @dragover="onGroupDragOver($event, sectionDropPath(section))"
+            @dragleave="onGroupDragLeave($event, sectionDropPath(section))"
+            @drop="onGroupDrop($event, sectionDropPath(section))"
           >
             <div
               class="section-head"
