@@ -94,12 +94,13 @@ export function login(token: string): Promise<AuthResponse> {
   });
 }
 
-/** GET /api/files：文件列表 + 全部分组（含空分组）。 */
+/** GET /api/files：文件列表 + 全部分组（含空分组）+ 单文件上传上限。 */
 export async function listFiles(): Promise<FileListResponse> {
   const payload = await request<FileListResponse>("/api/files");
   return {
     files: Array.isArray(payload?.files) ? payload.files : [],
     groups: Array.isArray(payload?.groups) ? payload.groups : [],
+    max_file_size: typeof payload?.max_file_size === "number" ? payload.max_file_size : 0,
   };
 }
 

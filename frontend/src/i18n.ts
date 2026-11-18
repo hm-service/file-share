@@ -73,6 +73,7 @@ export type MessageKey =
   | "upload.status.done"
   | "upload.status.failed"
   | "upload.status.cancelled"
+  | "upload.error.too-big"
   | "upload.action.remove"
   | "upload.action.cancel"
   | "upload.action.retry"
@@ -189,6 +190,10 @@ const messages: Record<MessageKey, Message> = {
   "upload.status.done": { zh: "上传完成", en: "Uploaded" },
   "upload.status.failed": { zh: "上传失败", en: "Upload failed" },
   "upload.status.cancelled": { zh: "已取消", en: "Cancelled" },
+  "upload.error.too-big": {
+    zh: "超过单文件上限 {max}",
+    en: "Exceeds the {max} per-file limit",
+  },
   "upload.action.remove": { zh: "移除", en: "Remove" },
   "upload.action.cancel": { zh: "取消", en: "Cancel" },
   "upload.action.retry": { zh: "重试", en: "Retry" },

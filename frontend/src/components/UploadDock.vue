@@ -10,6 +10,9 @@
  *   → failed（保留后端 detail）/ cancelled（用户取消，不算失败）
  *   failed / cancelled 都保留 File 引用，可以「重试」重新走一遍；「移除」时才释放。
  *
+ * 超限文件在入队时就用列表接口下发的 maxFileSize 拦掉（此时还没算指纹、也没发请求）：
+ * 状态直接记成 failed 且不可重试，文案说明上限；服务端的 413 仍作为最后一道防线。
+ *
  * 取消靠每个队列项自己的 AbortController：hashing 中断分块循环、check_file 中断 fetch、
  * uploading 中断 XHR。取消后本轮 processItem 正常返回，pump 继续处理后面的 pending 项。
  *
@@ -24,7 +27,11 @@ import { hashFile } from "@/hashFile";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
 
-const props = defineProps<{ targetGroup?: string }>();
+const props = defineProps<{
+  targetGroup?: string;
+  /** 服务端单文件上限（字节）；0 表示还没拿到，暂不预检。 */
+  maxFileSize?: number;
+}>();
 
 const emit = defineEmits<{ uploaded: [] }>();
 
@@ -59,6 +66,8 @@ interface QueueItem {
   group: string;
   /** 失败原因：优先用后端本地化 detail。 */
   error: string;
+  /** 能否重试：大小超限是文件本身的问题，重试没有意义。 */
+  retryable: boolean;
   /** 本轮处理的取消句柄；重试会新建一个。 */
   controller: AbortController | null;
 }
@@ -77,25 +86,39 @@ function queueId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
+/** 超限文案：把服务端上限格式化进本地化文案。 */
+function tooBigMessage(limit: number): string {
+  return t("upload.error.too-big", { max: formatSize(limit) });
+}
+
+/** 文件是否超过当前已知的上传上限（上限未知时一律放行，交给服务端 413 兜底）。 */
+function exceedsLimit(size: number): number {
+  const limit = props.maxFileSize ?? 0;
+  return limit > 0 && size > limit ? limit : 0;
+}
+
 /** 入队；用户可以边传边继续加文件（整页拖放也走这里）。
- * group 覆盖本次上传目标（外部文件拖到某个分组落点时），省略则传到当前上传目标。 */
+ * group 覆盖本次上传目标（外部文件拖到某个分组落点时），省略则传到当前上传目标。
+ * 超限文件入队即失败：不计算指纹，也不发任何请求。 */
 function addFiles(files: FileList | File[] | null | undefined, group?: string): void {
   const list = Array.from(files ?? []);
   if (!list.length) return;
   for (const file of list) {
+    const limit = exceedsLimit(file.size);
     queue.value.push({
       id: queueId(),
       file,
       name: file.name,
       size: file.size,
-      status: "pending",
+      status: limit ? "failed" : "pending",
       progress: 0,
       percent: 0,
       loaded: 0,
       speed: 0,
       startedAt: 0,
       group: group ?? props.targetGroup ?? "",
-      error: "",
+      error: limit ? tooBigMessage(limit) : "",
+      retryable: limit === 0,
       controller: null,
     });
   }
@@ -131,6 +154,15 @@ function scheduleRemove(id: string): void {
 async function processItem(item: QueueItem): Promise<void> {
   const file = item.file;
   if (!file) return;
+
+  // 兜底：入队后才拿到上限（或重试旧项）时同样在算指纹之前拦下。
+  const limit = exceedsLimit(file.size);
+  if (limit) {
+    item.status = "failed";
+    item.error = tooBigMessage(limit);
+    item.retryable = false;
+    return;
+  }
 
   const controller = new AbortController();
   item.controller = controller;
@@ -224,7 +256,11 @@ function canCancel(item: QueueItem): boolean {
 
 /** 失败/取消的项保留 File，可重试；重试会重新进入串行 pump。 */
 function canRetry(item: QueueItem): boolean {
-  return (item.status === "failed" || item.status === "cancelled") && item.file !== null;
+  return (
+    (item.status === "failed" || item.status === "cancelled") &&
+    item.file !== null &&
+    item.retryable
+  );
 }
 
 /** pending / failed / cancelled 可以移除；处理中必须先取消，避免留下半截请求。 */

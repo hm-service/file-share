@@ -234,8 +234,9 @@ func TestListFiles(t *testing.T) {
 
 	recorder = testenv.Do(handler, http.MethodGet, "/api/files", token)
 	var payload struct {
-		Groups []groupRow `json:"groups"`
-		Files  []struct {
+		Groups      []groupRow `json:"groups"`
+		MaxFileSize int64      `json:"max_file_size"`
+		Files       []struct {
 			ID         string `json:"id"`
 			Filename   string `json:"filename"`
 			SHA256     string `json:"sha256"`
@@ -270,6 +271,9 @@ func TestListFiles(t *testing.T) {
 	}
 	if len(payload.Groups) != 0 {
 		t.Errorf("没有分组时 groups = %v，想要空数组", payload.Groups)
+	}
+	if payload.MaxFileSize != testenv.DefaultMaxFileSize {
+		t.Errorf("max_file_size = %d，想要 %d", payload.MaxFileSize, testenv.DefaultMaxFileSize)
 	}
 }
 

@@ -56,6 +56,9 @@ const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 
+/** 服务端单文件上传上限（字节）；随列表接口下发，上传坞据此在入队时拦掉超限文件。 */
+const maxFileSize = ref(0);
+
 /* ---------- 侧栏宽度（桌面端拖右缘调节） ---------- */
 
 const SIDEBAR_DEFAULT_WIDTH = 264;
@@ -817,6 +820,7 @@ async function refresh(): Promise<void> {
     if (seq !== refreshSeq) return;
     files.value = payload.files;
     groups.value = payload.groups;
+    maxFileSize.value = payload.max_file_size;
     loadError.value = "";
     validateView();
   } catch (error) {
@@ -1295,6 +1299,10 @@ async function onGroupDrop(event: DragEvent, groupPath: string): Promise<void> {
   }
   event.preventDefault();
   event.stopPropagation();
+  // 落在某个段自己的文件行之间：位置由跨段拖拽处理（见 onCrossDrop），
+  // 这里只拦下事件，避免又被当成「移到该分组末尾」处理一次。
+  const listCard = event.target instanceof Element ? event.target.closest(".list-card") : null;
+  if (listCard) return;
   await moveDraggedFileTo(groupPath);
 }
 
@@ -1322,6 +1330,49 @@ async function onReorder(orderedIds: string[]): Promise<void> {
   } catch (error) {
     showActionError(error);
     // 回滚：重新拉服务端顺序（刷新也会恢复分组计数等派生数据）
+    await refresh();
+  }
+}
+
+/**
+ * 跨段拖拽落定：文件移进目标段所在分组，并按松手位置插入（不再只能追加到末尾）。
+ *
+ * 目标段与来源段的真实顺序都在松手后的 DOM 里，一次带回来：先更新本地数据（Vue 按新顺序
+ * 重渲染两张列表），再提交「改分组 + 两段顺序」两个请求；任一失败就提示并回滚到服务端顺序。
+ */
+async function onCrossDrop(payload: {
+  fileId: string;
+  toKey: string;
+  toOrder: string[];
+  fromOrder: string[];
+}): Promise<void> {
+  // 段头 / 段外空白 / 侧栏这类落点按「移到分组末尾」处理时已经清掉拖拽状态，
+  // 这次松手不再按位置调整提交（两者只保留先发生的那一个）。
+  if (!draggingFileId.value) return;
+  draggingFileId.value = null;
+  groupDropTarget.value = null;
+  const target = groupSections.value.find((section) => section.key === payload.toKey);
+  const file = files.value.find((entry) => entry.id === payload.fileId);
+  if (!target || !file) {
+    await refresh();
+    return;
+  }
+  const targetPath = sectionDropPath(target);
+  if (file.group_path === targetPath) {
+    await refresh();
+    return;
+  }
+  file.group_path = targetPath;
+  applyOrder(payload.toOrder);
+  applyOrder(payload.fromOrder);
+  try {
+    await updateFileGroup(file.id, targetPath);
+    await reorderFiles([
+      ...payload.toOrder.map((id, index) => ({ id, sort_order: index })),
+      ...payload.fromOrder.map((id, index) => ({ id, sort_order: index })),
+    ]);
+  } catch (error) {
+    showActionError(error);
     await refresh();
   }
 }
@@ -1950,6 +2001,7 @@ onBeforeUnmount(() => {
                 :files="section.files"
                 :groups="groups"
                 :sortable="sectionSortable"
+                :section-key="section.key"
                 @favorite="onFavorite"
                 @download="onDownload"
                 @rename="onRename"
@@ -1958,6 +2010,7 @@ onBeforeUnmount(() => {
                 @move-group="onMoveGroup"
                 @new-group="onNewGroupForFile"
                 @reorder="onReorder"
+                @cross-drop="onCrossDrop"
                 @drag-start="startFileDrag"
                 @drag-end="endFileDrag"
               />
@@ -2078,7 +2131,12 @@ onBeforeUnmount(() => {
       @cancel="promptState = null"
     />
 
-    <UploadDock ref="uploadDock" :target-group="currentUploadGroup" @uploaded="refresh" />
+    <UploadDock
+      ref="uploadDock"
+      :target-group="currentUploadGroup"
+      :max-file-size="maxFileSize"
+      @uploaded="refresh"
+    />
   </div>
 </template>
 

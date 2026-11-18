@@ -28,7 +28,13 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		businessFail(w, r, err)
 		return
 	}
-	httpx.Write(w, http.StatusOK, map[string]any{"files": files, "groups": groups})
+	httpx.Write(w, http.StatusOK, map[string]any{
+		"files":  files,
+		"groups": groups,
+		// 单文件上传上限随列表一起下发：前端在入队时就能拦掉超限文件，
+		// 不必先把整份内容算完指纹、再等服务端 413。
+		"max_file_size": s.App.Config.MaxFileSize,
+	})
 }
 
 // handleCheckFile 是秒传预检：blob 已在服务器上就补一条记录并回 exists=true。

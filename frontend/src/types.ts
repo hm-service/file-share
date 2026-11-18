@@ -35,6 +35,8 @@ export interface FileListResponse {
   files: FileItem[];
   /** 全部分组（含空分组）；同一父级内按展示顺序排列。 */
   groups: GroupItem[];
+  /** 服务端单文件上传上限（字节，对应 MAX_FILE_SIZE）：上传坞入队时先按它拦掉超限文件。 */
+  max_file_size: number;
 }
 
 /** GET /api/files/{id}/download-url 的响应：浏览器可直接导航的签名地址。 */
