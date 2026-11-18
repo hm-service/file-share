@@ -2919,32 +2919,38 @@ onBeforeUnmount(() => {
 }
 
 /* ================= 内容区：按三级分组分段 ================= */
+/* 三级分组是内容区里的一层目录：所有段收在一个容器里，段与段之间只留一条细线，
+   段头 38px、操作按钮悬停才出现，一屏里用来放文件的空间更多。 */
 .group-sections {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .group-section {
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--surface);
-  box-shadow: var(--shadow-md);
+}
+
+.group-section + .group-section {
+  border-top: 1px solid var(--line);
 }
 
 .section-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  background: linear-gradient(180deg, #fbfbff, #f7f8fc);
+  height: 38px;
+  padding: 0 12px;
   cursor: pointer;
   user-select: none;
 }
 
 .section-head:hover {
-  background: #f4f5fd;
+  background: #fafbff;
 }
 
 /* 正在拖动的段：段头高亮，和侧栏分组拖拽保持同一套视觉 */
@@ -2952,11 +2958,10 @@ onBeforeUnmount(() => {
   background: var(--accent-soft);
 }
 
-/* 文件拖到整段范围 = 移动到这一段的分组：虚线画在段卡片内侧 */
+/* 文件拖到整段范围 = 移动到这一段的分组：高亮画在段内，不会被容器圆角裁掉 */
 .group-section.is-drop-target {
-  outline: 2px dashed var(--accent);
-  outline-offset: -3px;
   background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 /* ICONS.chevron 本来就是朝下的：展开不转，折叠时转到朝右 */
@@ -2975,8 +2980,8 @@ onBeforeUnmount(() => {
 }
 
 .section-fold :deep(svg) {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 .section-icon {
@@ -2990,22 +2995,22 @@ onBeforeUnmount(() => {
 }
 
 .section-icon :deep(svg) {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 .section-name {
   overflow: hidden;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .section-count {
   flex: 0 0 auto;
-  padding: 1px 8px;
+  padding: 0 7px;
   border-radius: 999px;
   background: rgb(20 23 44 / 0.05);
   color: var(--ink-3);
@@ -3017,20 +3022,33 @@ onBeforeUnmount(() => {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   margin-left: auto;
 }
 
 .section-action {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 8px;
   color: var(--ink-3);
   transition:
+    opacity 0.15s,
     background-color 0.15s,
     color 0.15s;
+}
+
+/* 段内操作默认收起来：鼠标悬停或键盘聚焦时才出现，触屏（没有 hover）保持常显 */
+@media (hover: hover) {
+  .section-action {
+    opacity: 0;
+  }
+
+  .section-head:hover .section-action,
+  .section-head:focus-within .section-action {
+    opacity: 1;
+  }
 }
 
 .section-action:hover {
@@ -3043,9 +3061,9 @@ onBeforeUnmount(() => {
   height: 15px;
 }
 
-/* 段内沿用 FileList 的卡片，但段头已经是一层卡片边：内层不再重复边框与阴影 */
+/* 段内沿用 FileList 的卡片，但外层容器已经是一层卡片边：内层不再重复边框与阴影 */
 .section-body {
-  padding: 6px 10px 10px;
+  padding: 5px 10px 12px;
 }
 
 .section-body :deep(.list-card) {
@@ -3061,7 +3079,7 @@ onBeforeUnmount(() => {
 }
 
 .section-empty {
-  padding: 8px 10px 10px;
+  padding: 8px 12px 12px;
   color: var(--ink-3);
   font-size: 12px;
 }
@@ -3456,12 +3474,13 @@ onBeforeUnmount(() => {
     padding: 10px 16px 0;
   }
 
-  .group-section {
-    border-radius: 16px;
+  .group-sections {
+    border-radius: 14px;
   }
 
   .section-head {
-    padding: 9px 10px;
+    height: 40px;
+    padding: 0 12px;
   }
 
   .empty {

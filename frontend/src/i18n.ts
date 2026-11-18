@@ -97,8 +97,13 @@ export type MessageKey =
   | "action.expand-group"
   | "action.collapse-group"
   | "action.cancel"
+  | "action.close"
   | "action.logout"
   | "file.sha256"
+  | "file.detail.title"
+  | "file.detail.size"
+  | "file.detail.time"
+  | "file.detail.group"
   | "group.new-title"
   | "group.new-hint"
   | "group.all"
@@ -208,8 +213,13 @@ const messages: Record<MessageKey, Message> = {
   "action.expand-group": { zh: "展开子分组", en: "Expand sub-groups" },
   "action.collapse-group": { zh: "折叠子分组", en: "Collapse sub-groups" },
   "action.cancel": { zh: "取消", en: "Cancel" },
+  "action.close": { zh: "关闭", en: "Close" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
   "file.sha256": { zh: "SHA-256", en: "SHA-256" },
+  "file.detail.title": { zh: "文件详情", en: "File details" },
+  "file.detail.size": { zh: "大小", en: "Size" },
+  "file.detail.time": { zh: "上传时间", en: "Uploaded" },
+  "file.detail.group": { zh: "所在分组", en: "Group" },
   "group.new-title": { zh: "新建分组", en: "New group" },
   "group.new-hint": {
     zh: "输入分组名；用 父/子/孙 一次建多层，三级分组只在分组内容区里分段",

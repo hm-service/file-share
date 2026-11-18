@@ -16,6 +16,8 @@ const props = withDefaults(
     /** 标题下方的说明文字。 */
     hint?: string;
     confirmLabel: string;
+    /** 左侧取消按钮的文案；纯展示型对话框传「关闭」之类。默认「取消」。 */
+    cancelLabel?: string;
     /** 确认按钮配色：删除等不可逆操作用 danger。 */
     tone?: "primary" | "danger";
     confirmDisabled?: boolean;
@@ -61,7 +63,7 @@ onBeforeUnmount(() => {
 
         <div class="dialog-actions">
           <button ref="cancelButton" type="button" class="dialog-btn" @click="emit('cancel')">
-            {{ t("action.cancel") }}
+            {{ cancelLabel ?? t("action.cancel") }}
           </button>
           <button
             ref="confirmButton"

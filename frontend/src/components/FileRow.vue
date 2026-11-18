@@ -1,6 +1,8 @@
 <script setup lang="ts">
 /**
- * 列表里的一行文件：拖拽把手 + 类型图标块 + 名称/元信息 + 操作区。
+ * 列表里的一行文件：拖拽把手 + 类型图标 + 名称/大小 + 时间/短指纹 + 操作区，单行排布。
+ *
+ * 文件名是详情入口：点开 FileDetailDialog 看完整信息（含完整指纹）并直接下载。
  *
  * 行内只留「下载、分享链接、收藏、分组、更多」五个按钮：分享链接与分组都是高频操作，
  * 单独开按钮；重命名、复制 curl 命令、删除收进最右的「更多」菜单，避免一行里挤满图标。
@@ -19,6 +21,8 @@ import { formatSize, formatTime } from "@/format";
 import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
 import type { FileItem, GroupItem } from "@/types";
+
+import FileDetailDialog from "./FileDetailDialog.vue";
 
 const props = defineProps<{
   file: FileItem;
@@ -103,6 +107,23 @@ const kind = computed<FileKind>(() => {
   if (["txt", "md", "markdown", "log"].includes(extension)) return "text";
   return "other";
 });
+
+/* ---------- 详情面板 ---------- */
+
+/** 详情对话框：点文件名打开，面板里的下载按钮走行内同一个下载出口。 */
+const detailOpen = ref(false);
+const nameEl = ref<HTMLButtonElement | null>(null);
+
+/** 关掉面板把焦点还给文件名，键盘用户不会掉回页面开头。 */
+function closeDetail(): void {
+  detailOpen.value = false;
+  void nextTick(() => nameEl.value?.focus());
+}
+
+function downloadFromDetail(): void {
+  detailOpen.value = false;
+  emit("download");
+}
 
 /* ---------- 分享链接 / curl 命令 ---------- */
 
@@ -346,9 +367,21 @@ onBeforeUnmount(() => {
     <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
 
     <div class="file-body">
-      <p class="file-name" :title="file.filename">{{ file.filename }}</p>
-      <p class="file-meta">
-        <span>{{ formatTime(file.created_at) }} · {{ formatSize(file.size) }}</span>
+      <!-- 文件名就是详情入口：点开小面板看完整信息 -->
+      <button
+        ref="nameEl"
+        type="button"
+        class="file-name"
+        :title="file.filename"
+        aria-haspopup="dialog"
+        @click="detailOpen = true"
+      >
+        {{ file.filename }}
+      </button>
+
+      <span class="file-size">{{ formatSize(file.size) }}</span>
+
+      <span class="file-info">
         <!-- 「最近」视图按时间混排所有分组，行内补一个分组标签，免得看不出归属 -->
         <span
           v-if="showGroup"
@@ -359,11 +392,16 @@ onBeforeUnmount(() => {
           <span class="file-group-icon" v-html="file.group_path ? ICONS.folder : ICONS.inbox"></span>
           <span class="file-group-name">{{ file.group_path || t("nav.ungrouped") }}</span>
         </span>
-      </p>
-      <p class="file-hash" :title="file.sha256">
-        <span class="file-hash-label">{{ t("file.sha256") }}</span>
-        <span class="file-hash-value">{{ file.sha256 }}</span>
-      </p>
+        <span class="file-stamp">{{ formatTime(file.created_at) }}</span>
+
+        <!-- 指纹只露前 8 位：一行里够用来区分内容，完整值悬停看 title -->
+        <span
+          class="file-sha"
+          :title="`${t('file.sha256')} ${file.sha256}`"
+          :aria-label="`${t('file.sha256')} ${file.sha256}`"
+          >{{ file.sha256.slice(0, 8) }}</span
+        >
+      </span>
     </div>
 
     <div class="file-actions">
@@ -538,15 +576,23 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </Teleport>
+
+    <FileDetailDialog
+      v-if="detailOpen"
+      :file="file"
+      @close="closeDetail"
+      @download="downloadFromDetail"
+    />
   </li>
 </template>
 
 <style scoped>
+/* 单行文件行：把手 + 图标 + 文件名 + 短指纹 + 时间大小 + 操作，一行 48px 高 */
 .file-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 7px 14px;
   transition: background-color 0.15s;
 }
 
@@ -608,16 +654,16 @@ onBeforeUnmount(() => {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   background: var(--surface-2);
   color: var(--ink-3);
 }
 
 .file-tile :deep(svg) {
-  width: 21px;
-  height: 21px;
+  width: 18px;
+  height: 18px;
 }
 
 /* 文件类型配色：同一类型一个颜色，图标形状各不相同。 */
@@ -677,36 +723,83 @@ onBeforeUnmount(() => {
 }
 
 .file-body {
+  display: flex;
   flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
+/* 文件名最长，先让它省略；大小、时间、指纹都是固定宽度 */
 .file-name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--ink);
   font-size: 13.5px;
   font-weight: 620;
+  text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 详情入口的可见反馈：悬停加下划线，键盘聚焦给一圈焦点环 */
+.file-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.file-name:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 大小紧挨文件名 */
+.file-size {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.file-meta {
+/* 短指纹：前 8 位等宽字体，完整值在 title / aria-label 里 */
+.file-sha {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  user-select: text;
+}
+
+/* 右侧信息：分组标签（「最近」视图）+ 上传时间 + 短指纹 */
+.file-info {
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  margin-top: 2px;
+  margin-left: auto;
   color: var(--ink-3);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
-/* 分组标签：一行里同时有时间和分组，窄容器时允许换行，路径过长省略 */
+.file-stamp {
+  white-space: nowrap;
+}
+
+/* 分组标签：路径过长省略 */
 .file-group {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 100%;
+  max-width: 190px;
   padding: 1px 7px 1px 5px;
   border-radius: 999px;
   background: var(--surface-2);
@@ -736,33 +829,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-/* 文件指纹：等宽字体、单行省略；完整值放在 title 里，文本可选中复制 */
-.file-hash {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  margin-top: 1px;
-  color: var(--ink-3);
-  font-size: 10.5px;
-  line-height: 1.4;
-}
-
-.file-hash-label {
-  flex: 0 0 auto;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.file-hash-value {
-  overflow: hidden;
-  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
-}
-
 .file-actions {
   display: flex;
   flex: 0 0 auto;
@@ -774,9 +840,9 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
   color: var(--ink-3);
   transition:
     color 0.15s,
@@ -785,8 +851,8 @@ onBeforeUnmount(() => {
 
 .icon-btn :deep(svg) {
   display: block;
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
 }
 
 .icon-btn:hover {
@@ -827,44 +893,31 @@ onBeforeUnmount(() => {
   color: var(--ink);
 }
 
+/* 内容区很窄（手机 / 小窗口）：操作按钮换到第二行，指纹让位给文件名 */
 @container (max-width: 620px) {
-/* 内容区很窄（手机 / 小窗口）时，操作按钮换到第二行，文件名拿回整行。 */
   .file-row {
     flex-wrap: wrap;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 12px;
+    row-gap: 6px;
+    padding: 9px 12px;
   }
 
   .file-body {
-    flex-basis: calc(100% - 54px);
+    flex-basis: 0;
+    overflow: hidden;
+  }
+
+  .file-info {
+    display: none;
   }
 
   .file-actions {
-    flex-basis: 100%;
+    flex: 0 0 100%;
     justify-content: flex-end;
   }
 
   .icon-btn {
     width: 34px;
     height: 34px;
-  }
-}
-
-@media (max-width: 560px) {
-  .icon-btn {
-    width: 34px;
-    height: 34px;
-  }
-
-  .file-tile {
-    width: 38px;
-    height: 38px;
-  }
-
-  .file-tile :deep(svg) {
-    width: 19px;
-    height: 19px;
   }
 }
 </style>
