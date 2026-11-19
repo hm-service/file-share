@@ -55,6 +55,8 @@ export type MessageKey =
   | "nav.no-results"
   | "nav.empty-recent"
   | "nav.empty-favorites"
+  | "nav.empty-direct"
+  | "nav.empty-direct-hint"
   | "upload.button"
   | "upload.hint"
   | "upload.hint-mobile"
@@ -81,6 +83,8 @@ export type MessageKey =
   | "action.unfavorite"
   | "action.download"
   | "action.download-group"
+  | "action.download-group-size"
+  | "action.stats"
   | "action.refresh"
   | "action.rename"
   | "action.rename-group"
@@ -118,6 +122,13 @@ export type MessageKey =
   | "group.delete-empty"
   | "group.delete-files"
   | "group.delete-files-hint"
+  | "group.stats.title"
+  | "group.stats.hint"
+  | "group.stats.files"
+  | "group.stats.file-count"
+  | "group.stats.total-size"
+  | "group.stats.distribution"
+  | "group.stats.empty"
   | "rename.title"
   | "confirm.delete"
   | "date.group-heading"
@@ -166,6 +177,11 @@ const messages: Record<MessageKey, Message> = {
   "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
   "nav.empty-recent": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
   "nav.empty-favorites": { zh: "还没有收藏的文件", en: "No favorites yet" },
+  "nav.empty-direct": { zh: "这里没有直属文件", en: "No direct files here" },
+  "nav.empty-direct-hint": {
+    zh: "子分组里的文件，进入对应的子分组查看。",
+    en: "Files inside sub-groups are listed in each sub-group.",
+  },
   "upload.button": { zh: "上传文件", en: "Upload files" },
   "upload.hint": { zh: "也可以把文件拖到右侧区域", en: "or drag files to this side" },
   "upload.hint-mobile": { zh: "点击上方按钮选择文件", en: "Tap the upload button above" },
@@ -201,6 +217,8 @@ const messages: Record<MessageKey, Message> = {
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
   "action.download-group": { zh: "全部下载", en: "Download all" },
+  "action.download-group-size": { zh: "全部下载（{size}）", en: "Download all ({size})" },
+  "action.stats": { zh: "统计信息", en: "Statistics" },
   "action.rename": { zh: "重命名", en: "Rename" },
   "action.rename-group": { zh: "重命名分组", en: "Rename group" },
   "action.refresh": { zh: "刷新列表", en: "Refresh" },
@@ -247,6 +265,13 @@ const messages: Record<MessageKey, Message> = {
     zh: "这些文件会被永久删除，无法恢复。",
     en: "These files will be permanently deleted.",
   },
+  "group.stats.title": { zh: "统计信息", en: "Statistics" },
+  "group.stats.hint": { zh: "{path} · 含全部子分组", en: "{path} · including all sub-groups" },
+  "group.stats.files": { zh: "文件数量", en: "Files" },
+  "group.stats.file-count": { zh: "{count} 个", en: "{count}" },
+  "group.stats.total-size": { zh: "总文件大小", en: "Total size" },
+  "group.stats.distribution": { zh: "文件大小分布", en: "Size distribution" },
+  "group.stats.empty": { zh: "该分组下没有文件", en: "No files in this group" },
   "rename.title": { zh: "重命名文件", en: "Rename file" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
   "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },

@@ -5,10 +5,10 @@
  */
 import { t } from "./i18n";
 
-const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
+const SIZE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
 const BASE = 1024;
 
-/** 1234567 → "1.18 MB"；0 与非法值 → "0 B"。 */
+/** 1234567 → "1.18 MiB"；0 与非法值 → "0 B"。统一用 IEC 二进制单位。 */
 export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 1) return "0 B";
   const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(BASE)), SIZE_UNITS.length - 1);

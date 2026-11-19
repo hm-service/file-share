@@ -18,6 +18,7 @@ import Sortable from "sortablejs";
 
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import FileList from "@/components/FileList.vue";
+import GroupStatsDialog from "@/components/GroupStatsDialog.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
 import PromptDialog from "@/components/PromptDialog.vue";
 import UploadDock from "@/components/UploadDock.vue";
@@ -35,7 +36,7 @@ import {
   toggleFavorite,
   updateFileGroup,
 } from "@/api";
-import { formatDayHeading } from "@/format";
+import { formatDayHeading, formatSize } from "@/format";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
 import { viewFromPath, viewPath, type View } from "@/routes";
@@ -315,7 +316,7 @@ const visibleFiles = computed(() => {
  *
  * 分段规则：当前分组下的每个子分组一段，段内是该子分组（含更深层）的全部文件；
  * 直接挂在当前分组上的文件单独成一段「直属文件」，只有存在时才出现。
- * 一级视图用同一套规则按二级分组分段，所以点一级分组也能看到它下面的全部文件。
+ * 一级分组页不分段，只平铺它自己的直属文件——要看二级分组就点进去。
  */
 interface GroupSection {
   key: string;
@@ -338,25 +339,25 @@ const currentSubgroups = computed(() => {
 const groupSections = computed<GroupSection[]>(() => {
   const current = view.value;
   if (current.kind !== "group") return [];
+  // 一级分组页只列自己的直属文件，不再展开二级分组。
+  if (groupDepth(current.group) === 1) return [];
   const children = currentSubgroups.value;
   if (!children.length) return [];
   const sections: GroupSection[] = [];
   const direct = sortedFiles.value.filter((file) => file.group_path === current.group);
   if (direct.length) sections.push({ key: "direct", title: t("group.direct-files"), files: direct });
-  // 一级视图只列二级分组的直属文件，不把三级分组里的文件堆上来；
   // 二级视图的子分组是三级，没有后代，子树与直属文件等同。
-  const listChildFiles =
-    groupDepth(current.group) === 1
-      ? (path: string) => sortedFiles.value.filter((file) => file.group_path === path)
-      : subtreeFiles;
   for (const child of children) {
-    sections.push({ key: child.path, title: child.name, group: child, files: listChildFiles(child.path) });
+    sections.push({ key: child.path, title: child.name, group: child, files: subtreeFiles(child.path) });
   }
   return sections;
 });
 
 /** 有子分组的分组视图才按段展示；没有子分组时仍是原来的平铺列表。 */
 const isGroupedView = computed(() => groupSections.value.length > 0);
+
+/** 段筛选胶囊里的子分组：只属于分段视图（二级页）；一级页不展开子分组，也就没有可筛的段。 */
+const filterSubgroups = computed(() => (isGroupedView.value ? currentSubgroups.value : []));
 
 /**
  * 生效的段筛选：搜索时放宽到全部段 —— 命中可能落在别的段，只看当前段会漏。
@@ -381,7 +382,10 @@ const pageFiles = computed(() =>
     : visibleFiles.value,
 );
 
-/** 分组视图里全部段加起来的文件数：一级视图只算直属文件，二级视图是它下面的全部文件。 */
+/** 当前视图可见文件的总大小：页头「全部下载」按钮上显示。 */
+const pageFilesSize = computed(() => pageFiles.value.reduce((sum, file) => sum + file.size, 0));
+
+/** 分组视图里全部段加起来的文件数（只有二级页分段；一级页不分段，恒为 0）。 */
 const currentGroupFiles = computed(() => groupSections.value.reduce((sum, section) => sum + section.files.length, 0));
 
 function expandSection(key: string): void {
@@ -414,15 +418,20 @@ function selectSectionFilter(value: string): void {
   if (value !== "all") expandSection(value);
 }
 
-/** 段内文件都属于同一个分组（一级视图是二级分组的直属，二级视图是三级分组），可以拖拽排序。 */
+/** 二级页的段内文件都属于同一个三级分组，可以拖拽排序。 */
 const sectionSortable = computed(() => canSort.value && view.value.kind === "group");
 
 /** 直属文件段：有直属文件时才出现，所以筛选条里也只有这时才有这一项。 */
 const directSection = computed(() => groupSections.value.find((section) => section.key === "direct"));
 
-/** 段胶囊上的计数：与段内实际列出的文件保持一致（一级视图只算直属文件）。 */
+/** 段胶囊上的计数：与段内实际列出的文件保持一致。 */
 function sectionFileCount(path: string): number {
   return groupSections.value.find((section) => section.key === path)?.files.length ?? 0;
+}
+
+/** 段头显示的总大小：段内文件字节数之和。 */
+function sectionSize(section: GroupSection): number {
+  return section.files.reduce((sum, file) => sum + file.size, 0);
 }
 
 /** 拖文件到段头 / 段胶囊时的目标分组：「直属文件」段落到当前分组本身。 */
@@ -481,9 +490,18 @@ const pageCount = computed(() => pageFiles.value.length);
 const recentCapped = computed(
   () => isRecent.value && keyword.value.length === 0 && files.value.length > RECENT_LIMIT,
 );
+/** 一级分组页没有直属文件、但子分组里有文件：空状态要说明「这里没有直属文件」，别让人以为整个分组是空的。 */
+const groupEmptyWithChildren = computed(() => {
+  const current = view.value;
+  if (current.kind !== "group" || pageFiles.value.length) return false;
+  return subtreeFiles(current.group).length > 0;
+});
+
 const emptyKey = computed(() => {
   if (keyword.value) return "nav.no-results" as const;
-  return view.value.kind === "favorites" ? ("nav.empty-favorites" as const) : ("nav.empty-recent" as const);
+  if (view.value.kind === "favorites") return "nav.empty-favorites" as const;
+  if (groupEmptyWithChildren.value) return "nav.empty-direct" as const;
+  return "nav.empty-recent" as const;
 });
 const emptyIcon = computed(() => {
   if (view.value.kind === "favorites") return ICONS.star;
@@ -632,6 +650,9 @@ function validateView(): void {
     sectionFilter.value = "all";
   } else if (filter === "direct" && !directSection.value) {
     sectionFilter.value = "all";
+  } else if (!isGroupedView.value && sectionFilter.value !== "all") {
+    // 一级分组页不分段，旧的段筛选没有落点（分享链接里带进来的也一并清掉）。
+    sectionFilter.value = "all";
   }
 }
 
@@ -721,7 +742,7 @@ async function applyGroupOrder(parent: string, ordered: string[]): Promise<void>
  *
  * 「直属文件」段不是分组，固定在最上面：用 onMove 拦住别的段越过它。
  * 搜索 / 按段筛选时有些段不在 DOM 里，这时禁用拖动，免得把看不见的段顺序挤乱。
- * 一级视图的段是二级分组、二级视图的段是三级分组，两层都是同一个父级下的兄弟分组。
+ * 段就是当前二级分组的各个三级分组，彼此是同一个父级下的兄弟分组。
  */
 const sectionOrderEnabled = computed(
   () =>
@@ -1113,6 +1134,17 @@ function openGroupMenuFromButton(event: MouseEvent): void {
 function openGroupMenuFromSection(event: MouseEvent, group: GroupItem): void {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
   openGroupMenuAt(rect.left - GROUP_MENU_WIDTH + 36, rect.bottom + 6, group);
+}
+
+/** 打开中的分组统计面板：来自分组菜单的「统计信息」。 */
+const statsTarget = ref<{ path: string } | null>(null);
+
+/** 分组菜单「统计信息」：收起菜单，打开该分组（含全部子分组）的统计面板。 */
+function onShowStats(): void {
+  const target = groupMenu.value;
+  closeGroupMenu();
+  if (!target) return;
+  statsTarget.value = { path: target.path };
 }
 
 function closeGroupMenu(): void {
@@ -1718,16 +1750,16 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <div class="page-actions">
-          <!-- 只看单个分组时提供「全部下载」；「最近 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
+          <!-- 只看单个分组时提供「全部下载」（按钮上带当前可见文件的总大小）；「最近 / 收藏 / 未分组」没有稳定的集合边界，不提供。 -->
           <button
             v-if="isGroupView && pageCount > 0"
             type="button"
             class="group-download"
-            :title="t('action.download-group')"
+            :title="t('action.download-group-size', { size: formatSize(pageFilesSize) })"
             @click="onDownloadGroup"
           >
             <span class="group-download-icon" v-html="ICONS.download"></span>
-            {{ t("action.download-group") }}
+            {{ t("action.download-group-size", { size: formatSize(pageFilesSize) }) }}
           </button>
           <label class="search">
             <span class="search-icon" v-html="ICONS.search"></span>
@@ -1904,7 +1936,7 @@ onBeforeUnmount(() => {
           <span class="filter-count">{{ directSection.files.length }}</span>
         </button>
         <button
-          v-for="child in currentSubgroups"
+          v-for="child in filterSubgroups"
           :key="child.path"
           type="button"
           class="filter-chip"
@@ -1938,7 +1970,7 @@ onBeforeUnmount(() => {
           <p v-if="actionError" class="banner" role="alert">{{ actionError }}</p>
         </div>
 
-        <!-- 有子分组的分组视图：按子分组分段；一级视图每段只列二级分组的直属文件 -->
+        <!-- 二级页按三级分组分段；一级页不分段，只平铺直属文件 -->
         <div
           v-if="isGroupedView && (pageFiles.length || !keyword.trim())"
           :ref="setSectionOrderContainer"
@@ -1973,6 +2005,7 @@ onBeforeUnmount(() => {
               ></span>
               <span class="section-name">{{ section.title }}</span>
               <span class="section-count">{{ section.files.length }}</span>
+              <span class="section-size">{{ formatSize(sectionSize(section)) }}</span>
               <span class="section-actions" @click.stop>
                 <button
                   v-if="section.files.length"
@@ -2050,6 +2083,7 @@ onBeforeUnmount(() => {
               <span class="mobile-only">{{ t("upload.hint-mobile") }}</span>
             </p>
             <template v-else-if="isGroupView">
+              <p v-if="groupEmptyWithChildren" class="empty-text">{{ t("nav.empty-direct-hint") }}</p>
               <p class="empty-text">{{ t("upload.group-hint") }}</p>
               <p class="empty-text desktop-only">{{ t("upload.hint") }}</p>
             </template>
@@ -2076,6 +2110,10 @@ onBeforeUnmount(() => {
         role="menu"
         :aria-label="groupMenu.name"
       >
+        <button type="button" class="row-menu-item" role="menuitem" @click="onShowStats">
+          <span class="row-menu-icon" v-html="ICONS.stats"></span>
+          <span class="row-menu-label">{{ t("action.stats") }}</span>
+        </button>
         <button type="button" class="row-menu-item" role="menuitem" @click="onRenameGroupFromMenu">
           <span class="row-menu-icon" v-html="ICONS.pencil"></span>
           <span class="row-menu-label">{{ t("action.rename-group") }}</span>
@@ -2129,6 +2167,13 @@ onBeforeUnmount(() => {
       :confirm-label="promptDialog.confirmLabel"
       @confirm="onPromptConfirm"
       @cancel="promptState = null"
+    />
+
+    <GroupStatsDialog
+      v-if="statsTarget"
+      :path="statsTarget.path"
+      :files="subtreeFiles(statsTarget.path)"
+      @close="statsTarget = null"
     />
 
     <UploadDock
@@ -3071,6 +3116,14 @@ onBeforeUnmount(() => {
   padding: 0 7px;
   border-radius: 999px;
   background: rgb(20 23 44 / 0.05);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 段头总大小：紧跟在数量后面，不抢段名的空间 */
+.section-size {
+  flex: 0 0 auto;
   color: var(--ink-3);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;

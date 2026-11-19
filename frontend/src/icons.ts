@@ -39,6 +39,8 @@ export const ICONS = {
   grip: '<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="8" cy="5.5" r="1.35"/><circle cx="12" cy="5.5" r="1.35"/><circle cx="8" cy="10" r="1.35"/><circle cx="12" cy="10" r="1.35"/><circle cx="8" cy="14.5" r="1.35"/><circle cx="12" cy="14.5" r="1.35"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></svg>',
+  stats:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6"/><path d="M3 20h18"/></svg>',
 } as const;
 
 /** 文件类型图标：一条公共样式头 + 各自的路径，按扩展名分类渲染。 */

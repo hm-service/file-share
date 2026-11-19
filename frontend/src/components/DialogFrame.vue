@@ -2,9 +2,9 @@
 /**
  * 对话框外壳：Teleport 到 body 的磨砂遮罩 + 白卡片 + 标题 / 说明 / 取消与确认按钮。
  *
- * ConfirmDialog（危险确认，可带勾选项）与 PromptDialog（文本输入）共用这一层：
- * 遮罩、Esc 取消、点遮罩取消、按钮样式与初始焦点都只在这里维护一次，
- * 各自只负责插在中间的字段（勾选项 / 输入框）。
+ * ConfirmDialog（危险确认，可带勾选项）、PromptDialog（文本输入）与 GroupStatsDialog（只读统计）
+ * 共用这一层：遮罩、Esc 取消、点遮罩取消、按钮样式与初始焦点都只在这里维护一次，
+ * 各自只负责插在中间的字段（勾选项 / 输入框 / 统计内容）。只读面板不传 confirmLabel，就只留一个关闭按钮。
  */
 import { onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -15,7 +15,8 @@ const props = withDefaults(
     title: string;
     /** 标题下方的说明文字。 */
     hint?: string;
-    confirmLabel: string;
+    /** 确认按钮的文案；省略时不渲染确认按钮（纯展示型对话框）。 */
+    confirmLabel?: string;
     /** 左侧取消按钮的文案；纯展示型对话框传「关闭」之类。默认「取消」。 */
     cancelLabel?: string;
     /** 确认按钮配色：删除等不可逆操作用 danger。 */
@@ -66,6 +67,7 @@ onBeforeUnmount(() => {
             {{ cancelLabel ?? t("action.cancel") }}
           </button>
           <button
+            v-if="confirmLabel"
             ref="confirmButton"
             type="button"
             class="dialog-btn"
