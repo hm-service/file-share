@@ -249,12 +249,12 @@ function onDrop(event: DragEvent, path: string): void {
 
 <style scoped>
 .tree {
-  width: 248px;
-  flex: 0 0 248px;
+  width: var(--sidebar-width, 248px);
+  flex: 0 0 var(--sidebar-width, 248px);
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 10px 10px 0;
+  padding: 10px 12px 0 10px;
   background: var(--surface);
   border-right: 1px solid var(--line);
 }
@@ -360,6 +360,33 @@ function onDrop(event: DragEvent, path: string): void {
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 8px;
+  /* 滚动条挪进侧栏的内边距里：负 margin 把它推到条目右侧留白处，
+     padding 再把内容拉回原位，滚动条就不会压住文件夹名与计数 */
+  margin-right: -12px;
+  padding-right: 12px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(20 23 44 / 0.16) transparent;
+}
+
+/* 细滚动条：轨道透明，拇指内缩成圆角胶囊 */
+.nav-tree::-webkit-scrollbar {
+  width: 12px;
+}
+
+.nav-tree::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-tree::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: rgb(20 23 44 / 0.16);
+}
+
+.nav-tree::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(20 23 44 / 0.28);
 }
 
 .node.is-group {

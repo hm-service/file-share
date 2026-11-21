@@ -127,6 +127,7 @@ export type MessageKey =
   | "storage.local-hint"
   | "nav.all"
   | "nav.tree"
+  | "nav.resize-sidebar"
   | "column.name"
   | "column.size"
   | "column.uploaded"
@@ -279,6 +280,7 @@ const messages: Record<MessageKey, Message> = {
   },
   "nav.all": { zh: "全部", en: "All" },
   "nav.tree": { zh: "文件夹", en: "Folders" },
+  "nav.resize-sidebar": { zh: "拖动调整侧栏宽度", en: "Drag to resize sidebar" },
   "column.name": { zh: "名称", en: "Name" },
   "column.size": { zh: "大小", en: "Size" },
   "column.uploaded": { zh: "上传时间", en: "Uploaded" },

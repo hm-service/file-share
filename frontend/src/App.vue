@@ -69,6 +69,74 @@ const storage = ref<StorageInfo | null>(null);
 /** 窄屏抽屉：侧栏在移动端默认收起。 */
 const sidebarOpen = ref(false);
 
+/* ---------- 侧栏宽度（桌面端拖右缘调节） ---------- */
+
+const SIDEBAR_DEFAULT_WIDTH = 248;
+const SIDEBAR_MIN_WIDTH = 200;
+/** 上限取视口一半：目录列表最多占半屏，内容区至少留一半。 */
+const SIDEBAR_MAX_RATIO = 0.5;
+const SIDEBAR_WIDTH_KEY = "file-share.sidebar-width";
+
+function maxSidebarWidth(): number {
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO));
+}
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(Math.max(Math.round(width), SIDEBAR_MIN_WIDTH), maxSidebarWidth());
+}
+
+function loadSidebarWidth(): number {
+  try {
+    const stored = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "", 10);
+    return Number.isFinite(stored) ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_WIDTH;
+  } catch {
+    /* 隐私模式下 localStorage 不可用，用默认宽度 */
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+/** 侧栏宽度只存在本机：刷新、重启后保持用户拖出来的宽度。 */
+const sidebarWidth = ref(loadSidebarWidth());
+const resizingSidebar = ref(false);
+let stopSidebarResize: (() => void) | null = null;
+
+/**
+ * 按住两栏边界的 grip 拖动：宽度实时跟随指针，放手后落盘。
+ * 移动 / 抬手监听挂在 window 上，指针滑出 grip 也能继续拖。
+ */
+function startSidebarResize(event: PointerEvent): void {
+  if (event.button !== 0 || resizingSidebar.value) return;
+  event.preventDefault();
+  const startX = event.clientX;
+  const startWidth = sidebarWidth.value;
+  resizingSidebar.value = true;
+
+  const onMove = (moveEvent: PointerEvent): void => {
+    sidebarWidth.value = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+  };
+  const finish = (): void => {
+    resizingSidebar.value = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    stopSidebarResize = null;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
+    } catch {
+      /* 存不下就只能本次有效 */
+    }
+  };
+  stopSidebarResize = finish;
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+}
+
+/** 窗口变窄时把侧栏夹回上限以内（用户存下的宽度不覆盖）。 */
+function onWindowResize(): void {
+  sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
+}
+
 /* ---------- 视图与派生数据 ---------- */
 
 /** 当前文件夹路径；非文件夹视图为空串（上传落到未分组）。 */
@@ -783,6 +851,7 @@ onMounted(() => {
   document.addEventListener("drop", swallowDrop);
   document.addEventListener("dragend", onFileDragEnd);
   window.addEventListener("popstate", syncViewFromLocation);
+  window.addEventListener("resize", onWindowResize);
   syncViewFromLocation();
   void refresh();
   void loadStorage();
@@ -793,6 +862,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("drop", swallowDrop);
   document.removeEventListener("dragend", onFileDragEnd);
   window.removeEventListener("popstate", syncViewFromLocation);
+  window.removeEventListener("resize", onWindowResize);
+  stopSidebarResize?.();
   window.clearTimeout(actionErrorTimer);
 });
 </script>
@@ -850,7 +921,11 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="body">
+    <div
+      class="body"
+      :class="{ 'is-resizing': resizingSidebar }"
+      :style="{ '--sidebar-width': `${sidebarWidth}px` }"
+    >
       <div class="sidebar-wrap" :class="{ 'is-open': sidebarOpen }">
         <DirTree
           :groups="groups"
@@ -875,6 +950,17 @@ onBeforeUnmount(() => {
           @drop-folder="onDropOnFolder"
         />
       </div>
+
+      <!-- 两栏边界的 grip：只覆盖边界几像素，按住左右拖动调侧栏宽度 -->
+      <div
+        class="sidebar-grip"
+        :class="{ 'is-active': resizingSidebar }"
+        role="separator"
+        aria-orientation="vertical"
+        :aria-label="t('nav.resize-sidebar')"
+        :title="t('nav.resize-sidebar')"
+        @pointerdown="startSidebarResize"
+      ></div>
 
       <div v-if="sidebarOpen" class="drawer-mask" @click="sidebarOpen = false"></div>
 
@@ -1285,14 +1371,54 @@ onBeforeUnmount(() => {
 /* ---------- 布局 ---------- */
 
 .body {
+  position: relative;
   flex: 1;
   display: flex;
   min-height: 0;
 }
 
+/* 拖动分栏时整页禁用选中，避免把列表文字一起抹蓝 */
+.body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .sidebar-wrap {
   display: flex;
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
   min-height: 0;
+}
+
+/* 两栏边界的 grip：绝对定位，不占布局宽度；只压住边界两侧几像素 */
+.sidebar-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-width) - 3px);
+  z-index: 6;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* 悬停 / 拖动时显示一条细线，提示这里是可拖拽的分界 */
+.sidebar-grip::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.sidebar-grip:hover::before,
+.sidebar-grip.is-active::before {
+  opacity: 0.6;
 }
 
 .content {
@@ -1301,6 +1427,30 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 18px 24px 24px;
   overflow-y: auto;
+  /* 常驻滚动条槽位：切换视图时列表宽度不跳，滚动条也不压住表格右侧的按钮 */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(20 23 44 / 0.16) transparent;
+}
+
+/* 细滚动条：轨道透明，拇指内缩成圆角胶囊 */
+.content::-webkit-scrollbar {
+  width: 12px;
+}
+
+.content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.content::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: rgb(20 23 44 / 0.16);
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(20 23 44 / 0.28);
 }
 
 /* ---------- 工具栏 / 面包屑 ---------- */
@@ -1533,6 +1683,11 @@ onBeforeUnmount(() => {
 
   .sidebar-wrap.is-open {
     transform: translateX(0);
+  }
+
+  /* 窄屏没有两栏布局，边界 grip 一并隐藏 */
+  .sidebar-grip {
+    display: none;
   }
 
   .drawer-mask {
