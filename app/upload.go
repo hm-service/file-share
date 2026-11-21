@@ -30,13 +30,13 @@ type Upload struct {
 	writeFailed bool
 }
 
-// NewUpload 在 files/ 下建一个私密权限的临时文件。
+// NewUpload 在 DATA_DIR/temp 下建一个私密权限的临时文件。
 func (a *App) NewUpload() (*Upload, error) {
 	id, err := core.UUID4()
 	if err != nil {
 		return nil, err
 	}
-	tempPath := filepath.Join(a.filesDir, ".upload-"+id+".tmp")
+	tempPath := filepath.Join(a.tempDir, ".upload-"+id+".tmp")
 	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, core.SecretPerm)
 	if err != nil {
 		return nil, err

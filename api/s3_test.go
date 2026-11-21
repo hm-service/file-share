@@ -52,11 +52,15 @@ func TestS3UploadDownload(t *testing.T) {
 	if size != int64(len(content)) {
 		t.Errorf("对象大小 = %d，想要 %d", size, len(content))
 	}
-	// 2) S3 模式下 files/ 里不该留下 blob（临时文件上传完成后删掉）。
-	if entries, err := os.ReadDir(filepath.Join(instance.Config.DataDir, "files")); err != nil {
-		t.Fatalf("读取 files 目录失败: %v", err)
-	} else if len(entries) != 0 {
-		t.Errorf("files/ 里还剩 %d 个文件: %v", len(entries), entries)
+	// 2) S3 模式下 blobs/ 与 temp/ 里都不该留下东西（临时文件上传完成后删掉）。
+	for _, dir := range []string{"blobs", "temp"} {
+		entries, err := os.ReadDir(filepath.Join(instance.Config.DataDir, dir))
+		if err != nil {
+			t.Fatalf("读取 %s 目录失败: %v", dir, err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s/ 里还剩 %d 个文件: %v", dir, len(entries), entries)
+		}
 	}
 
 	// 3) 完整下载。

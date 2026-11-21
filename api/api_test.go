@@ -452,9 +452,9 @@ func TestUpload(t *testing.T) {
 		if count != 2 {
 			t.Errorf("同内容记录数 = %d，想要 2", count)
 		}
-		entries, err := os.ReadDir(instance.Config.DataDir + "/files")
+		entries, err := os.ReadDir(instance.Config.DataDir + "/blobs")
 		if err != nil {
-			t.Fatalf("读 files 目录失败: %v", err)
+			t.Fatalf("读 blobs 目录失败: %v", err)
 		}
 		blobs := 0
 		for _, entry := range entries {

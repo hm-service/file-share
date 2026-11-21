@@ -13,7 +13,7 @@ import (
 	"file-share/db"
 )
 
-// MigrateToS3 把本地 DATA_DIR/files/<sha256> 里的 blob 搬到 S3。
+// MigrateToS3 把本地 DATA_DIR/blobs/<sha256> 里的 blob 搬到 S3。
 //
 // 幂等：目标对象已存在且大小一致就跳过，可反复执行。迁移只上传与校验，
 // 不删除本地文件 —— 回滚依赖它们还在，确认无误后由运维自行清理。
@@ -22,11 +22,14 @@ func MigrateToS3(ctx context.Context, dataDir string, cfg S3Config, dryRun bool,
 	if out == nil {
 		out = io.Discard
 	}
-	dbPath := filepath.Join(dataDir, "file-share.db")
+	if err := moveLegacyBlobDir(dataDir); err != nil {
+		return err
+	}
+	dbPath := filepath.Join(dataDir, dbFileName)
 	if _, err := os.Stat(dbPath); err != nil {
 		return fmt.Errorf("database %s is not readable: %w", dbPath, err)
 	}
-	localDir := filepath.Join(dataDir, "files")
+	localDir := filepath.Join(dataDir, blobsDirName)
 	if info, err := os.Stat(localDir); err != nil || !info.IsDir() {
 		return fmt.Errorf("local blob dir %s is not readable: %w", localDir, err)
 	}

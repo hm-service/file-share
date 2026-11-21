@@ -71,7 +71,8 @@ func TestOpenTightensDataLayout(t *testing.T) {
 		perm os.FileMode
 	}{
 		{path: dataDir, perm: 0o700},
-		{path: filepath.Join(dataDir, "files"), perm: 0o700},
+		{path: filepath.Join(dataDir, "blobs"), perm: 0o700},
+		{path: filepath.Join(dataDir, "temp"), perm: 0o700},
 		{path: filepath.Join(dataDir, "file-share.db"), perm: 0o600},
 	} {
 		info, err := os.Stat(item.path)
@@ -115,20 +116,20 @@ func TestOpenRejectsLegacyData(t *testing.T) {
 	}
 }
 
-func TestOpenCleansAndTightensFiles(t *testing.T) {
+// 旧布局把 blob 与上传临时文件都放在 files/：启动时整体改名为 blobs/，
+// 顺手清掉里面的残留临时文件，blob 权限收紧。
+func TestOpenMovesLegacyFilesDir(t *testing.T) {
 	dataDir := t.TempDir()
-	filesDir := filepath.Join(dataDir, "files")
-	if err := os.Mkdir(filesDir, 0o755); err != nil {
-		t.Fatalf("准备 files 目录失败: %v", err)
-	}
-	leftover := filepath.Join(filesDir, ".upload-leftover.tmp")
-	if err := os.WriteFile(leftover, []byte("partial"), 0o600); err != nil {
-		t.Fatalf("准备残留临时文件失败: %v", err)
+	legacy := filepath.Join(dataDir, "files")
+	if err := os.Mkdir(legacy, 0o755); err != nil {
+		t.Fatalf("准备旧 files 目录失败: %v", err)
 	}
 	sha := testenv.SHA256([]byte("existing blob"))
-	blob := filepath.Join(filesDir, sha)
-	if err := os.WriteFile(blob, []byte("existing blob"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(legacy, sha), []byte("existing blob"), 0o644); err != nil {
 		t.Fatalf("准备 blob 失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, ".upload-leftover.tmp"), []byte("partial"), 0o600); err != nil {
+		t.Fatalf("准备残留临时文件失败: %v", err)
 	}
 
 	instance, err := app.Open(app.Config{
@@ -142,15 +143,41 @@ func TestOpenCleansAndTightensFiles(t *testing.T) {
 	}
 	defer instance.Close()
 
-	if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("残留临时文件应当被清掉: %v", err)
+	blobsDir := filepath.Join(dataDir, "blobs")
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("旧的 files/ 应当已改名为 blobs/: %v", err)
 	}
-	info, err := os.Stat(blob)
+	if _, err := os.Stat(filepath.Join(blobsDir, ".upload-leftover.tmp")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("改名后残留的临时文件应当被清掉: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(blobsDir, sha))
 	if err != nil {
 		t.Fatalf("stat blob 失败: %v", err)
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("blob 权限 = %04o，想要 0600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "temp")); err != nil {
+		t.Errorf("temp 目录应当被建出来: %v", err)
+	}
+}
+
+// 新旧两个 blob 目录同时存在时不能猜哪份是真的：当场报错让人确认。
+func TestOpenRejectsAmbiguousBlobDirs(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, name := range []string{"files", "blobs"} {
+		if err := os.Mkdir(filepath.Join(dataDir, name), 0o700); err != nil {
+			t.Fatalf("准备 %s 目录失败: %v", name, err)
+		}
+	}
+	_, err := app.Open(app.Config{
+		DataDir:           dataDir,
+		SessionSigningKey: testenv.SessionSigningKey,
+		AuthTokenHash:     "hash",
+		MaxFileSize:       1024,
+	})
+	if err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("新旧 blob 目录并存时应当报错，得到 %v", err)
 	}
 }
 

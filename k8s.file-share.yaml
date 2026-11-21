@@ -5,7 +5,7 @@ metadata:
     name: file-share-env
 data:
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
-    # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/files）：
+    # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/blobs）：
     # 桶必须已存在；S3_BUCKET 默认 file-share、S3_PREFIX 默认 blobs（key 为 blobs/xx/yy/<sha>），
     # 多实例共桶时每个实例用不同的 S3_PREFIX。
     # 与 S3 同机运行时配合下面的 hostNetwork，让容器内的 127.0.0.1 就是宿主。

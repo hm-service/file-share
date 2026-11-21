@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 )
 
-// localBlobStore 把 blob 存成 DATA_DIR/files/<sha256>：沿用改造前的布局，
+// localBlobStore 把 blob 存成 DATA_DIR/blobs/<sha256>：
 // 文件名就是内容摘要，去重靠同名的文件是否存在。
 type localBlobStore struct {
 	dir string

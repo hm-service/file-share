@@ -30,9 +30,16 @@ type Config struct {
 	AuthTokenHash     string
 	ReadyzToken       string
 	MaxFileSize       int64
-	// S3 为 nil 时 blob 存在本地 DATA_DIR/files 下，否则存在 S3。
+	// S3 为 nil 时 blob 存在本地 DATA_DIR/blobs 下，否则存在 S3。
 	S3 *S3Config
 }
+
+// DATA_DIR 下的固定布局：blob 仓库与上传暂存分开，库文件放根目录。
+const (
+	blobsDirName = "blobs"
+	tempDirName  = "temp"
+	dbFileName   = "file-share.db"
+)
 
 // StorageInfo 描述当前 blob 的存放方案：本地目录或 S3 对象存储。
 // 只含可公开的信息（后端类型、桶名、前缀），不含 endpoint 与凭据；
@@ -58,7 +65,8 @@ type App struct {
 	Blobs   BlobStore
 	Storage StorageInfo
 
-	filesDir string
+	blobsDir string
+	tempDir  string
 	dbPath   string
 	signer   *core.SessionSigner
 	signurl  *core.URLSigner
@@ -87,12 +95,16 @@ func Open(cfg Config) (*App, error) {
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return nil, err
 	}
-	filesDir := filepath.Join(cfg.DataDir, "files")
-	if err := os.MkdirAll(filesDir, core.DataDirPerm); err != nil {
-		return nil, fmt.Errorf("create files dir: %w", err)
+	if err := moveLegacyBlobDir(cfg.DataDir); err != nil {
+		return nil, err
 	}
-	if err := core.TightenPerm(filesDir, core.DataDirPerm); err != nil {
-		return nil, fmt.Errorf("tighten files dir: %w", err)
+	blobsDir := filepath.Join(cfg.DataDir, blobsDirName)
+	if err := ensureDir(blobsDir, "blobs"); err != nil {
+		return nil, err
+	}
+	tempDir := filepath.Join(cfg.DataDir, tempDirName)
+	if err := ensureDir(tempDir, "upload temp"); err != nil {
+		return nil, err
 	}
 	if cfg.S3 != nil && (cfg.S3.Endpoint == "" || cfg.S3.Bucket == "") {
 		return nil, fmt.Errorf("S3 config requires endpoint and bucket")
@@ -101,15 +113,18 @@ func Open(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	dbPath := filepath.Join(cfg.DataDir, "file-share.db")
+	dbPath := filepath.Join(cfg.DataDir, dbFileName)
 	store, err := db.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	// 残留的上传临时文件是上次进程异常退出的痕迹，留着只会白占空间。
-	if err := removeLeftoverUploads(filesDir); err != nil {
-		store.Close()
-		return nil, fmt.Errorf("clean upload temp files: %w", err)
+	// blobs/ 里的 .upload-* 只可能是旧布局（临时文件曾与 blob 同目录）留下的。
+	for _, dir := range []string{tempDir, blobsDir} {
+		if err := removeLeftoverUploads(dir); err != nil {
+			store.Close()
+			return nil, fmt.Errorf("clean upload temp files in %s: %w", dir, err)
+		}
 	}
 	var blobs BlobStore
 	if cfg.S3 != nil {
@@ -121,11 +136,11 @@ func Open(cfg Config) (*App, error) {
 		blobs = s3
 	} else {
 		// blob 的权限可能是旧版本或手工操作留下的，启动时统一收紧。
-		if err := tightenBlobs(filesDir); err != nil {
+		if err := tightenBlobs(blobsDir); err != nil {
 			store.Close()
 			return nil, fmt.Errorf("tighten blob permissions: %w", err)
 		}
-		blobs = newLocalBlobStore(filesDir)
+		blobs = newLocalBlobStore(blobsDir)
 	}
 	storage := StorageInfo{Backend: blobs.Kind()}
 	if cfg.S3 != nil {
@@ -137,7 +152,8 @@ func Open(cfg Config) (*App, error) {
 		Store:    store,
 		Blobs:    blobs,
 		Storage:  storage,
-		filesDir: filesDir,
+		blobsDir: blobsDir,
+		tempDir:  tempDir,
 		dbPath:   dbPath,
 		signer:   core.NewSessionSigner([]byte(cfg.SessionSigningKey)),
 		signurl:  core.NewURLSigner([]byte(cfg.URLSignatureKey)),
@@ -181,8 +197,49 @@ func prepareDataDir(dataDir string) error {
 	return nil
 }
 
-func removeLeftoverUploads(filesDir string) error {
-	entries, err := os.ReadDir(filesDir)
+// ensureDir 建出 DATA_DIR 下的固定子目录并收紧权限。子目录由应用自己维护，
+// 缺了就是新部署，建出来再继续；建不出来说明卷或权限有问题，当场失败。
+func ensureDir(path, label string) error {
+	if err := os.MkdirAll(path, core.DataDirPerm); err != nil {
+		return fmt.Errorf("create %s dir: %w", label, err)
+	}
+	if err := core.TightenPerm(path, core.DataDirPerm); err != nil {
+		return fmt.Errorf("tighten %s dir: %w", label, err)
+	}
+	return nil
+}
+
+// moveLegacyBlobDir 把旧布局的 blob 目录 DATA_DIR/files 改名为 DATA_DIR/blobs。
+//
+// 旧版本把 blob 与上传临时文件都放在 files/ 下，新版本拆成 blobs/ 与 temp/。
+// 改名只动目录名、不搬内容（同一文件系统内是一次原子 rename）。两个目录同时存在
+// 说明有人手工动过数据，直接报错让人确认，不猜哪份才是真的。
+func moveLegacyBlobDir(dataDir string) error {
+	legacy := filepath.Join(dataDir, "files")
+	info, err := os.Stat(legacy)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("stat legacy blob dir %s: %w", legacy, err)
+	case !info.IsDir():
+		return fmt.Errorf("legacy path %s is not a directory", legacy)
+	}
+	target := filepath.Join(dataDir, blobsDirName)
+	if _, err := os.Stat(target); err == nil {
+		return fmt.Errorf("both %s and %s exist; remove one before starting", legacy, target)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", target, err)
+	}
+	if err := os.Rename(legacy, target); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", legacy, target, err)
+	}
+	slog.Info("moved legacy blob dir", slog.String("from", legacy), slog.String("to", target))
+	return nil
+}
+
+func removeLeftoverUploads(dir string) error {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
@@ -191,15 +248,15 @@ func removeLeftoverUploads(filesDir string) error {
 		if entry.IsDir() || !strings.HasPrefix(name, ".upload-") || !strings.HasSuffix(name, ".tmp") {
 			continue
 		}
-		if err := os.Remove(filepath.Join(filesDir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
 	return nil
 }
 
-func tightenBlobs(filesDir string) error {
-	entries, err := os.ReadDir(filesDir)
+func tightenBlobs(blobsDir string) error {
+	entries, err := os.ReadDir(blobsDir)
 	if err != nil {
 		return err
 	}
@@ -208,7 +265,7 @@ func tightenBlobs(filesDir string) error {
 		if entry.Type()&fs.ModeSymlink != 0 {
 			continue
 		}
-		path := filepath.Join(filesDir, entry.Name())
+		path := filepath.Join(blobsDir, entry.Name())
 		mode := fs.FileMode(core.SecretPerm)
 		if entry.IsDir() {
 			mode = core.DataDirPerm
@@ -233,8 +290,11 @@ func (a *App) Ready() error {
 	if err := core.CheckPerm(a.Config.DataDir, core.DataDirPerm); err != nil {
 		return fmt.Errorf("data dir: %w", err)
 	}
-	if err := core.CheckPerm(a.filesDir, core.DataDirPerm); err != nil {
-		return fmt.Errorf("files dir: %w", err)
+	if err := core.CheckPerm(a.blobsDir, core.DataDirPerm); err != nil {
+		return fmt.Errorf("blobs dir: %w", err)
+	}
+	if err := core.CheckPerm(a.tempDir, core.DataDirPerm); err != nil {
+		return fmt.Errorf("temp dir: %w", err)
 	}
 	if err := core.CheckPerm(a.dbPath, core.SecretPerm); err != nil {
 		return fmt.Errorf("database file: %w", err)

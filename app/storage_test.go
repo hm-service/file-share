@@ -22,7 +22,7 @@ func TestCheckStorageLocalBackend(t *testing.T) {
 func TestLocalBlobStoreMissingDirIsNotNotFound(t *testing.T) {
 	instance := testenv.New(t)
 	file := testenv.SeedUpload(t, instance, "missing-dir.txt", []byte("missing dir"))
-	if err := os.RemoveAll(filepath.Join(instance.Config.DataDir, "files")); err != nil {
+	if err := os.RemoveAll(filepath.Join(instance.Config.DataDir, "blobs")); err != nil {
 		t.Fatalf("删除 blob 目录失败: %v", err)
 	}
 	if _, err := instance.Blobs.Head(context.Background(), file.SHA256); err == nil || errors.Is(err, app.ErrBlobNotFound) {

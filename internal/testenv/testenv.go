@@ -251,7 +251,7 @@ func SeedUpload(t *testing.T, instance *app.App, filename string, content []byte
 
 // BlobPath 按契约里的数据目录布局算出一个 blob 的路径。
 func BlobPath(instance *app.App, sha string) string {
-	return filepath.Join(instance.Config.DataDir, "files", sha)
+	return filepath.Join(instance.Config.DataDir, "blobs", sha)
 }
 
 // BlobExists 报告 blob 文件是否还在。
@@ -260,12 +260,12 @@ func BlobExists(instance *app.App, sha string) bool {
 	return err == nil
 }
 
-// UploadTempFiles 列出 files/ 下残留的上传临时文件（任何错误路径都不该留下它们）。
+// UploadTempFiles 列出 temp/ 下残留的上传临时文件（任何错误路径都不该留下它们）。
 func UploadTempFiles(t *testing.T, instance *app.App) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(instance.Config.DataDir, "files"))
+	entries, err := os.ReadDir(filepath.Join(instance.Config.DataDir, "temp"))
 	if err != nil {
-		t.Fatalf("读取 files 目录失败: %v", err)
+		t.Fatalf("读取 temp 目录失败: %v", err)
 	}
 	var leftovers []string
 	for _, entry := range entries {

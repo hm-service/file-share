@@ -82,7 +82,7 @@ func TestMigrateToS3(t *testing.T) {
 	}
 
 	// 3) 本地文件还在（回滚依赖它们）。
-	if _, err := os.Stat(filepath.Join(local.Config.DataDir, "files", alpha.SHA256)); err != nil {
+	if _, err := os.Stat(filepath.Join(local.Config.DataDir, "blobs", alpha.SHA256)); err != nil {
 		t.Errorf("迁移不该删除本地 blob: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestMigrateToS3FailsOnMissingLocalBlob(t *testing.T) {
 	cfg := testenv.S3Config(t)
 	local := testenv.New(t)
 	record := testenv.SeedUpload(t, local, "gone.txt", []byte("gone content"))
-	if err := os.Remove(filepath.Join(local.Config.DataDir, "files", record.SHA256)); err != nil {
+	if err := os.Remove(filepath.Join(local.Config.DataDir, "blobs", record.SHA256)); err != nil {
 		t.Fatalf("删除本地 blob 失败: %v", err)
 	}
 	var out bytes.Buffer

@@ -17,7 +17,7 @@
 
 - 镜像 `ghcr.io/hm-service/file-share:<yyyy-MM-dd>` / `:latest`；多阶段 Dockerfile
   （node 构建前端 → Go 编译 → alpine 只留一个二进制），同时构建 amd64 与 arm64。
-- blob 后端：默认本地 `DATA_DIR/files/<sha256>`；配 `S3_ENDPOINT` 后写 S3，
+- blob 后端：默认本地 `DATA_DIR/blobs/<sha256>`；配 `S3_ENDPOINT` 后写 S3，
   对象 key 为 `blobs/xx/yy/<sha256>`（`S3_PREFIX` / `S3_BUCKET` 可改）。两套实现由
   `app.BlobStore` 隔离，上传、秒传、下载、删除与引用计数语义一致。
 - `k8s.file-share.yaml`：Pod + PVC + ConfigMap + Secret；`readOnlyRootFilesystem: true`、
@@ -33,7 +33,7 @@
 | `HOST` | `0.0.0.0` | IP 或合法主机名；监听地址 |
 | `PORT` | `8080` | 1–65535 |
 | `TZ` | 空（Go 默认） | 合法时区名；影响日志时间戳 |
-| `DATA_DIR` | `/data` | SQLite 与上传暂存目录（本地模式下也是 blob 目录）；必须已存在且可读写，启动时收紧到 0700 |
+| `DATA_DIR` | `/data` | SQLite、上传暂存 `temp/` 与本地 blob 目录 `blobs/`；必须已存在且可读写，启动时收紧到 0700 |
 | `TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 逗号分隔 CIDR/IP；只信任这些来源的 `X-Forwarded-For` |
 | `MAX_AUTH_CONCURRENCY` | `32` | `/api/auth` 信号量槽位，≥ 1 |
 | `MAX_API_CONCURRENCY` | `128` | 其余 `/api/*` 槽位，≥ 1 |
@@ -58,12 +58,15 @@
 DATA_DIR/                   0700
   file-share.db             0600  SQLite（WAL 模式）
   file-share.db-wal/-shm          WAL 附带文件
-  files/                    0700  上传暂存；本地模式下也是 blob 目录
+  blobs/                    0700  本地模式下的 blob 目录（S3 模式为空）
     <sha256>                0600  内容寻址的物理文件
+  temp/                     0700  上传暂存
     .upload-*.tmp                 上传中的临时文件，启动时清理残留
 ```
 
-S3 模式下 `files/` 只放上传暂存，blob 存在桶里：`<S3_PREFIX>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>`。
+旧版本把 blob 放在 `DATA_DIR/files`：启动时自动改名为 `DATA_DIR/blobs`，
+两个目录同时存在则拒绝启动，避免猜错数据。S3 模式下 `blobs/` 为空，
+blob 存在桶里：`<S3_PREFIX>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>`。
 两种模式下同一内容都只存一份，删除记录时若该 sha 已无引用则删除 blob。
 
 ```sql
@@ -203,15 +206,15 @@ sequenceDiagram
     participant D as 本地磁盘 DATA_DIR
 
     B->>A: POST /api/upload（multipart：file + client_sha256）
-    A->>D: 建 files/.upload-<uuid>.tmp，边收边写边算 sha256
+    A->>D: 建 temp/.upload-<uuid>.tmp，边收边写边算 sha256
     Note over A: 超过 MAX_FILE_SIZE → 413，删临时文件
     A->>A: 校验指纹与文件名（不符 → 400，删临时文件）
     A->>A: 关闭临时文件，取 sha 分片锁
-    A->>D: Head = stat(files/<sha>)
+    A->>D: Head = stat(blobs/<sha>)
     alt blob 已存在（秒传）
         A->>D: 删临时文件
     else blob 不存在
-        A->>D: rename 临时文件 → files/<sha>（同目录原子，不复制内容）
+        A->>D: rename 临时文件 → blobs/<sha>（同文件系统原子，不复制内容）
     end
     A->>A: 插入 SQLite 记录
     A-->>B: 200 {"id","sha256"}
@@ -228,7 +231,7 @@ sequenceDiagram
     participant S as S3
 
     B->>A: POST /api/upload（multipart：file + client_sha256）
-    A->>D: 建 files/.upload-<uuid>.tmp，边收边写边算 sha256
+    A->>D: 建 temp/.upload-<uuid>.tmp，边收边写边算 sha256
     Note over A: 超过 MAX_FILE_SIZE → 413，删临时文件
     A->>A: 校验指纹与文件名（不符 → 400，删临时文件）
     A->>A: 关闭临时文件，取 sha 分片锁
@@ -282,9 +285,9 @@ sequenceDiagram
 
 | 步骤 | 本地目录 | S3 |
 | --- | --- | --- |
-| 上传暂存 | `DATA_DIR/files/.upload-*.tmp`（两种模式都有） | 同左 |
+| 上传暂存 | `DATA_DIR/temp/.upload-*.tmp`（两种模式都有） | 同左 |
 | 存在性 `Head` | `os.Stat` | `StatObject` |
-| 落位 `PutFile` | 同目录 rename | `PutObject` 后删临时文件 |
+| 落位 `PutFile` | rename 到 `blobs/`（同文件系统） | `PutObject` 后删临时文件 |
 | 打开 `Open` | `os.Open` | `GetObject` + `StatObject` |
 | 删除 `Delete` | `os.Remove` | `RemoveObject` |
 | 启动检查 | 无 | `BucketExists`，桶不存在拒绝启动 |
@@ -303,7 +306,7 @@ sequenceDiagram
 - 授权：`/api/*` 除 `POST /api/auth` 外均需会话；匿名访问只通过 `/s/{id}?sig&exp`，
   绑定单文件、10 分钟或 24 小时失效、不是会话凭据、不进日志。
 - Secret（会话密钥、URL 密钥、登录令牌、探针令牌、S3 凭据）读完立即从进程环境表删除。
-- 数据权限：`DATA_DIR` 0700、`files/` 0700、数据库 0600、本地 blob 0600，启动时收紧，
+- 数据权限：`DATA_DIR` 0700、`blobs/` 与 `temp/` 0700、数据库 0600、本地 blob 与上传临时文件 0600，启动时收紧，
   `/readyz` 持续断言；S3 模式改用桶凭据控制访问。
 - 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
   `X-Frame-Options: DENY`、严格 CSP
