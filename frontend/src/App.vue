@@ -77,7 +77,6 @@ const SIDEBAR_DEFAULT_WIDTH = 248;
 const SIDEBAR_MIN_WIDTH = 200;
 /** 上限取视口一半：目录列表最多占半屏，内容区至少留一半。 */
 const SIDEBAR_MAX_RATIO = 0.5;
-const SIDEBAR_WIDTH_KEY = "file-share.sidebar-width";
 
 function maxSidebarWidth(): number {
   return Math.max(SIDEBAR_MIN_WIDTH, Math.floor(window.innerWidth * SIDEBAR_MAX_RATIO));
@@ -87,23 +86,13 @@ function clampSidebarWidth(width: number): number {
   return Math.min(Math.max(Math.round(width), SIDEBAR_MIN_WIDTH), maxSidebarWidth());
 }
 
-function loadSidebarWidth(): number {
-  try {
-    const stored = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "", 10);
-    return Number.isFinite(stored) ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_WIDTH;
-  } catch {
-    /* 隐私模式下 localStorage 不可用，用默认宽度 */
-    return SIDEBAR_DEFAULT_WIDTH;
-  }
-}
-
-/** 侧栏宽度只存在本机：刷新、重启后保持用户拖出来的宽度。 */
-const sidebarWidth = ref(loadSidebarWidth());
+/** 侧栏宽度只存内存：刷新或重开页面回到默认宽度。 */
+const sidebarWidth = ref(SIDEBAR_DEFAULT_WIDTH);
 const resizingSidebar = ref(false);
 let stopSidebarResize: (() => void) | null = null;
 
 /**
- * 按住两栏边界的 grip 拖动：宽度实时跟随指针，放手后落盘。
+ * 按住两栏边界的 grip 拖动：宽度实时跟随指针，只在本次会话内生效。
  * 移动 / 抬手监听挂在 window 上，指针滑出 grip 也能继续拖。
  */
 function startSidebarResize(event: PointerEvent): void {
@@ -122,11 +111,6 @@ function startSidebarResize(event: PointerEvent): void {
     window.removeEventListener("pointerup", finish);
     window.removeEventListener("pointercancel", finish);
     stopSidebarResize = null;
-    try {
-      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
-    } catch {
-      /* 存不下就只能本次有效 */
-    }
   };
   stopSidebarResize = finish;
   window.addEventListener("pointermove", onMove);
@@ -134,7 +118,7 @@ function startSidebarResize(event: PointerEvent): void {
   window.addEventListener("pointercancel", finish);
 }
 
-/** 窗口变窄时把侧栏夹回上限以内（用户存下的宽度不覆盖）。 */
+/** 窗口变窄时把侧栏夹回上限以内（宽度只存内存，不覆盖任何持久值）。 */
 function onWindowResize(): void {
   sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
 }

@@ -218,7 +218,7 @@ onBeforeUnmount(() => {
       </li>
     </ul>
 
-    <ul ref="filesEl" class="file-list">
+    <ul ref="filesEl" class="file-list" :class="{ 'after-dirs': dirs.length > 0 }">
       <FileRow
         v-for="file in files"
         :key="file.id"
@@ -295,6 +295,11 @@ onBeforeUnmount(() => {
 
 .dir-list .dir-row:first-child {
   border-top: 0;
+}
+
+/* 文件夹区与文件区的分界：文件行的首行边框在自己的列表里被去掉，有文件夹时补回来 */
+.file-list.after-dirs :deep(.file-row:first-child) {
+  border-top: 1px solid var(--line);
 }
 
 .dir-row:hover {
