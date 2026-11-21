@@ -1,7 +1,7 @@
 /**
- * 展示用的格式化：文件大小、时间与日期分段标题。
+ * 展示用的格式化：文件大小、速度与时间。
  *
- * 文件时间只显示 `MM-DD HH:mm`，年份交给「最近」视图的日期分段标题展示。
+ * 文件时间只显示 `MM-DD HH:mm`，年份不展示（列表按时间倒序，年份在详情里看完整时间）。
  */
 import { t } from "./i18n";
 
@@ -33,13 +33,3 @@ export function formatTime(timestamp: number): string {
   return `${month}-${day} ${hours}:${minutes}`;
 }
 
-/** unix 秒 → 日期分段标题：中文「2026年11月7号」，英文「November 7, 2026」（本地时区）。 */
-export function formatDayHeading(timestamp: number): string {
-  const date = new Date(timestamp * 1000);
-  return t("date.group-heading", {
-    year: date.getFullYear(),
-    month: date.getMonth() + 1,
-    day: date.getDate(),
-    monthName: date.toLocaleDateString("en-US", { month: "long" }),
-  });
-}

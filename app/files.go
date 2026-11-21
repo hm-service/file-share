@@ -1,10 +1,10 @@
 package app
 
 import (
+	"context"
 	"errors"
-	"io/fs"
+	"io"
 	"log/slog"
-	"os"
 	"time"
 
 	"file-share/core"
@@ -80,9 +80,9 @@ func (a *App) SetGroupOrder(rawParent string, names []string) error {
 	return storeFailure(err, "store.order")
 }
 
-// CheckFile 是秒传预检：blob 已在磁盘上就立刻补一条记录（新的记录默认不是收藏）。
+// CheckFile 是秒传预检：blob 已在存储后端就立刻补一条记录（新的记录默认不是收藏）。
 // 返回的记录只在 exists 为 true 时有效。
-func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool, err error) {
+func (a *App) CheckFile(ctx context.Context, clientSHA, filename string) (file *db.File, exists bool, err error) {
 	if clientSHA == "" || filename == "" {
 		return nil, false, core.Fail(400, "upload.missing")
 	}
@@ -93,18 +93,24 @@ func (a *App) CheckFile(clientSHA, filename string) (file *db.File, exists bool,
 		return nil, false, core.Fail(400, "upload.invalid-filename")
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	// 与 FinishUpload 走同一把 sha 分片锁：Head 之后、插记录之前不会有删除动作
+	// 把这个 blob 清掉，避免出现「记录在、blob 不在」。
+	lock := a.shaMutex(clientSHA)
+	lock.Lock()
+	defer lock.Unlock()
 
-	info, statErr := os.Stat(a.blobPath(clientSHA))
-	if errors.Is(statErr, fs.ErrNotExist) {
+	size, err := a.Blobs.Head(ctx, clientSHA)
+	if errors.Is(err, ErrBlobNotFound) {
 		return nil, false, nil
 	}
-	if statErr != nil {
-		slog.Error("stat blob for instant upload failed", slog.Any("error", statErr))
+	if err != nil {
+		slog.Error("stat blob for instant upload failed", slog.Any("error", err))
 		return nil, false, core.Fail(500, "internal")
 	}
-	record, err := newFileRecord(filename, clientSHA, info.Size())
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	record, err := newFileRecord(filename, clientSHA, size)
 	if err != nil {
 		slog.Error("generate file id failed", slog.Any("error", err))
 		return nil, false, core.Fail(500, "internal")
@@ -167,60 +173,73 @@ func (a *App) RenameGroup(rawPath, rawNewName string) error {
 
 // DeleteGroup 删除一个分组，它的全部后代分组一并删除；deleteFiles 决定组内文件是一起删掉
 // 还是上移到被删分组的父路径（顶级分组上移到未分组）。目标分组不存在按 404 返回。
-func (a *App) DeleteGroup(rawPath string, deleteFiles bool) error {
+func (a *App) DeleteGroup(ctx context.Context, rawPath string, deleteFiles bool) error {
 	path, ok := core.NormalizeGroupPath(rawPath)
 	if !ok || path == "" {
 		return core.Fail(400, "group.invalid")
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	shas, err := a.Store.DeleteGroup(path, deleteFiles)
+	a.mu.Unlock()
 	switch {
 	case errors.Is(err, db.ErrNotFound):
 		return core.Fail(404, "group.not-found")
 	case err != nil:
 		return storeFailure(err, "store.delete")
 	}
-	// 记录已经删掉：blob 只剩这个分组引用时才清理，删不掉只留孤儿文件、不影响响应。
+	// 记录已经删掉：blob 只剩这个分组引用时才清理，删不掉只留孤儿对象、不影响响应。
+	// 逐个 sha 拿分片锁，避免和并发上传/删除互相踩；锁顺序固定为 sha → 无（DB 自己串行）。
 	for _, sha := range shas {
-		remaining, err := a.Store.CountBySHA(sha)
-		if err != nil {
-			slog.Error("count blob references after group delete failed",
-				slog.String("sha256", sha), slog.Any("error", err))
-			continue
-		}
-		if remaining > 0 {
-			continue
-		}
-		if err := os.Remove(a.blobPath(sha)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			slog.Error("remove blob after group delete failed",
-				slog.String("sha256", sha), slog.Any("error", err))
-		}
+		a.removeBlobIfUnreferenced(ctx, sha)
 	}
 	return nil
+}
+
+// removeBlobIfUnreferenced 在分片锁内确认这个 sha 已无记录引用再删 blob。
+// 用 defer 解锁而不是手动 unlock：S3 模式下 Blobs.Delete 可能 panic，
+// 手动解锁会把这把分片锁永远留在锁定状态。
+func (a *App) removeBlobIfUnreferenced(ctx context.Context, sha string) {
+	lock := a.shaMutex(sha)
+	lock.Lock()
+	defer lock.Unlock()
+
+	remaining, err := a.Store.CountBySHA(sha)
+	if err != nil {
+		slog.Error("count blob references after group delete failed",
+			slog.String("sha256", sha), slog.Any("error", err))
+		return
+	}
+	if remaining > 0 {
+		return
+	}
+	if err := a.Blobs.Delete(ctx, sha); err != nil {
+		slog.Error("remove blob after group delete failed",
+			slog.String("sha256", sha), slog.Any("error", err))
+	}
 }
 
 // IssueDownloadURL 给一条记录签匿名下载地址：浏览器凭它直接导航下载，
 // 地址 SignedURLTTL 内有效。blob 已经丢了就当场按 404 拒绝，
 // 避免用户导航过去才看到一个错误页。
-func (a *App) IssueDownloadURL(id string) (string, error) {
-	return a.issueSignedURL(id, core.SignedURLExpiry(time.Now()), "issue download url failed")
+func (a *App) IssueDownloadURL(ctx context.Context, id string) (string, error) {
+	return a.issueSignedURL(ctx, id, core.SignedURLExpiry(time.Now(), core.SignedURLTTL))
 }
 
-// IssueShareLink 给一条记录签分享链接：登录后复制，对方 SignedURLTTL 内免登录下载。
-func (a *App) IssueShareLink(id string) (string, error) {
-	return a.issueSignedURL(id, core.SignedURLExpiry(time.Now()), "issue share link failed")
+// IssueShareLink 给一条记录签分享链接：登录后复制，对方 ttl 内免登录下载。
+// ttl 由调用方限定（只允许默认档与 24 小时档），这里不猜。
+func (a *App) IssueShareLink(ctx context.Context, id string, ttl time.Duration) (string, error) {
+	return a.issueSignedURL(ctx, id, core.SignedURLExpiry(time.Now(), ttl))
 }
 
 // issueSignedURL 是下载地址与分享链接共用的签发流程：记录与 blob 都在才签，
 // 签的路径固定为 /s/<id>，签名因此绑定单个文件。
-func (a *App) issueSignedURL(id string, exp int64, errorLog string) (string, error) {
+func (a *App) issueSignedURL(ctx context.Context, id string, exp int64) (string, error) {
 	record, err := a.Store.File(id)
 	if err != nil {
 		return "", storeFailure(err, "internal")
 	}
-	if _, err := os.Stat(a.blobPath(record.SHA256)); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+	if _, err := a.Blobs.Head(ctx, record.SHA256); err != nil {
+		if errors.Is(err, ErrBlobNotFound) {
 			return "", core.Fail(404, "file.not-found")
 		}
 		slog.Error("stat blob for signed url failed", slog.Any("error", err))
@@ -232,11 +251,11 @@ func (a *App) issueSignedURL(id string, exp int64, errorLog string) (string, err
 // OpenSignedDownload 校验签名 URL 并打开 blob。校验失败一律 404：
 // 匿名调用方不需要知道是伪造、过期还是字段无效。escapedPath 传请求的 EscapedPath，
 // 与签出时逐字节一致才算数。
-func (a *App) OpenSignedDownload(fileID, method, escapedPath, sig string, exp int64) (*DownloadedFile, error) {
+func (a *App) OpenSignedDownload(ctx context.Context, fileID, method, escapedPath, sig string, exp int64) (*DownloadedFile, error) {
 	if err := a.signurl.Verify(method, escapedPath, sig, exp, time.Now()); err != nil {
 		return nil, core.Fail(404, "download.invalid")
 	}
-	return a.OpenDownload(fileID)
+	return a.OpenDownload(ctx, fileID)
 }
 
 // SetOrder 批量重写列表顺序；任一条记录不存在就整体失败，原顺序保持不变。
@@ -268,28 +287,30 @@ func storeFailure(err error, key string) error {
 }
 
 // DownloadedFile 是下载需要的记录与已打开的 blob。
+// Blob 只要求能 Seek 与读：本地实现是 *os.File，S3 实现是能按 Range 重开的对象流，
+// 这样 api 层可以继续用 http.ServeContent 拿到完整的 Range / HEAD 语义。
 type DownloadedFile struct {
 	File *db.File
-	Blob *os.File
+	Blob io.ReadSeekCloser
 }
 
-// Close 关闭 blob 文件句柄。
+// Close 关闭 blob 句柄。
 func (d *DownloadedFile) Close() error { return d.Blob.Close() }
 
 // OpenDownload 打开一条记录的 blob（需要登录的下载，以及凭签名 URL 的匿名下载）。
-func (a *App) OpenDownload(id string) (*DownloadedFile, error) {
+func (a *App) OpenDownload(ctx context.Context, id string) (*DownloadedFile, error) {
 	record, err := a.Store.File(id)
 	if err != nil {
 		return nil, storeFailure(err, "internal")
 	}
-	return a.openBlob(record)
+	return a.openBlob(ctx, record)
 }
 
-func (a *App) openBlob(record *db.File) (*DownloadedFile, error) {
-	blob, err := os.Open(a.blobPath(record.SHA256))
+func (a *App) openBlob(ctx context.Context, record *db.File) (*DownloadedFile, error) {
+	blob, err := a.Blobs.Open(ctx, record.SHA256)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// 记录在而 blob 丢了：对外与「记录不存在」一样是 404，不泄露数据目录的状态。
+		if errors.Is(err, ErrBlobNotFound) {
+			// 记录在而 blob 丢了：对外与「记录不存在」一样是 404，不泄露存储后端的状态。
 			return nil, core.Fail(404, "file.not-found")
 		}
 		slog.Error("open blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
@@ -299,28 +320,36 @@ func (a *App) openBlob(record *db.File) (*DownloadedFile, error) {
 }
 
 // DeleteFile 删除一条记录；这个 sha256 已无其他记录引用时顺手删掉 blob。
-func (a *App) DeleteFile(id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
+func (a *App) DeleteFile(ctx context.Context, id string) error {
 	record, err := a.Store.File(id)
 	if err != nil {
 		return storeFailure(err, "store.delete")
 	}
-	if err := a.Store.DeleteFile(id); err != nil {
+
+	// sha 分片锁覆盖「删记录 + 数引用 + 删 blob」，防止并发上传在两步之间插入。
+	lock := a.shaMutex(record.SHA256)
+	lock.Lock()
+	defer lock.Unlock()
+
+	a.mu.Lock()
+	err = a.Store.DeleteFile(id)
+	if err != nil {
+		a.mu.Unlock()
 		return storeFailure(err, "store.delete")
 	}
-	remaining, err := a.Store.CountBySHA(record.SHA256)
-	if err != nil {
+	remaining, countErr := a.Store.CountBySHA(record.SHA256)
+	a.mu.Unlock()
+
+	if countErr != nil {
 		// 记录已经删了，此时再报删除失败会误导用户；blob 留下来由运维清理。
-		slog.Error("count blob references failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
+		slog.Error("count blob references failed", slog.String("sha256", record.SHA256), slog.Any("error", countErr))
 		return nil
 	}
 	if remaining > 0 {
 		return nil
 	}
-	if err := os.Remove(a.blobPath(record.SHA256)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		// 同上：记录已删，blob 删不掉只是留了个孤儿文件。
+	if err := a.Blobs.Delete(ctx, record.SHA256); err != nil {
+		// 同上：记录已删，blob 删不掉只是留了个孤儿对象。
 		slog.Error("remove unreferenced blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
 	}
 	return nil

@@ -54,7 +54,7 @@ export function clearSession(): void {
   }
 }
 
-/** 跳登录页时带上当前地址：登录成功后回到原本要打开的位置（含 ?q= / ?section= 等参数）。 */
+/** 跳登录页时带上当前地址：登录成功后回到原本要打开的位置（含 ?q= 搜索参数）。 */
 function loginURL(): string {
   const next = location.pathname + location.search;
   return `/auth?next=${encodeURIComponent(next)}`;

@@ -1,11 +1,11 @@
 package app
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"hash"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -99,8 +99,9 @@ func (u *Upload) discardTemp() {
 func (u *Upload) consumeTemp() { u.done = true }
 
 // FinishUpload 校验上传结果、把临时文件落成 blob，并插入一条文件记录。
-// 任何错误路径都会清掉临时文件。
-func (a *App) FinishUpload(upload *Upload, filename, clientSHA string) (*db.File, error) {
+// 任何错误路径都会清掉临时文件。ctx 用于 blob 后端的网络请求；调用方传
+// 不带取消信号的 ctx —— 内容已经收完，客户端断连不该让落库半途而废。
+func (a *App) FinishUpload(ctx context.Context, upload *Upload, filename, clientSHA string) (*db.File, error) {
 	fail := func(err error) (*db.File, error) {
 		upload.Abort()
 		return nil, err
@@ -125,33 +126,39 @@ func (a *App) FinishUpload(upload *Upload, filename, clientSHA string) (*db.File
 		return fail(core.Fail(500, "upload.write"))
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	// 同一 sha 的「判断是否已存在 + 落位 + 插记录」串行：并发同内容上传只存一份；
+	// 锁外只做校验与重命名/上传，不同内容互不阻塞。
+	lock := a.shaMutex(clientSHA)
+	lock.Lock()
+	defer lock.Unlock()
 
-	blobPath := a.blobPath(clientSHA)
-	switch _, err := os.Stat(blobPath); {
+	switch _, err := a.Blobs.Head(ctx, clientSHA); {
 	case err == nil:
 		// 并发秒传：blob 已经在（内容必然与 sha 一致），临时文件没有用了。
 		upload.discardTemp()
-	case errors.Is(err, fs.ErrNotExist):
-		if err := os.Rename(upload.tempPath, blobPath); err != nil {
-			slog.Error("move upload into place failed", slog.Any("error", err))
+	case errors.Is(err, ErrBlobNotFound):
+		if err := a.Blobs.PutFile(ctx, clientSHA, upload.tempPath, upload.Size()); err != nil {
+			slog.Error("store upload blob failed", slog.Any("error", err))
 			upload.discardTemp()
 			return nil, core.Fail(500, "upload.write")
 		}
 		upload.consumeTemp()
 	default:
-		slog.Error("stat blob before moving upload failed", slog.Any("error", err))
+		slog.Error("stat blob before storing upload failed", slog.Any("error", err))
 		upload.discardTemp()
 		return nil, core.Fail(500, "upload.write")
 	}
 
+	a.mu.Lock()
 	record, err := newFileRecord(filename, clientSHA, upload.Size())
 	if err != nil {
+		a.mu.Unlock()
 		slog.Error("generate file id failed", slog.Any("error", err))
 		return nil, core.Fail(500, "internal")
 	}
-	if err := a.Store.InsertFile(*record); err != nil {
+	err = a.Store.InsertFile(*record)
+	a.mu.Unlock()
+	if err != nil {
 		slog.Error("insert file record failed", slog.Any("error", err))
 		return nil, core.Fail(500, "store.insert")
 	}

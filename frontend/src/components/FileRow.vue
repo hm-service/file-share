@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /**
  * 列表里的一行文件：拖拽把手 + 类型图标 + 名称/大小 + 时间/短指纹 + 操作区，单行排布。
+ * 短指纹单独一列（8 位，完整 SHA-256 在详情面板与 title 里），和上传时间一起排在操作区左侧。
  *
  * 文件名是详情入口：点开 FileDetailDialog 看完整信息（含完整指纹）并直接下载。
  *
  * 行内只留「下载、分享链接、收藏、分组、更多」五个按钮：分享链接与分组都是高频操作，
  * 单独开按钮；重命名、复制 curl 命令、删除收进最右的「更多」菜单，避免一行里挤满图标。
  *
- * 分享链接与 curl 命令都先向服务端签一个 10 分钟有效的分享地址，再复制带签名的绝对地址：
- * 签名请求中按钮禁用，成功后短暂显示勾；签名失败交给父组件统一提示。
+ * 分享链接与 curl 命令都先向服务端签一个分享地址，再复制带签名的绝对地址：行内按钮默认
+ * 10 分钟档，「更多」菜单额外给一档 24 小时有效的（发给别人、隔天再打开）。签名请求中
+ * 按钮禁用，成功后短暂显示勾；签名失败交给父组件统一提示。
  * navigator.clipboard 在 HTTP 部署下不存在或不可写，所以有 textarea + execCommand 兜底。
  *
  * 菜单用 Teleport 挂到 body：列表卡片有 overflow 裁剪，绝对定位的下拉菜单会被切掉；
@@ -16,7 +18,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 
-import { createShareLink } from "@/api";
+import { createShareLink, type ShareLinkTTL } from "@/api";
 import { formatSize, formatTime } from "@/format";
 import { ICONS, typeIcons, type FileKind } from "@/icons";
 import { t } from "@/i18n";
@@ -170,19 +172,19 @@ function shellQuote(value: string): string {
 }
 
 /**
- * 签一个 10 分钟有效的分享链接，返回可直接发给对方的绝对地址。
+ * 签一个 ttl 内有效的分享链接，返回可直接发给对方的绝对地址。
  * 接口给的是同源相对地址（/s/{id}?sig=…&exp=…），拼上 origin 复制给别人才能直接打开。
  */
-async function shareUrl(): Promise<string> {
-  const payload = await createShareLink(props.file.id);
+async function shareUrl(ttl: ShareLinkTTL): Promise<string> {
+  const payload = await createShareLink(props.file.id, ttl);
   return new URL(payload.url, location.origin).href;
 }
 
 /** 签名失败交给父组件提示；签名成功后按钮立即恢复，不占着禁用态等剪贴板。 */
-async function shareUrlOrReport(): Promise<string | null> {
+async function shareUrlOrReport(ttl: ShareLinkTTL): Promise<string | null> {
   sharing.value = true;
   try {
-    return await shareUrl();
+    return await shareUrl(ttl);
   } catch (error) {
     emit("error", error);
     return null;
@@ -191,10 +193,10 @@ async function shareUrlOrReport(): Promise<string | null> {
   }
 }
 
-/** 行内分享：签分享链接 → 复制绝对地址 → 短暂显示勾。 */
-async function shareLink(): Promise<void> {
+/** 行内分享：签 10 分钟档 → 复制绝对地址 → 短暂显示勾。 */
+async function shareLink(ttl: ShareLinkTTL = 600): Promise<void> {
   if (sharing.value) return;
-  const url = await shareUrlOrReport();
+  const url = await shareUrlOrReport(ttl);
   if (url === null) return;
   if (!(await copyText(url))) {
     emit("error", new Error(t("error.copy")));
@@ -219,7 +221,7 @@ function curlCommand(url: string): string {
 /** 复制成功后菜单保持打开，curl 项显示「已复制」。 */
 async function copyCurl(): Promise<void> {
   if (sharing.value) return;
-  const url = await shareUrlOrReport();
+  const url = await shareUrlOrReport(600);
   if (url === null) return;
   if (!(await copyText(curlCommand(url)))) {
     emit("error", new Error(t("error.copy")));
@@ -240,8 +242,8 @@ type MenuKind = "more" | "group";
 // 宽高与 style.css 里 .row-menu 的 width / max-height 保持一致：这里先按上限估位置，
 // 渲染完成后再用真实高度校正一次（见 adjustMenuPosition）。
 const MENUS: Record<MenuKind, { width: number; maxHeight: number }> = {
-  more: { width: 240, maxHeight: 440 },
-  group: { width: 240, maxHeight: 440 },
+  more: { width: 264, maxHeight: 440 },
+  group: { width: 264, maxHeight: 440 },
 };
 
 /** 当前打开的菜单；null 表示都关着。两个菜单共用一套定位与关闭逻辑。 */
@@ -347,6 +349,18 @@ function chooseDelete(): void {
   emit("delete");
 }
 
+/** 「更多」菜单里的分享链接：关菜单后走与行内按钮同一个签名复制流程，可选择 10 分钟或 24 小时档。 */
+function chooseShareLink(ttl: ShareLinkTTL): void {
+  closeMenu();
+  void shareLink(ttl);
+}
+
+/** 从「更多」菜单切到「移动到文件夹」子菜单：复用同一个触发按钮与锚点。 */
+function openGroupMenuFromMore(): void {
+  if (!triggerEl) return;
+  toggleMenu("group", { currentTarget: triggerEl } as unknown as MouseEvent);
+}
+
 /** 新建分组也是输入框：关菜单后交给父组件，和全局的新建分组共用一个对话框。 */
 function chooseNewGroup(): void {
   closeMenu();
@@ -362,12 +376,9 @@ onBeforeUnmount(() => {
 
 <template>
   <li class="file-row" :data-id="file.id">
-    <span v-if="draggable" class="drag-handle" aria-hidden="true" v-html="ICONS.grip"></span>
-
-    <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
-
-    <div class="file-body">
-      <!-- 文件名就是详情入口：点开小面板看完整信息 -->
+    <div class="cell-name">
+      <span v-if="draggable" class="drag-handle" aria-hidden="true" v-html="ICONS.grip"></span>
+      <span class="file-tile" :class="`kind-${kind}`" v-html="typeIcons[kind]"></span>
       <button
         ref="nameEl"
         type="button"
@@ -378,33 +389,23 @@ onBeforeUnmount(() => {
       >
         {{ file.filename }}
       </button>
-
-      <span class="file-size">{{ formatSize(file.size) }}</span>
-
-      <span class="file-info">
-        <!-- 「最近」视图按时间混排所有分组，行内补一个分组标签，免得看不出归属 -->
-        <span
-          v-if="showGroup"
-          class="file-group"
-          :class="{ 'is-ungrouped': !file.group_path }"
-          :title="file.group_path || t('nav.ungrouped')"
-        >
-          <span class="file-group-icon" v-html="file.group_path ? ICONS.folder : ICONS.inbox"></span>
-          <span class="file-group-name">{{ file.group_path || t("nav.ungrouped") }}</span>
-        </span>
-        <span class="file-stamp">{{ formatTime(file.created_at) }}</span>
-
-        <!-- 指纹只露前 8 位：一行里够用来区分内容，完整值悬停看 title -->
-        <span
-          class="file-sha"
-          :title="`${t('file.sha256')} ${file.sha256}`"
-          :aria-label="`${t('file.sha256')} ${file.sha256}`"
-          >{{ file.sha256.slice(0, 8) }}</span
-        >
+      <!-- 「最近」视图跨文件夹混排，行内补一个文件夹标签，免得看不出归属 -->
+      <span
+        v-if="showGroup"
+        class="file-group"
+        :class="{ 'is-ungrouped': !file.group_path }"
+        :title="file.group_path || t('nav.ungrouped')"
+      >
+        <span class="file-group-icon" v-html="file.group_path ? ICONS.folder : ICONS.inbox"></span>
+        <span class="file-group-name">{{ file.group_path || t("nav.ungrouped") }}</span>
       </span>
     </div>
 
-    <div class="file-actions">
+    <span class="cell-size">{{ formatSize(file.size) }}</span>
+    <span class="cell-time">{{ formatTime(file.created_at) }}</span>
+    <span class="cell-hash" :title="`SHA-256 ${file.sha256}`">{{ file.sha256.slice(0, 8) }}</span>
+
+    <div class="cell-actions">
       <button
         type="button"
         class="icon-btn download"
@@ -414,7 +415,7 @@ onBeforeUnmount(() => {
         @click="emit('download')"
       ></button>
 
-      <!-- 分享链接独立成按钮：签 10 分钟有效的分享地址并复制绝对地址，请求中禁用 -->
+      <!-- 分享链接独立成按钮：签 10 分钟档的分享地址并复制绝对地址，请求中禁用 -->
       <button
         type="button"
         class="icon-btn link"
@@ -423,7 +424,7 @@ onBeforeUnmount(() => {
         :aria-label="t('action.copy-link')"
         :disabled="sharing"
         v-html="shared ? ICONS.check : ICONS.link"
-        @click="shareLink"
+        @click="shareLink(600)"
       ></button>
 
       <button
@@ -436,7 +437,6 @@ onBeforeUnmount(() => {
         @click="emit('favorite')"
       ></button>
 
-      <!-- 分组独立成按钮：高频操作，不藏进聚合菜单 -->
       <button
         type="button"
         class="icon-btn group"
@@ -550,6 +550,21 @@ onBeforeUnmount(() => {
         role="menu"
         :aria-label="t('action.more')"
       >
+        <button type="button" class="row-menu-item" role="menuitem" @click="openGroupMenuFromMore">
+          <span class="row-menu-icon" v-html="ICONS.folder"></span>
+          <span class="row-menu-label">{{ t("action.move-group") }}</span>
+        </button>
+
+        <button type="button" class="row-menu-item" role="menuitem" :disabled="sharing" @click="chooseShareLink(600)">
+          <span class="row-menu-icon" v-html="shared ? ICONS.check : ICONS.link"></span>
+          <span class="row-menu-label">{{ shared ? t("action.copied") : t("action.copy-link") }}</span>
+        </button>
+
+        <button type="button" class="row-menu-item" role="menuitem" :disabled="sharing" @click="chooseShareLink(86400)">
+          <span class="row-menu-icon" v-html="ICONS.clock"></span>
+          <span class="row-menu-label">{{ t("action.copy-link-24h") }}</span>
+        </button>
+
         <button type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
           <span class="row-menu-icon" v-html="ICONS.pencil"></span>
           <span class="row-menu-label">{{ t("action.rename") }}</span>
@@ -577,6 +592,7 @@ onBeforeUnmount(() => {
       </div>
     </Teleport>
 
+
     <FileDetailDialog
       v-if="detailOpen"
       :file="file"
@@ -587,240 +603,144 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 单行文件行：把手 + 图标 + 文件名 + 短指纹 + 时间大小 + 操作，一行 48px 高 */
+/* 文件行：与表头 / 文件夹行共用同一套列宽变量（由 ContentTable 在 .table 上给出）。
+   列：名称 | 大小 | 上传时间 | 指纹 | 操作 */
 .file-row {
-  display: flex;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr) var(--col-size, 110px) var(--col-time, 140px) var(--col-hash, 96px)
+    var(--col-actions, 190px);
   align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  transition: background-color 0.15s;
+  min-height: 52px;
+  padding: 0 14px 0 6px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  list-style: none;
 }
 
-.file-row + .file-row {
-  border-top: 1px solid var(--line);
+.file-row:first-child {
+  border-top: 0;
 }
 
 .file-row:hover {
-  background: #fafbff;
-}
-
-/* 拖拽把手：常显低透明度，hover 加深；触屏长按 120ms 才进入拖拽 */
-.drag-handle {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  margin: 0 -6px 0 -4px;
-  color: var(--ink-3);
-  cursor: grab;
-  opacity: 0.45;
-  transition:
-    opacity 0.15s,
-    color 0.15s;
-}
-
-.drag-handle :deep(svg) {
-  display: block;
-  width: 15px;
-  height: 15px;
-}
-
-.drag-handle:hover {
-  color: var(--ink-2);
-  opacity: 1;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
+  background: var(--surface-2);
 }
 
 .file-row.drag-ghost {
-  border-radius: 12px;
-  background: var(--accent-soft);
-  opacity: 0.6;
+  opacity: 0.35;
 }
 
 .file-row.drag-chosen {
-  background: #fafbff;
+  cursor: grabbing;
 }
 
-.file-row.drag-dragging {
-  background: var(--surface);
-  box-shadow: var(--shadow-lg);
+.cell-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drag-handle {
+  width: 18px;
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.12s ease;
+}
+
+.drag-handle:deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.file-row:hover .drag-handle,
+.drag-handle:focus-visible {
+  opacity: 1;
 }
 
 .file-tile {
-  display: grid;
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
   background: var(--surface-2);
-  color: var(--ink-3);
+  color: var(--ink-2);
 }
 
-.file-tile :deep(svg) {
+.file-tile:deep(svg) {
   width: 18px;
   height: 18px;
 }
 
-/* 文件类型配色：同一类型一个颜色，图标形状各不相同。 */
-.kind-image {
-  background: #e7f8f0;
-  color: #0f9d63;
-}
+.kind-image { color: #8b5cf6; background: #f3efff; }
+.kind-video { color: #e11d48; background: #ffeef2; }
+.kind-audio { color: #db2777; background: #fdf2f8; }
+.kind-archive { color: #d97706; background: #fff7ed; }
+.kind-pdf { color: #dc2626; background: #fef2f2; }
+.kind-doc { color: #2563eb; background: #eff6ff; }
+.kind-sheet { color: #059669; background: #ecfdf5; }
+.kind-slides { color: #ea580c; background: #fff7ed; }
+.kind-code { color: #4f46e5; background: #eef2ff; }
+.kind-text { color: #475569; background: #f1f5f9; }
+.kind-other { color: #64748b; background: #f1f5f9; }
 
-.kind-video {
-  background: #fdeef3;
-  color: #db2777;
-}
-
-.kind-audio {
-  background: #e9f6ff;
-  color: #0284c7;
-}
-
-.kind-archive {
-  background: #fff5e6;
-  color: #d97706;
-}
-
-.kind-pdf {
-  background: #ffeef1;
-  color: #e11d48;
-}
-
-.kind-doc {
-  background: #eef0ff;
-  color: #4f5bd5;
-}
-
-.kind-sheet {
-  background: #e8f8f2;
-  color: #0d9488;
-}
-
-.kind-slides {
-  background: #fff1e4;
-  color: #ea580c;
-}
-
-.kind-code {
-  background: #f2ecff;
-  color: #7c3aed;
-}
-
-.kind-text {
-  background: #f1f3f9;
-  color: #64748b;
-}
-
-.kind-other {
-  background: #f1f2f8;
-  color: #6b7280;
-}
-
-.file-body {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-/* 文件名最长，先让它省略；大小、时间、指纹都是固定宽度 */
 .file-name {
-  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  padding: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border: 0;
   background: none;
   color: var(--ink);
-  font-size: 13.5px;
-  font-weight: 620;
+  font: inherit;
   text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   cursor: pointer;
 }
 
-/* 详情入口的可见反馈：悬停加下划线，键盘聚焦给一圈焦点环 */
 .file-name:hover {
+  color: var(--accent);
   text-decoration: underline;
-  text-underline-offset: 3px;
 }
 
 .file-name:focus-visible {
-  border-radius: 4px;
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: 4px;
 }
 
-/* 大小紧挨文件名 */
-.file-size {
-  flex: 0 0 auto;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* 短指纹：前 8 位等宽字体，完整值在 title / aria-label 里 */
-.file-sha {
-  flex: 0 0 auto;
-  color: var(--ink-3);
-  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  user-select: text;
-}
-
-/* 右侧信息：分组标签（「最近」视图）+ 上传时间 + 短指纹 */
-.file-info {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-}
-
-.file-stamp {
-  white-space: nowrap;
-}
-
-/* 分组标签：路径过长省略 */
 .file-group {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 190px;
-  padding: 1px 7px 1px 5px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  padding: 2px 7px;
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 10.5px;
-  font-variant-numeric: normal;
+  font-size: 11.5px;
 }
 
 .file-group.is-ungrouped {
-  background: transparent;
-  padding-left: 3px;
+  color: var(--ink-3);
+  opacity: 0.8;
 }
 
 .file-group-icon {
   display: inline-flex;
-  flex: 0 0 auto;
 }
 
-.file-group-icon :deep(svg) {
-  width: 11px;
-  height: 11px;
+.file-group-icon:deep(svg) {
+  width: 12px;
+  height: 12px;
 }
 
 .file-group-name {
@@ -829,95 +749,91 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.file-actions {
+.cell-size,
+.cell-time,
+.cell-hash {
+  color: var(--ink-3);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 短指纹：等宽小字，与上传时间并排在操作区左侧 */
+.cell-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+  cursor: default;
+}
+
+.cell-actions {
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 1px;
 }
 
 .icon-btn {
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
   border-radius: 8px;
   color: var(--ink-3);
-  transition:
-    color 0.15s,
-    background-color 0.15s;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.icon-btn :deep(svg) {
-  display: block;
-  width: 16px;
-  height: 16px;
+.icon-btn:deep(svg) {
+  width: 17px;
+  height: 17px;
 }
 
 .icon-btn:hover {
-  background: var(--surface-2);
-  color: var(--ink-2);
-}
-
-.icon-btn.star {
-  color: #c4c8d6;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .icon-btn.star.on {
   color: var(--amber);
 }
 
-.icon-btn.star:hover {
-  color: var(--amber);
-}
-
-.icon-btn.download:hover,
-.icon-btn.link:hover {
-  color: var(--accent);
-}
-
 .icon-btn.link.on {
   color: var(--green);
 }
 
-.icon-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.icon-btn.group:hover,
 .icon-btn.group.on,
 .icon-btn.more.on {
-  background: var(--surface-2);
-  color: var(--ink);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-/* 内容区很窄（手机 / 小窗口）：操作按钮换到第二行，指纹让位给文件名 */
-@container (max-width: 620px) {
+.icon-btn:disabled {
+  opacity: 0.45;
+}
+
+@media (max-width: 900px) {
   .file-row {
-    flex-wrap: wrap;
-    row-gap: 6px;
-    padding: 9px 12px;
+    grid-template-columns: minmax(0, 1fr) var(--col-actions, 150px);
   }
 
-  .file-body {
-    flex-basis: 0;
-    overflow: hidden;
-  }
-
-  .file-info {
+  .cell-size,
+  .cell-time,
+  .cell-hash {
     display: none;
   }
 
-  .file-actions {
-    flex: 0 0 100%;
-    justify-content: flex-end;
+  .drag-handle,
+  .file-group {
+    display: none;
   }
 
-  .icon-btn {
-    width: 34px;
-    height: 34px;
+  .cell-actions .icon-btn.link,
+  .cell-actions .icon-btn.group {
+    display: none;
   }
 }
 </style>

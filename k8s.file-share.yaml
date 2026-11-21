@@ -5,6 +5,14 @@ metadata:
     name: file-share-env
 data:
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+    # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/files）：
+    # 桶必须已存在；S3_BUCKET 默认 file-share、S3_PREFIX 默认 blobs（key 为 blobs/xx/yy/<sha>），
+    # 多实例共桶时每个实例用不同的 S3_PREFIX。
+    # 与 S3 同机运行时配合下面的 hostNetwork，让容器内的 127.0.0.1 就是宿主。
+    # S3_ENDPOINT: "http://127.0.0.1:8333"
+    # S3_BUCKET: "file-share"
+    # S3_PREFIX: "blobs"
+    # S3_REGION: "us-east-1"
 
 ---
 apiVersion: v1
@@ -17,6 +25,9 @@ stringData:
     READYZ_TOKEN: "your_readyz_token"
     SESSION_SIGNING_KEY: "your_very_safe_session_signing_key"
     URL_SIGNATURE_KEY: "your_very_safe_url_signature_key"
+    # 物理文件存 S3 时需要的凭据：
+    # S3_ACCESS_KEY: "your_s3_access_key"
+    # S3_SECRET_KEY: "your_s3_secret_key"
 
 ---
 apiVersion: v1
@@ -40,6 +51,9 @@ metadata:
 spec:
     restartPolicy: Always
     terminationGracePeriodSeconds: 30
+    # 与对象存储同机部署时用宿主网络：容器内的 127.0.0.1 才能直连 S3_ENDPOINT。
+    # 8080 因此直接监听宿主（原来也是 hostPort 映射到 0.0.0.0:8080）。
+    # hostNetwork: true
 
     containers:
         - name: app

@@ -9,6 +9,8 @@
  *   → done / instant（1.2s 后自动移出队列）
  *   → failed（保留后端 detail）/ cancelled（用户取消，不算失败）
  *   failed / cancelled 都保留 File 引用，可以「重试」重新走一遍；「移除」时才释放。
+ *   记录已经建好、只差「移入目标文件夹」时（上传成功但 PATCH 失败），item.fileId 非空：
+ *   重试只补这一步 PATCH，绝不重新上传 —— 重传会在服务端再插一条记录。
  *
  * 超限文件在入队时就用列表接口下发的 maxFileSize 拦掉（此时还没算指纹、也没发请求）：
  * 状态直接记成 failed 且不可重试，文案说明上限；服务端的 413 仍作为最后一道防线。
@@ -64,6 +66,8 @@ interface QueueItem {
   startedAt: number;
   /** 入队时所在的分组视图（空串 = 未分组）；上传成功后把记录移动到这里。 */
   group: string;
+  /** 服务端已建好（或命中秒传）的记录 id：非空表示重试只需补「移入目标文件夹」的 PATCH。 */
+  fileId: string | null;
   /** 失败原因：优先用后端本地化 detail。 */
   error: string;
   /** 能否重试：大小超限是文件本身的问题，重试没有意义。 */
@@ -117,6 +121,7 @@ function addFiles(files: FileList | File[] | null | undefined, group?: string): 
       speed: 0,
       startedAt: 0,
       group: group ?? props.targetGroup ?? "",
+      fileId: null,
       error: limit ? tooBigMessage(limit) : "",
       retryable: limit === 0,
       controller: null,
@@ -140,6 +145,7 @@ function dropFromQueue(id: string): void {
   const [item] = queue.value.splice(index, 1);
   item.file = null;
   item.controller = null;
+  item.fileId = null;
 }
 
 function scheduleRemove(id: string): void {
@@ -154,6 +160,25 @@ function scheduleRemove(id: string): void {
 async function processItem(item: QueueItem): Promise<void> {
   const file = item.file;
   if (!file) return;
+
+  // 记录已经建好、只差移入目标文件夹（上一轮上传成功但 PATCH 失败）：重试只补这一步，
+  // 不再重新上传 —— 重传会在服务端再插一条记录，同一份内容出现两条同名记录。
+  if (item.fileId !== null) {
+    try {
+      if (item.group) await updateFileGroup(item.fileId, item.group);
+      item.fileId = null;
+      item.status = "done";
+      item.progress = 100;
+      item.percent = 100;
+      item.speed = 0;
+      scheduleRemove(item.id);
+      emit("uploaded");
+    } catch (error) {
+      item.status = "failed";
+      item.error = messageOf(error);
+    }
+    return;
+  }
 
   // 兜底：入队后才拿到上限（或重试旧项）时同样在算指纹之前拦下。
   const limit = exceedsLimit(file.size);
@@ -184,7 +209,11 @@ async function processItem(item: QueueItem): Promise<void> {
     item.progress = 10;
     const check = await checkFile(sha256, item.name, controller.signal);
     if (check.exists) {
-      if (item.group && check.id) await updateFileGroup(check.id, item.group);
+      item.fileId = check.id ?? null;
+      if (item.group && item.fileId) {
+        await updateFileGroup(item.fileId, item.group);
+        item.fileId = null;
+      }
       item.status = "instant";
       item.progress = 100;
       scheduleRemove(item.id);
@@ -211,7 +240,11 @@ async function processItem(item: QueueItem): Promise<void> {
       },
       controller.signal,
     );
-    if (item.group) await updateFileGroup(uploaded.id, item.group);
+    item.fileId = uploaded.id;
+    if (item.group) {
+      await updateFileGroup(uploaded.id, item.group);
+      item.fileId = null;
+    }
     item.status = "done";
     item.progress = 100;
     scheduleRemove(item.id);

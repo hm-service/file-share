@@ -4,6 +4,7 @@ package testenv
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -241,7 +242,7 @@ func SeedUpload(t *testing.T, instance *app.App, filename string, content []byte
 		upload.Abort()
 		t.Fatalf("写上传内容失败: %v", err)
 	}
-	record, err := instance.FinishUpload(upload, filename, SHA256(content))
+	record, err := instance.FinishUpload(context.Background(), upload, filename, SHA256(content))
 	if err != nil {
 		t.Fatalf("完成上传失败: %v", err)
 	}

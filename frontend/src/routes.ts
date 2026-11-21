@@ -1,18 +1,16 @@
 /**
  * 视图与地址栏的映射：最近 `/`、收藏 `/favorites`、未分组 `/ungrouped`、
- * 分组 `/<顶级>` 或 `/<顶级>/<二级>`。
- *
- * 三级分组只是内容区里的分组，没有自己的地址：路由最多两段，`/a/b/c` 仍然不是视图。
+ * 文件夹 `/<一级>`、`/<一级>/<二级>`、`/<一级>/<二级>/<三级>`（目录树最深三级）。
  *
  * 分组路径的每一段都是用户输入，可能含中文、空格、`#`、`?` 等字符：
  * 生成路径时逐段 encodeURIComponent，还原时逐段 decodeURIComponent；
- * 解不开（非法百分号转义）或超过两段的路径返回 null，由调用方回退到「最近」。
+ * 解不开（非法百分号转义）或超过三段的路径返回 null，由调用方回退到「最近」。
  *
  * favorites / ungrouped 是保留的一级路径，服务端创建分组时也会拒绝这两个名字，
  * 所以它们不会和分组重名。
  */
 
-/** 当前视图：最近 / 收藏 / 未分组 / 单个分组。 */
+/** 当前视图：最近 / 收藏 / 未分组 / 单个文件夹（1~3 级路径）。 */
 export type View =
   | { kind: "recent" }
   | { kind: "favorites" }
@@ -38,7 +36,7 @@ export function viewFromPath(pathname: string): View | null {
   if (pathname === "/") return { kind: "recent" };
   if (!pathname.startsWith("/")) return null;
   const segments = pathname.slice(1).split("/");
-  if (segments.length > 2) return null;
+  if (segments.length > 3) return null;
   const decoded: string[] = [];
   for (const segment of segments) {
     if (segment === "") return null;

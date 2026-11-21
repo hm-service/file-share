@@ -30,12 +30,33 @@ type Config struct {
 	AuthTokenHash     string
 	ReadyzToken       string
 	MaxFileSize       int64
+	// S3 为 nil 时 blob 存在本地 DATA_DIR/files 下，否则存在 S3。
+	S3 *S3Config
+}
+
+// StorageInfo 描述当前 blob 的存放方案：本地目录或 S3 对象存储。
+// 只含可公开的信息（后端类型、桶名、前缀），不含 endpoint 与凭据；
+// 启动日志与 /api/storage 共用它，界面据此提示当前存储方案。
+type StorageInfo struct {
+	Backend string `json:"backend"` // local 或 s3
+	Bucket  string `json:"bucket,omitempty"`
+	Prefix  string `json:"prefix,omitempty"`
+}
+
+// Describe 是日志里的一行描述：s3://<bucket>/<prefix> 或 local。
+func (s StorageInfo) Describe() string {
+	if s.Backend == "s3" {
+		return "s3://" + s.Bucket + "/" + s.Prefix
+	}
+	return s.Backend
 }
 
 // App 持有全部跨请求状态。
 type App struct {
-	Config Config
-	Store  *db.Store
+	Config  Config
+	Store   *db.Store
+	Blobs   BlobStore
+	Storage StorageInfo
 
 	filesDir string
 	dbPath   string
@@ -43,10 +64,15 @@ type App struct {
 	signurl  *core.URLSigner
 	proxies  *httpx.Proxies
 
-	// mu 把「check_file 落记录 / 上传落 blob 与记录 / 删除记录与 blob / 改分组 / 批量排序」
-	// 串起来：引用计数与 blob 删除之间若插进别的写操作，就会删掉刚被引用的 blob；
-	// 分组与排序也要看到稳定的当前最大值。
+	// mu 把「插入记录 / 改分组 / 批量排序」这些 DB 写操作串起来，
+	// 保证插入时看到的当前最大 sort_order 与分组状态是稳定的。
+	// 它不保护 blob：blob 的生命周期由 shaLocks 按 sha 分片串行，
+	// 这样上传/下载的网络 IO 不会把全站写操作堵住。
 	mu sync.Mutex
+
+	// shaLocks 按 sha 分片串行同一份内容的「判断存在 / 落位 / 删除 + 引用计数」，
+	// 防止一个删除把另一条记录刚引用的 blob 删掉；不同 sha 之间互不阻塞。
+	shaLocks [64]sync.Mutex
 }
 
 // Open 初始化 DATA_DIR 下的全部状态。所有启动一次性工作都在这里做，
@@ -68,6 +94,9 @@ func Open(cfg Config) (*App, error) {
 	if err := core.TightenPerm(filesDir, core.DataDirPerm); err != nil {
 		return nil, fmt.Errorf("tighten files dir: %w", err)
 	}
+	if cfg.S3 != nil && (cfg.S3.Endpoint == "" || cfg.S3.Bucket == "") {
+		return nil, fmt.Errorf("S3 config requires endpoint and bucket")
+	}
 	proxies, err := httpx.NewProxies(cfg.TrustedProxies)
 	if err != nil {
 		return nil, err
@@ -82,14 +111,32 @@ func Open(cfg Config) (*App, error) {
 		store.Close()
 		return nil, fmt.Errorf("clean upload temp files: %w", err)
 	}
-	// blob 的权限可能是旧版本或手工操作留下的，启动时统一收紧。
-	if err := tightenBlobs(filesDir); err != nil {
-		store.Close()
-		return nil, fmt.Errorf("tighten blob permissions: %w", err)
+	var blobs BlobStore
+	if cfg.S3 != nil {
+		s3, err := newS3BlobStore(*cfg.S3)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("init s3 blob store: %w", err)
+		}
+		blobs = s3
+	} else {
+		// blob 的权限可能是旧版本或手工操作留下的，启动时统一收紧。
+		if err := tightenBlobs(filesDir); err != nil {
+			store.Close()
+			return nil, fmt.Errorf("tighten blob permissions: %w", err)
+		}
+		blobs = newLocalBlobStore(filesDir)
+	}
+	storage := StorageInfo{Backend: blobs.Kind()}
+	if cfg.S3 != nil {
+		storage.Bucket = cfg.S3.Bucket
+		storage.Prefix = strings.Trim(cfg.S3.Prefix, "/")
 	}
 	return &App{
 		Config:   cfg,
 		Store:    store,
+		Blobs:    blobs,
+		Storage:  storage,
 		filesDir: filesDir,
 		dbPath:   dbPath,
 		signer:   core.NewSessionSigner([]byte(cfg.SessionSigningKey)),
@@ -240,4 +287,26 @@ func (a *App) VerifySession(token string) error {
 	return err
 }
 
-func (a *App) blobPath(sha string) string { return filepath.Join(a.filesDir, sha) }
+// shaMutex 按 sha 取一把分片锁：同一份内容的存在性判断、落位与删除互斥，
+// 不同内容之间不互相阻塞。sha 正常是 64 位十六进制，取前 2 位当分片下标；
+// 名字再短也照样落到某个分片 —— 绝不能退回全局锁 a.mu：它在 DeleteFile 里还会再锁一次，
+// 而 sync.Mutex 不可重入，同一个 goroutine 连加两次就是永久自死锁。
+func (a *App) shaMutex(sha string) *sync.Mutex {
+	var index int
+	for i := 0; i < 2 && i < len(sha); i++ {
+		index = index<<4 | hexNibble(sha[i])
+	}
+	return &a.shaLocks[index&(len(a.shaLocks)-1)]
+}
+
+func hexNibble(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	default:
+		// sha 一定是小写十六进制；意外字符按 0 处理，最坏是退化成共享分片。
+		return 0
+	}
+}

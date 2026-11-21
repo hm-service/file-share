@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -50,6 +51,7 @@ func (s *Server) handleCheckFile(w http.ResponseWriter, r *http.Request) {
 	defer r.MultipartForm.RemoveAll()
 
 	record, exists, err := s.App.CheckFile(
+		r.Context(),
 		strings.TrimSpace(r.PostFormValue("client_sha256")),
 		r.PostFormValue("filename"),
 	)
@@ -165,7 +167,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusBadRequest, "upload.missing")
 		return
 	}
-	record, err := s.App.FinishUpload(upload, filename, clientSHA)
+	// 内容已经收完：用不带取消信号的 ctx 落库，客户端这时断开不该让上传白做。
+	record, err := s.App.FinishUpload(context.WithoutCancel(r.Context()), upload, filename, clientSHA)
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -247,7 +250,7 @@ func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	if err := s.App.DeleteGroup(payload.Path, payload.DeleteFiles); err != nil {
+	if err := s.App.DeleteGroup(r.Context(), payload.Path, payload.DeleteFiles); err != nil {
 		businessFail(w, r, err)
 		return
 	}
@@ -279,7 +282,7 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	download, err := s.App.OpenDownload(r.PathValue("file_id"))
+	download, err := s.App.OpenDownload(r.Context(), r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -300,7 +303,7 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 // handleDownloadURL 签一个匿名下载地址（SignedURLTTL 内有效）。前端拿 url 后让浏览器
 // 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
 func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
-	url, err := s.App.IssueDownloadURL(r.PathValue("file_id"))
+	url, err := s.App.IssueDownloadURL(r.Context(), r.PathValue("file_id"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -308,15 +311,34 @@ func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
 }
 
-// handleShareLink 签一条 SignedURLTTL 内有效的分享链接：对方免登录即可下载，
-// 签名不对或过期一律 404。
+// handleShareLink 签一条 ttl 内有效的分享链接：对方免登录即可下载，签名不对或过期
+// 一律 404。ttl 只认默认档与 24 小时档（见 shareLinkTTL），其它值直接 400。
 func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
-	url, err := s.App.IssueShareLink(r.PathValue("file_id"))
+	ttl, ok := shareLinkTTL(r.URL.Query().Get("ttl"))
+	if !ok {
+		fail(w, r, http.StatusBadRequest, "share.invalid-ttl")
+		return
+	}
+	url, err := s.App.IssueShareLink(r.Context(), r.PathValue("file_id"), ttl)
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
 	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
+}
+
+// shareLinkTTL 把 ttl 查询参数（秒）换成有效期：不传走默认 10 分钟，只额外认 24 小时档。
+// 不接受任意秒数 —— 分享链接的有效期是产品决定，不该由调用方随手拉长或缩短。
+func shareLinkTTL(raw string) (time.Duration, bool) {
+	switch raw {
+	case "":
+		return core.SignedURLTTL, true
+	case "600":
+		return core.SignedURLTTL, true
+	case "86400":
+		return core.ShareLinkTTL24h, true
+	}
+	return 0, false
 }
 
 // handleSignedDownload 是匿名下载入口：凭 URL 里的 sig/exp 下载单个文件，不需要 Authorization ——
@@ -328,7 +350,7 @@ func (s *Server) handleSignedDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	download, err := s.App.OpenSignedDownload(
-		r.PathValue("file_id"), r.Method, r.URL.EscapedPath(), r.URL.Query().Get("sig"), exp)
+		r.Context(), r.PathValue("file_id"), r.Method, r.URL.EscapedPath(), r.URL.Query().Get("sig"), exp)
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -338,7 +360,7 @@ func (s *Server) handleSignedDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.App.DeleteFile(r.PathValue("file_id")); err != nil {
+	if err := s.App.DeleteFile(r.Context(), r.PathValue("file_id")); err != nil {
 		businessFail(w, r, err)
 		return
 	}

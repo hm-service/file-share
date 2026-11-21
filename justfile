@@ -36,14 +36,30 @@ build: frontend
     done
     ls -l {{ DIST }}
 
-# 提交前跑一遍：Go 的 vet + test，加前端的类型检查（缺前端依赖会按锁文件装一次）
-check: vet test
+# 提交前跑一遍：Go 的格式检查 + vet + test，加前端的类型检查（缺前端依赖会按锁文件装一次）
+check: fmt-check vet test
     cd frontend && pnpm install --frozen-lockfile
     cd frontend && pnpm typecheck
+
+# 检查 Go 代码格式：gofmt -l 列出需要格式化的文件就失败。
+# 覆盖已跟踪与新文件（git ls-files --others），不扫 node_modules / .scratch。
+fmt-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output="$(git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 gofmt -l)"
+    if [ -n "$output" ]; then
+      echo "gofmt 需要格式化的文件：" >&2
+      echo "$output" >&2
+      exit 1
+    fi
 
 # 跑全部测试（没有前端产物就先造占位，Go 的测试不需要真前端）
 test: frontend-stub
     go test ./... -count=1
+
+# 跑 S3 集成测试（默认 skip；需要 S3_TEST_ENDPOINT / S3_TEST_BUCKET / S3_TEST_ACCESS_KEY / S3_TEST_SECRET_KEY）
+test-s3: frontend-stub
+    go test ./app ./api -run 'S3|Migrate' -count=1 -v
 
 # go vet
 vet: frontend-stub

@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"errors"
+	"io"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -284,7 +285,7 @@ func TestUploadAndInstantReuse(t *testing.T) {
 	}
 
 	// 秒传：同一个 blob 再补一条记录，不产生第二个物理文件。
-	instant, exists, err := instance.CheckFile(record.SHA256, "copy.txt")
+	instant, exists, err := instance.CheckFile(t.Context(), record.SHA256, "copy.txt")
 	if err != nil {
 		t.Fatalf("CheckFile() 报错: %v", err)
 	}
@@ -315,13 +316,13 @@ func TestCheckFileValidation(t *testing.T) {
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			_, _, err := instance.CheckFile(item.sha, item.file)
+			_, _, err := instance.CheckFile(t.Context(), item.sha, item.file)
 			assertBusinessError(t, err, 400, item.key)
 		})
 	}
 
 	// 不存在的 blob：exists=false 不是错误。
-	_, exists, err := instance.CheckFile(testenv.SHA256([]byte("never uploaded")), "a.txt")
+	_, exists, err := instance.CheckFile(t.Context(), testenv.SHA256([]byte("never uploaded")), "a.txt")
 	if err != nil || exists {
 		t.Fatalf("不存在的 blob 应当 exists=false: exists=%v err=%v", exists, err)
 	}
@@ -352,7 +353,7 @@ func TestFinishUploadErrorPathsCleanTempFiles(t *testing.T) {
 			if _, err := upload.Write(content); err != nil {
 				t.Fatalf("Write() 报错: %v", err)
 			}
-			_, err = instance.FinishUpload(upload, item.filename, item.sha)
+			_, err = instance.FinishUpload(t.Context(), upload, item.filename, item.sha)
 			assertBusinessError(t, err, 400, item.key)
 			if leftovers := testenv.UploadTempFiles(t, instance); len(leftovers) != 0 {
 				t.Errorf("错误路径不该留下临时文件: %v", leftovers)
@@ -385,20 +386,20 @@ func TestDeleteKeepsBlobWhileReferenced(t *testing.T) {
 	}
 	sha := first.SHA256
 
-	if err := instance.DeleteFile(first.ID); err != nil {
+	if err := instance.DeleteFile(t.Context(), first.ID); err != nil {
 		t.Fatalf("DeleteFile() 报错: %v", err)
 	}
 	if !testenv.BlobExists(instance, sha) {
 		t.Fatal("还有记录引用时 blob 不该被删")
 	}
-	if err := instance.DeleteFile(second.ID); err != nil {
+	if err := instance.DeleteFile(t.Context(), second.ID); err != nil {
 		t.Fatalf("DeleteFile() 报错: %v", err)
 	}
 	if testenv.BlobExists(instance, sha) {
 		t.Fatal("最后一条引用删掉后 blob 应当被删")
 	}
 
-	assertBusinessError(t, instance.DeleteFile(first.ID), 404, "file.not-found")
+	assertBusinessError(t, instance.DeleteFile(t.Context(), first.ID), 404, "file.not-found")
 }
 
 func TestToggleMissingFile(t *testing.T) {
@@ -412,24 +413,24 @@ func TestDownload(t *testing.T) {
 	content := []byte("download me")
 	record := testenv.SeedUpload(t, instance, "下载.txt", content)
 
-	download, err := instance.OpenDownload(record.ID)
+	download, err := instance.OpenDownload(t.Context(), record.ID)
 	if err != nil {
 		t.Fatalf("OpenDownload() 报错: %v", err)
 	}
 	defer download.Close()
-	body, err := os.ReadFile(download.Blob.Name())
+	body, err := io.ReadAll(download.Blob)
 	if err != nil || string(body) != string(content) {
 		t.Fatalf("blob 内容 = %q err=%v", body, err)
 	}
 
 	// blob 丢失与记录不存在对外表现一致。
 	testenv.RemoveBlob(t, instance, record.SHA256)
-	if _, err := instance.OpenDownload(record.ID); err == nil {
+	if _, err := instance.OpenDownload(t.Context(), record.ID); err == nil {
 		t.Fatal("blob 丢失时下载应当 404")
 	} else {
 		assertBusinessError(t, err, 404, "file.not-found")
 	}
-	if _, err := instance.OpenDownload("absent"); err == nil {
+	if _, err := instance.OpenDownload(t.Context(), "absent"); err == nil {
 		t.Fatal("不存在的记录下载应当 404")
 	}
 }
@@ -440,7 +441,7 @@ func TestSignedDownloadURLs(t *testing.T) {
 	record := testenv.SeedUpload(t, instance, "分享.txt", content)
 
 	t.Run("分享链接", func(t *testing.T) {
-		raw, err := instance.IssueShareLink(record.ID)
+		raw, err := instance.IssueShareLink(t.Context(), record.ID, core.SignedURLTTL)
 		if err != nil {
 			t.Fatalf("IssueShareLink() 报错: %v", err)
 		}
@@ -452,17 +453,17 @@ func TestSignedDownloadURLs(t *testing.T) {
 			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.SignedURLTTL)
 		}
 
-		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
+		download, err := instance.OpenSignedDownload(t.Context(), record.ID, "GET", path, sig, exp)
 		if err != nil {
 			t.Fatalf("OpenSignedDownload() 报错: %v", err)
 		}
 		defer download.Close()
-		body, err := os.ReadFile(download.Blob.Name())
+		body, err := io.ReadAll(download.Blob)
 		if err != nil || string(body) != string(content) {
 			t.Fatalf("blob 内容 = %q err=%v", body, err)
 		}
 		// HEAD 与 GET 共用签名。
-		head, err := instance.OpenSignedDownload(record.ID, "HEAD", path, sig, exp)
+		head, err := instance.OpenSignedDownload(t.Context(), record.ID, "HEAD", path, sig, exp)
 		if err != nil {
 			t.Errorf("HEAD 应当通过: %v", err)
 		} else {
@@ -470,25 +471,48 @@ func TestSignedDownloadURLs(t *testing.T) {
 		}
 
 		// 改路径、改过期时间、换文件都验不过；过期也拒绝。
-		if _, err := instance.OpenSignedDownload(record.ID, "GET", "/s/other", sig, exp); err == nil {
+		if _, err := instance.OpenSignedDownload(t.Context(), record.ID, "GET", "/s/other", sig, exp); err == nil {
 			t.Error("换路径应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "download.invalid")
 		}
-		if _, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp+60); err == nil {
+		if _, err := instance.OpenSignedDownload(t.Context(), record.ID, "GET", path, sig, exp+60); err == nil {
 			t.Error("改过期时间应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "download.invalid")
 		}
-		if _, err := instance.OpenSignedDownload("absent", "GET", "/s/absent", sig, exp); err == nil {
+		if _, err := instance.OpenSignedDownload(t.Context(), "absent", "GET", "/s/absent", sig, exp); err == nil {
 			t.Error("换文件应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "download.invalid")
 		}
 	})
 
+	t.Run("24 小时分享链接", func(t *testing.T) {
+		raw, err := instance.IssueShareLink(t.Context(), record.ID, core.ShareLinkTTL24h)
+		if err != nil {
+			t.Fatalf("IssueShareLink() 报错: %v", err)
+		}
+		path, sig, exp := parseSigned(t, raw)
+		if path != "/s/"+record.ID {
+			t.Errorf("路径 = %q，想要 /s/%s", path, record.ID)
+		}
+		if ttl := time.Until(time.Unix(exp, 0)); ttl <= core.SignedURLTTL || ttl > core.ShareLinkTTL24h {
+			t.Errorf("有效期剩余 %s，想要 (%s, %s]", ttl, core.SignedURLTTL, core.ShareLinkTTL24h)
+		}
+		download, err := instance.OpenSignedDownload(t.Context(), record.ID, "GET", path, sig, exp)
+		if err != nil {
+			t.Fatalf("OpenSignedDownload() 报错: %v", err)
+		}
+		defer download.Close()
+		body, err := io.ReadAll(download.Blob)
+		if err != nil || string(body) != string(content) {
+			t.Fatalf("blob 内容 = %q err=%v", body, err)
+		}
+	})
+
 	t.Run("下载地址", func(t *testing.T) {
-		raw, err := instance.IssueDownloadURL(record.ID)
+		raw, err := instance.IssueDownloadURL(t.Context(), record.ID)
 		if err != nil {
 			t.Fatalf("IssueDownloadURL() 报错: %v", err)
 		}
@@ -499,7 +523,7 @@ func TestSignedDownloadURLs(t *testing.T) {
 		if ttl := time.Until(time.Unix(exp, 0)); ttl <= 0 || ttl > core.SignedURLTTL {
 			t.Errorf("有效期剩余 %s，想要 (0, %s]", ttl, core.SignedURLTTL)
 		}
-		download, err := instance.OpenSignedDownload(record.ID, "GET", path, sig, exp)
+		download, err := instance.OpenSignedDownload(t.Context(), record.ID, "GET", path, sig, exp)
 		if err != nil {
 			t.Fatalf("OpenSignedDownload() 报错: %v", err)
 		}
@@ -507,23 +531,23 @@ func TestSignedDownloadURLs(t *testing.T) {
 	})
 
 	t.Run("记录不存在或 blob 丢失时不签", func(t *testing.T) {
-		if _, err := instance.IssueShareLink("absent"); err == nil {
+		if _, err := instance.IssueShareLink(t.Context(), "absent", core.SignedURLTTL); err == nil {
 			t.Fatal("不存在的记录签分享链接应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "file.not-found")
 		}
-		if _, err := instance.IssueDownloadURL("absent"); err == nil {
+		if _, err := instance.IssueDownloadURL(t.Context(), "absent"); err == nil {
 			t.Fatal("不存在的记录签下载地址应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "file.not-found")
 		}
 		testenv.RemoveBlob(t, instance, record.SHA256)
-		if _, err := instance.IssueShareLink(record.ID); err == nil {
+		if _, err := instance.IssueShareLink(t.Context(), record.ID, core.SignedURLTTL); err == nil {
 			t.Fatal("blob 丢失时签分享链接应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "file.not-found")
 		}
-		if _, err := instance.IssueDownloadURL(record.ID); err == nil {
+		if _, err := instance.IssueDownloadURL(t.Context(), record.ID); err == nil {
 			t.Fatal("blob 丢失时签下载地址应当 404")
 		} else {
 			assertBusinessError(t, err, 404, "file.not-found")
@@ -850,19 +874,19 @@ func TestDeleteGroup(t *testing.T) {
 	}
 
 	// 目录不存在 / 空路径。
-	if err := instance.DeleteGroup("不存在", false); err == nil {
+	if err := instance.DeleteGroup(t.Context(), "不存在", false); err == nil {
 		t.Fatal("删不存在的分组应当报错")
 	} else {
 		assertBusinessError(t, err, 404, "group.not-found")
 	}
-	if err := instance.DeleteGroup("", false); err == nil {
+	if err := instance.DeleteGroup(t.Context(), "", false); err == nil {
 		t.Fatal("空路径应当报错")
 	} else {
 		assertBusinessError(t, err, 400, "group.invalid")
 	}
 
 	// 保留文件：子分组级联删除，文件回到未分组，blob 仍可下载。
-	if err := instance.DeleteGroup("工作", false); err != nil {
+	if err := instance.DeleteGroup(t.Context(), "工作", false); err != nil {
 		t.Fatalf("DeleteGroup() 报错: %v", err)
 	}
 	if groups, err := instance.ListGroups(); err != nil || len(groups) != 0 {
@@ -877,7 +901,51 @@ func TestDeleteGroup(t *testing.T) {
 			t.Errorf("%s 的 group_path = %q，想要空串", file.ID, file.GroupPath)
 		}
 	}
-	if _, err := instance.OpenDownload(first.ID); err != nil {
+	if _, err := instance.OpenDownload(t.Context(), first.ID); err != nil {
 		t.Errorf("保留文件后应当仍能读 blob: %v", err)
+	}
+}
+
+// 回归 F1：库里出现 sha 长度不足的记录（手工修库 / 外部工具写库）时，DeleteFile 不能因为
+// 分片锁退回全局锁 a.mu 而永久自死锁 —— a.mu 不可重入，同一个 goroutine 连加两次就卡死。
+func TestDeleteFileWithMalformedSHA(t *testing.T) {
+	instance := testenv.New(t)
+	record := db.File{
+		ID:        "0123456789abcdef0123456789abcdef",
+		Filename:  "bad.txt",
+		SHA256:    "a",
+		Size:      1,
+		CreatedAt: time.Now().Unix(),
+	}
+	if err := instance.Store.InsertFile(record); err != nil {
+		t.Fatalf("插入异常记录失败: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- instance.DeleteFile(t.Context(), record.ID) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("DeleteFile 3 秒未返回：分片锁退回了全局锁，导致永久自死锁")
+	}
+	if _, err := instance.Store.File(record.ID); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("删除后记录应当不存在，err = %v", err)
+	}
+}
+
+// 回归 F1：sha 会直接拼成文件路径 / 对象 key，非法值必须在存储后端入口被拒绝，
+// 不能让本地后端穿越目录、也不能让 S3 后端切片越界 panic。
+func TestBlobStoreRejectsMalformedSHA(t *testing.T) {
+	instance := testenv.New(t)
+	for _, sha := range []string{"", "a", "abc", "../evil", "a/b", strings.Repeat("Z", 64)} {
+		if _, err := instance.Blobs.Head(t.Context(), sha); err == nil {
+			t.Errorf("Head(%q) 应当报错", sha)
+		}
+		if _, err := instance.Blobs.Open(t.Context(), sha); err == nil {
+			t.Errorf("Open(%q) 应当报错", sha)
+		}
+		if err := instance.Blobs.Delete(t.Context(), sha); err == nil {
+			t.Errorf("Delete(%q) 应当报错", sha)
+		}
 	}
 }

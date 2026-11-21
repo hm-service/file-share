@@ -41,27 +41,16 @@ export type MessageKey =
   | "auth.submit"
   | "auth.error"
   | "nav.recent"
-  | "nav.views"
   | "nav.favorites"
-  | "nav.groups"
   | "nav.no-groups"
   | "nav.ungrouped"
   | "nav.search-placeholder"
-  | "nav.group-search-placeholder"
-  | "nav.no-group-results"
-  | "nav.resize-sidebar"
   | "nav.file-count"
-  | "nav.recent-count"
   | "nav.no-results"
   | "nav.empty-recent"
   | "nav.empty-favorites"
-  | "nav.empty-direct"
-  | "nav.empty-direct-hint"
   | "upload.button"
-  | "upload.hint"
-  | "upload.hint-mobile"
   | "upload.drop-overlay"
-  | "upload.group-hint"
   | "upload.queue-title"
   | "upload.dock-collapse"
   | "upload.dock-expand"
@@ -82,13 +71,12 @@ export type MessageKey =
   | "action.favorite"
   | "action.unfavorite"
   | "action.download"
-  | "action.download-group"
   | "action.download-group-size"
   | "action.stats"
-  | "action.refresh"
   | "action.rename"
   | "action.rename-group"
   | "action.copy-link"
+  | "action.copy-link-24h"
   | "action.copy-curl"
   | "action.copied"
   | "action.delete"
@@ -111,10 +99,6 @@ export type MessageKey =
   | "file.detail.group"
   | "group.new-title"
   | "group.new-hint"
-  | "group.all"
-  | "group.direct-files"
-  | "group.empty-child"
-  | "group.upload-target"
   | "group.rename-title"
   | "group.new-subgroup-title"
   | "group.delete-title"
@@ -131,13 +115,32 @@ export type MessageKey =
   | "group.stats.empty"
   | "rename.title"
   | "confirm.delete"
-  | "date.group-heading"
   | "meta.unknown-time"
   | "lang.label"
   | "state.loading"
   | "error.load"
   | "error.copy"
-  | "error.network";
+  | "error.network"
+  | "storage.s3-detail"
+  | "storage.local"
+  | "storage.s3-hint"
+  | "storage.local-hint"
+  | "nav.all"
+  | "nav.tree"
+  | "column.name"
+  | "column.size"
+  | "column.uploaded"
+  | "column.hash"
+  | "column.actions"
+  | "content.folder-count"
+  | "content.item-count"
+  | "content.empty-folder"
+  | "content.empty-hint"
+  | "content.search-results"
+  | "content.drop-hint"
+  | "content.search-count"
+  | "content.folder-empty"
+  | "action.new-folder";
 
 interface Message {
   readonly zh: string;
@@ -160,33 +163,16 @@ const messages: Record<MessageKey, Message> = {
   "auth.submit": { zh: "进入", en: "Continue" },
   "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
   "nav.recent": { zh: "最近", en: "Recent" },
-  "nav.views": { zh: "文件视图", en: "File views" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
-  "nav.groups": { zh: "分组", en: "Groups" },
-  "nav.no-groups": { zh: "暂无分组", en: "No groups yet" },
+  "nav.no-groups": { zh: "暂无文件夹", en: "No folders yet" },
   "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
   "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
-  "nav.group-search-placeholder": { zh: "搜索分组…", en: "Search groups…" },
-  "nav.no-group-results": { zh: "没有匹配的分组", en: "No matching groups" },
-  "nav.resize-sidebar": { zh: "拖动调整侧栏宽度", en: "Drag to resize sidebar" },
   "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
-  "nav.recent-count": {
-    zh: "显示最近 {shown} 个，共 {total} 个文件",
-    en: "Showing the latest {shown} of {total} files",
-  },
   "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
   "nav.empty-recent": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
   "nav.empty-favorites": { zh: "还没有收藏的文件", en: "No favorites yet" },
-  "nav.empty-direct": { zh: "这里没有直属文件", en: "No direct files here" },
-  "nav.empty-direct-hint": {
-    zh: "子分组里的文件，进入对应的子分组查看。",
-    en: "Files inside sub-groups are listed in each sub-group.",
-  },
   "upload.button": { zh: "上传文件", en: "Upload files" },
-  "upload.hint": { zh: "也可以把文件拖到右侧区域", en: "or drag files to this side" },
-  "upload.hint-mobile": { zh: "点击上方按钮选择文件", en: "Tap the upload button above" },
   "upload.drop-overlay": { zh: "松开即可上传", en: "Drop to upload" },
-  "upload.group-hint": { zh: "新上传的文件会直接归入当前分组", en: "New uploads go into this group" },
   "upload.queue-title": { zh: "上传队列", en: "Upload queue" },
   "upload.dock-collapse": { zh: "收起", en: "Collapse" },
   "upload.dock-expand": { zh: "展开", en: "Expand" },
@@ -216,25 +202,24 @@ const messages: Record<MessageKey, Message> = {
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
-  "action.download-group": { zh: "全部下载", en: "Download all" },
   "action.download-group-size": { zh: "全部下载（{size}）", en: "Download all ({size})" },
   "action.stats": { zh: "统计信息", en: "Statistics" },
   "action.rename": { zh: "重命名", en: "Rename" },
-  "action.rename-group": { zh: "重命名分组", en: "Rename group" },
-  "action.refresh": { zh: "刷新列表", en: "Refresh" },
-  "action.copy-link": { zh: "复制分享链接（10 分钟内有效）", en: "Copy share link (valid for 10 minutes)" },
+  "action.rename-group": { zh: "重命名文件夹", en: "Rename folder" },
+  "action.copy-link": { zh: "复制分享链接（10 分钟）", en: "Copy share link (10 minutes)" },
+  "action.copy-link-24h": { zh: "复制分享链接（24 小时）", en: "Copy share link (24 hours)" },
   "action.copy-curl": { zh: "复制 curl 命令", en: "Copy curl command" },
   "action.copied": { zh: "已复制", en: "Copied" },
   "action.delete": { zh: "删除", en: "Delete" },
-  "action.move-group": { zh: "移动到分组", en: "Move to group" },
+  "action.move-group": { zh: "移动到文件夹", en: "Move to folder" },
   "action.more": { zh: "更多操作", en: "More actions" },
-  "action.new-group": { zh: "新建分组…", en: "New group…" },
-  "action.group-menu": { zh: "分组操作", en: "Group actions" },
-  "action.create-subgroup": { zh: "创建子分组", en: "New sub-group" },
-  "action.delete-group": { zh: "删除分组", en: "Delete group" },
+  "action.new-group": { zh: "新建文件夹", en: "New folder" },
+  "action.group-menu": { zh: "文件夹操作", en: "Folder actions" },
+  "action.create-subgroup": { zh: "创建子文件夹", en: "New sub-folder" },
+  "action.delete-group": { zh: "删除文件夹", en: "Delete folder" },
   "action.create": { zh: "创建", en: "Create" },
-  "action.expand-group": { zh: "展开子分组", en: "Expand sub-groups" },
-  "action.collapse-group": { zh: "折叠子分组", en: "Collapse sub-groups" },
+  "action.expand-group": { zh: "展开子文件夹", en: "Expand sub-folders" },
+  "action.collapse-group": { zh: "折叠子文件夹", en: "Collapse sub-folders" },
   "action.cancel": { zh: "取消", en: "Cancel" },
   "action.close": { zh: "关闭", en: "Close" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
@@ -242,23 +227,19 @@ const messages: Record<MessageKey, Message> = {
   "file.detail.title": { zh: "文件详情", en: "File details" },
   "file.detail.size": { zh: "大小", en: "Size" },
   "file.detail.time": { zh: "上传时间", en: "Uploaded" },
-  "file.detail.group": { zh: "所在分组", en: "Group" },
-  "group.new-title": { zh: "新建分组", en: "New group" },
+  "file.detail.group": { zh: "所在文件夹", en: "Folder" },
+  "group.new-title": { zh: "新建文件夹", en: "New folder" },
   "group.new-hint": {
-    zh: "输入分组名；用 父/子/孙 一次建多层，三级分组只在分组内容区里分段",
-    en: "Group name; use parent/child/grandchild for deeper levels",
+    zh: "输入文件夹名；用 父/子/孙 一次建多层，最多三级",
+    en: "Folder name; use parent/child/grandchild for deeper levels",
   },
-  "group.all": { zh: "全部", en: "All" },
-  "group.direct-files": { zh: "直属文件", en: "Direct files" },
-  "group.empty-child": { zh: "这个分组里还没有文件", en: "No files in this group yet" },
-  "group.upload-target": { zh: "上传到「{name}」", en: 'Uploading to "{name}"' },
-  "group.rename-title": { zh: "重命名分组", en: "Rename group" },
-  "group.new-subgroup-title": { zh: "新建子分组", en: "New sub-group" },
-  "group.delete-title": { zh: "删除分组「{name}」？", en: 'Delete group "{name}"?' },
-  "group.delete-empty": { zh: "这个分组里没有文件。", en: "This group has no files." },
+  "group.rename-title": { zh: "重命名文件夹", en: "Rename folder" },
+  "group.new-subgroup-title": { zh: "新建子文件夹", en: "New sub-folder" },
+  "group.delete-title": { zh: "删除文件夹「{name}」？", en: 'Delete folder "{name}"?' },
+  "group.delete-empty": { zh: "这个文件夹里没有文件。", en: "This folder has no files." },
   "group.delete-message": {
-    zh: "该分组及子分组共 {count} 个文件；不勾选时，文件会移到「{target}」。",
-    en: '{count} files in this group and its sub-groups. Leave unchecked to move them to "{target}".',
+    zh: "该文件夹及子文件夹共 {count} 个文件；不勾选时，文件会移到「{target}」。",
+    en: '{count} files in this folder and its sub-folders. Leave unchecked to move them to "{target}".',
   },
   "group.delete-files": { zh: "同时删除这 {count} 个文件", en: "Also delete these {count} files" },
   "group.delete-files-hint": {
@@ -266,15 +247,14 @@ const messages: Record<MessageKey, Message> = {
     en: "These files will be permanently deleted.",
   },
   "group.stats.title": { zh: "统计信息", en: "Statistics" },
-  "group.stats.hint": { zh: "{path} · 含全部子分组", en: "{path} · including all sub-groups" },
+  "group.stats.hint": { zh: "{path} · 含全部子文件夹", en: "{path} · including all sub-folders" },
   "group.stats.files": { zh: "文件数量", en: "Files" },
   "group.stats.file-count": { zh: "{count} 个", en: "{count}" },
   "group.stats.total-size": { zh: "总文件大小", en: "Total size" },
   "group.stats.distribution": { zh: "文件大小分布", en: "Size distribution" },
-  "group.stats.empty": { zh: "该分组下没有文件", en: "No files in this group" },
+  "group.stats.empty": { zh: "该文件夹下没有文件", en: "No files in this folder" },
   "rename.title": { zh: "重命名文件", en: "Rename file" },
   "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
-  "date.group-heading": { zh: "{year}年{month}月{day}号", en: "{monthName} {day}, {year}" },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },
   "state.loading": { zh: "加载中…", en: "Loading…" },
@@ -284,6 +264,41 @@ const messages: Record<MessageKey, Message> = {
     en: "Failed to copy; check the browser clipboard permission",
   },
   "error.network": { zh: "网络异常", en: "Network error" },
+  "storage.s3-detail": {
+    zh: "对象存储 · {bucket}/{prefix}",
+    en: "Object storage · {bucket}/{prefix}",
+  },
+  "storage.local": { zh: "本地磁盘", en: "Local disk" },
+  "storage.s3-hint": {
+    zh: "文件内容存放在 S3 对象存储中",
+    en: "File contents are stored in S3 object storage",
+  },
+  "storage.local-hint": {
+    zh: "文件内容存放在服务器本地磁盘",
+    en: "File contents are stored on the server's local disk",
+  },
+  "nav.all": { zh: "全部", en: "All" },
+  "nav.tree": { zh: "文件夹", en: "Folders" },
+  "column.name": { zh: "名称", en: "Name" },
+  "column.size": { zh: "大小", en: "Size" },
+  "column.uploaded": { zh: "上传时间", en: "Uploaded" },
+  "column.hash": { zh: "指纹", en: "Hash" },
+  "column.actions": { zh: "操作", en: "Actions" },
+  "content.folder-count": { zh: "{count} 个文件夹", en: "{count} folders" },
+  "content.item-count": { zh: "{count} 项", en: "{count} items" },
+  "content.empty-folder": { zh: "这个文件夹是空的", en: "This folder is empty" },
+  "content.empty-hint": {
+    zh: "把文件拖到这里上传，或点右上角「上传文件」",
+    en: "Drop files here, or use Upload files at the top right",
+  },
+  "content.search-results": { zh: "搜索结果", en: "Search results" },
+  "content.drop-hint": {
+    zh: "把文件拖到这里上传到当前文件夹；拖到左侧文件夹上则直接传入该文件夹",
+    en: "Drop files here to upload into this folder, or onto a folder on the left",
+  },
+  "content.search-count": { zh: "{count} 个结果", en: "{count} results" },
+  "content.folder-empty": { zh: "这个文件夹里还没有文件", en: "No files in this folder yet" },
+  "action.new-folder": { zh: "新建子文件夹", en: "New sub-folder" },
 };
 
 /** 浏览器语言 / 存下来的值归一化；认不出来返回空串。 */

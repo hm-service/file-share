@@ -1,0 +1,108 @@
+package app_test
+
+// 探针：验证 sha 分片锁重构后的核心不变量——
+// 「只要还有一条记录引用某个 sha，对应 blob 就必须存在」。
+// 并发执行同内容上传（FinishUpload）与删除（DeleteFile），结束后逐条校验。
+// 由 scripts/repro-invariant.sh 复制进临时仓库副本执行。
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"file-share/app"
+	"file-share/internal/testenv"
+)
+
+func TestProbeUploadDeleteInvariant(t *testing.T) {
+	instance := testenv.New(t)
+	content := []byte("shared-content-for-invariant-probe")
+
+	const uploaders = 40
+	const perUploader = 10
+
+	ids := make(chan string, uploaders*perUploader)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var uploadErrs, deleteErrs int
+
+	for i := 0; i < uploaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perUploader; j++ {
+				upload, err := instance.NewUpload()
+				if err != nil {
+					mu.Lock()
+					uploadErrs++
+					mu.Unlock()
+					return
+				}
+				if _, err := upload.Write(content); err != nil {
+					upload.Abort()
+					mu.Lock()
+					uploadErrs++
+					mu.Unlock()
+					return
+				}
+				record, err := instance.FinishUpload(context.Background(), upload, "probe.txt", testenv.SHA256(content))
+				if err != nil {
+					upload.Abort()
+					mu.Lock()
+					uploadErrs++
+					mu.Unlock()
+					return
+				}
+				ids <- record.ID
+			}
+		}()
+	}
+
+	var deleters sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		deleters.Add(1)
+		go func() {
+			defer deleters.Done()
+			local := 0
+			for id := range ids {
+				local++
+				// 只删一部分，保证仍有记录引用 blob，覆盖「还有引用时不能删 blob」的路径
+				if local%3 == 0 {
+					continue
+				}
+				if err := instance.DeleteFile(context.Background(), id); err != nil {
+					mu.Lock()
+					deleteErrs++
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(ids)
+	deleters.Wait()
+
+	files, err := instance.ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("全部记录都被删掉了，探针没有覆盖到「还有引用」的路径（uploadErrs=%d deleteErrs=%d）", uploadErrs, deleteErrs)
+	}
+	sha := testenv.SHA256(content)
+	for _, file := range files {
+		if file.SHA256 != sha {
+			t.Fatalf("unexpected sha %s", file.SHA256)
+		}
+		if _, err := instance.Blobs.Head(context.Background(), file.SHA256); err != nil {
+			if errors.Is(err, app.ErrBlobNotFound) {
+				t.Fatalf("不变量被破坏：记录 %s 还在，但 blob 已被删除", file.ID)
+			}
+			t.Fatalf("Head: %v", err)
+		}
+	}
+	fmt.Printf("invariant ok: %d records kept, uploadErrs=%d deleteErrs=%d\n", len(files), uploadErrs, deleteErrs)
+}

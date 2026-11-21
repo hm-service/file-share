@@ -73,6 +73,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		target string
 	}{
 		{http.MethodGet, "/api/files"},
+		{http.MethodGet, "/api/storage"},
 		{http.MethodPost, "/api/check_file"},
 		{http.MethodPost, "/api/upload"},
 		{http.MethodPost, "/api/files/abc/favorite"},
@@ -94,6 +95,26 @@ func TestAuthRequiredRoutes(t *testing.T) {
 				t.Errorf("WWW-Authenticate = %q", got)
 			}
 		})
+	}
+}
+
+// /api/storage 告诉界面当前 blob 存在哪：本地模式只有 backend，S3 模式带桶与前缀。
+func TestStorageInfo(t *testing.T) {
+	instance, handler := newAPI(t)
+	token := testenv.Token(t, instance)
+
+	recorder := testenv.Do(handler, http.MethodGet, "/api/storage", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，想要 200（body=%s）", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Backend string `json:"backend"`
+		Bucket  string `json:"bucket"`
+		Prefix  string `json:"prefix"`
+	}
+	testenv.DecodeInto(t, recorder, &payload)
+	if payload.Backend != "local" || payload.Bucket != "" || payload.Prefix != "" {
+		t.Errorf("本地模式的存储信息 = %+v", payload)
 	}
 }
 
@@ -782,6 +803,39 @@ func TestShareLink(t *testing.T) {
 		testenv.RemoveBlob(t, instance, missing.SHA256)
 		assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/"+missing.ID+"/share", token),
 			http.StatusNotFound, "找不到该文件")
+	})
+
+	t.Run("24 小时档", func(t *testing.T) {
+		signed := testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/share?ttl=86400", token)
+		if signed.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d（body=%s）", signed.Code, signed.Body.String())
+		}
+		var longPayload struct {
+			URL string `json:"url"`
+		}
+		testenv.DecodeInto(t, signed, &longPayload)
+		parsed, err := url.Parse(longPayload.URL)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) 报错: %v", longPayload.URL, err)
+		}
+		exp, err := strconv.ParseInt(parsed.Query().Get("exp"), 10, 64)
+		if err != nil {
+			t.Fatalf("exp 不是整数: %v", err)
+		}
+		if ttl := time.Until(time.Unix(exp, 0)); ttl <= core.SignedURLTTL || ttl > core.ShareLinkTTL24h {
+			t.Errorf("有效期剩余 %s，想要 (%s, %s]", ttl, core.SignedURLTTL, core.ShareLinkTTL24h)
+		}
+		anonymous := testenv.Do(handler, http.MethodGet, longPayload.URL, "")
+		if anonymous.Code != http.StatusOK || !bytes.Equal(anonymous.Body.Bytes(), content) {
+			t.Errorf("24 小时链接匿名下载 = %d body=%q", anonymous.Code, anonymous.Body.Bytes())
+		}
+	})
+
+	t.Run("非法 ttl 回 400", func(t *testing.T) {
+		for _, ttl := range []string{"0", "60", "3600", "604800", "600s", "abc", "-600"} {
+			assertJSONError(t, testenv.Do(handler, http.MethodPost, "/api/files/"+record.ID+"/share?ttl="+ttl, token),
+				http.StatusBadRequest, "分享链接有效期无效")
+		}
 	})
 
 	t.Run("方法不对", func(t *testing.T) {

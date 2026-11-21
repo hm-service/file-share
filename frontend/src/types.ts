@@ -70,3 +70,17 @@ export interface UploadResponse {
   id: string;
   sha256: string;
 }
+
+/** GET /api/storage：当前 blob 的存放方案。 */
+export interface StorageInfo {
+  backend: "local" | "s3";
+  bucket?: string;
+  prefix?: string;
+}
+
+/** 内容区里的一行子文件夹：path 是完整路径，fileCount 是子树（含后代）的文件数。 */
+export interface DirEntry {
+  path: string;
+  name: string;
+  fileCount: number;
+}

@@ -85,10 +85,13 @@ func TestSignedURLRejectsTampering(t *testing.T) {
 
 func TestSignedURLExpiryUsesTTL(t *testing.T) {
 	now := time.Date(2026, 11, 12, 12, 34, 56, 0, time.UTC)
-	if got, want := SignedURLExpiry(now), now.Add(SignedURLTTL).Unix(); got != want {
+	if got, want := SignedURLExpiry(now, SignedURLTTL), now.Add(SignedURLTTL).Unix(); got != want {
 		t.Errorf("SignedURLExpiry() = %d，想要 %d", got, want)
 	}
 	if SignedURLTTL != 10*time.Minute {
 		t.Errorf("签名 URL 有效期 = %s，约定是 10 分钟", SignedURLTTL)
+	}
+	if got, want := SignedURLExpiry(now, ShareLinkTTL24h), now.Add(24*time.Hour).Unix(); got != want {
+		t.Errorf("24 小时分享链接的过期时间 = %d，想要 %d", got, want)
 	}
 }

@@ -19,9 +19,13 @@ import (
 //
 // 签名覆盖 method 与 path：换文件、换方法都验不过；exp 在查询参数里，先验签再判过期。
 const (
-	// SignedURLTTL 是签名 URL 的有效期：分享链接要够对方打开，浏览器下载是点击后
-	// 立即导航，10 分钟两者都够，又不会让链接长期有效。
+	// SignedURLTTL 是签名 URL 的默认有效期：浏览器下载是点击后立即导航，10 分钟够用，
+	// 又不会让链接长期有效。
 	SignedURLTTL = 10 * time.Minute
+
+	// ShareLinkTTL24h 是分享链接的长有效期档：链接要发给别人、可能隔天再打开，
+	// 所以单独留一档一天有效的。
+	ShareLinkTTL24h = 24 * time.Hour
 
 	signedURLVersion = "v1"
 )
@@ -80,7 +84,7 @@ func (s *URLSigner) sign(method, escapedPath string, exp int64) []byte {
 	return mac.Sum(nil)
 }
 
-// SignedURLExpiry 是签名 URL 的过期时间：签发后 SignedURLTTL 内有效。
-func SignedURLExpiry(now time.Time) int64 {
-	return now.Add(SignedURLTTL).Unix()
+// SignedURLExpiry 是签名 URL 的过期时间：签发后 ttl 内有效。
+func SignedURLExpiry(now time.Time, ttl time.Duration) int64 {
+	return now.Add(ttl).Unix()
 }

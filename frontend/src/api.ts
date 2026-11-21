@@ -17,6 +17,7 @@ import type {
   FileItem,
   FileListResponse,
   FileOrderItem,
+  StorageInfo,
   UploadResponse,
 } from "./types";
 
@@ -195,11 +196,15 @@ export function toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
   );
 }
 
-/** POST /api/files/{id}/share：签一条 10 分钟有效的分享链接，返回可直接发给对方的相对地址。 */
-export function createShareLink(id: string): Promise<{ url: string }> {
-  return request<{ url: string }>(`/api/files/${encodeURIComponent(id)}/share`, {
-    method: "POST",
-  });
+/** 分享链接的有效期（秒）：默认 10 分钟，也可以签 24 小时档，后端只认这两档。 */
+export type ShareLinkTTL = 600 | 86400;
+
+/** POST /api/files/{id}/share：签一条 ttl 内有效的分享链接，返回可直接发给对方的相对地址。 */
+export function createShareLink(id: string, ttl: ShareLinkTTL = 600): Promise<{ url: string }> {
+  return request<{ url: string }>(
+    `/api/files/${encodeURIComponent(id)}/share?ttl=${ttl}`,
+    { method: "POST" },
+  );
 }
 
 /** DELETE /api/files/{id}（204，无响应体）。 */
@@ -292,6 +297,11 @@ function startDownload(url: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
+}
+
+/** GET /api/storage：当前 blob 的存放方案（本地磁盘或 S3 对象存储）。 */
+export function getStorageInfo(): Promise<StorageInfo> {
+  return request<StorageInfo>("/api/storage");
 }
 
 /** GET /api/files/{id}/download-url：换一个匿名下载地址（10 分钟内有效）。 */

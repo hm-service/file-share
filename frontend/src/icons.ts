@@ -11,6 +11,7 @@ export const ICONS = {
   pencil:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17z"/><path d="m13.5 6.5 3 3"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.828 10.172a4 4 0 0 0-5.656 0l-3 3a4 4 0 0 0 5.656 5.656l1.5-1.5M10.172 13.828a4 4 0 0 0 5.656 0l3-3a4 4 0 0 0-5.656-5.656l-1.5 1.5"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.4 9.9 2.7 2.2-2.7 2.2"/><path d="M12.6 14.3h4"/></svg>',
   trash:
@@ -36,6 +37,7 @@ export const ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.4a2 2 0 0 1 2-2h3.3l1.9 2.1h7.8a2 2 0 0 1 2 2v7.1a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
   inbox:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.6 4.8h14.8l1.9 8v4.4a2 2 0 0 1-2 2H4.7a2 2 0 0 1-2-2v-4.4z"/><path d="M3 13.2h4.1l1.3 2h7.2l1.3-2H21"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
   grip: '<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="8" cy="5.5" r="1.35"/><circle cx="12" cy="5.5" r="1.35"/><circle cx="8" cy="10" r="1.35"/><circle cx="12" cy="10" r="1.35"/><circle cx="8" cy="14.5" r="1.35"/><circle cx="12" cy="14.5" r="1.35"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></svg>',

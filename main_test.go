@@ -101,13 +101,13 @@ func TestSiteServesBuiltFiles(t *testing.T) {
 	}
 }
 
-// 一级路径是前端视图路由：/<分组名> 与 /favorites、/ungrouped 都回同一个应用页面。
+// 一到三段路径是前端视图路由：/<分组名>、/favorites、/ungrouped 与三级目录都回同一个应用页面。
 // 分组名可能带非 ASCII 与空格，所以按转义后的路径也要能进来。
 func TestSiteServesViewRoutes(t *testing.T) {
 	handler := siteHandler(testSite())
 
 	for _, path := range []string{"/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026",
-		"/cso2/%E5%AD%90%E7%BB%84"} {
+		"/cso2/%E5%AD%90%E7%BB%84", "/cso2/%E5%AD%90%E7%BB%84/%E4%B8%89%E7%BA%A7"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusOK {
@@ -127,13 +127,13 @@ func TestSiteServesViewRoutes(t *testing.T) {
 }
 
 // 只认具体文件：目录不给列表，产物里的 *.html 不能绕过页面表直接访问，穿越也读不出东西。
-// 多段路径不是视图路由，未知的一律 404。
+// 超过三段的路径不是视图路由，未知的一律 404。
 func TestSiteHasNoDirectoryListing(t *testing.T) {
 	handler := siteHandler(testSite())
 
 	for _, path := range []string{"/assets/", "/assets/nested", "/assets/nested/", "/assets/nope.js",
 		"/assets/app-abc123.js/deep", "/index.html", "/auth.html", "/auth/deep",
-		"/nope/deep/deeper", "/cso2/子组/三级"} {
+		"/nope/deep/deeper/more", "/cso2/子组/三级/四级"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusNotFound {
@@ -714,4 +714,143 @@ func TestInitLoggerTimestampField(t *testing.T) {
 	if record["msg"] != "probe" {
 		t.Errorf("msg = %v", record["msg"])
 	}
+}
+
+// TestReadBlobSecret：S3 凭据允许 base64 里的 + / =，但仍拒绝空白与超长，读后从环境表删除。
+func TestReadBlobSecret(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "留空"},
+		{name: "普通凭据", value: "CHANGE_ME_ACCESS_KEY"},
+		{name: "base64 形态", value: "ab+/cd==ef+/gh=="},
+		{name: "含空格", value: "abc def", wantErr: true},
+		{name: "含制表符", value: "abc\tdef", wantErr: true},
+		{name: "太长", value: strings.Repeat("a", 257), wantErr: true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			t.Setenv("TEST_S3_SECRET", item.value)
+			got, err := readBlobSecret("TEST_S3_SECRET")
+			if item.wantErr {
+				if err == nil {
+					t.Fatalf("readBlobSecret() = %q，想要报错", got)
+				}
+			} else if err != nil {
+				t.Fatalf("readBlobSecret() 报错: %v", err)
+			}
+			if left := os.Getenv("TEST_S3_SECRET"); left != "" {
+				t.Errorf("读完之后不该还留在环境表里: %q", left)
+			}
+		})
+	}
+}
+
+// TestReadS3Config：S3_ENDPOINT 为空表示本地模式；只配一半或写法不合法时启动失败。
+func TestReadS3Config(t *testing.T) {
+	const (
+		endpoint = "http://127.0.0.1:8333"
+		access   = "CHANGE_ME_ACCESS_KEY"
+		secret   = "CHANGE_ME_LONG_RANDOM_SECRET_KEY"
+	)
+	clear := func(t *testing.T) {
+		t.Helper()
+		for _, name := range []string{"S3_ENDPOINT", "S3_BUCKET", "S3_PREFIX", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY"} {
+			t.Setenv(name, "")
+		}
+	}
+	setValid := func(t *testing.T) {
+		t.Helper()
+		clear(t)
+		t.Setenv("S3_ENDPOINT", endpoint)
+		t.Setenv("S3_BUCKET", "blobs")
+		t.Setenv("S3_ACCESS_KEY", access)
+		t.Setenv("S3_SECRET_KEY", secret)
+	}
+
+	t.Run("未配置时用本地目录", func(t *testing.T) {
+		clear(t)
+		cfg, err := readS3Config()
+		if err != nil || cfg != nil {
+			t.Fatalf("readS3Config() = (%+v, %v)，想要 (nil, nil)", cfg, err)
+		}
+	})
+	t.Run("只配一半", func(t *testing.T) {
+		clear(t)
+		t.Setenv("S3_BUCKET", "blobs")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("只配 S3_BUCKET 应当报错")
+		}
+	})
+	t.Run("endpoint 缺少 scheme", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_ENDPOINT", "127.0.0.1:8333")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("没有 http(s):// 的 endpoint 应当报错")
+		}
+	})
+	t.Run("endpoint 带路径", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_ENDPOINT", endpoint+"/some/path")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("endpoint 带路径应当报错")
+		}
+	})
+	t.Run("桶名非法", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_BUCKET", "Bad_Bucket")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("非法桶名应当报错")
+		}
+	})
+	t.Run("缺凭据", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_SECRET_KEY", "")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("缺 S3_SECRET_KEY 应当报错")
+		}
+	})
+	t.Run("合法的 http 配置给默认值", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_BUCKET", "")
+		cfg, err := readS3Config()
+		if err != nil {
+			t.Fatalf("readS3Config() 报错: %v", err)
+		}
+		if cfg.Endpoint != "127.0.0.1:8333" || cfg.Secure {
+			t.Errorf("Endpoint/Secure = %q/%v", cfg.Endpoint, cfg.Secure)
+		}
+		// 常态布局：file-share 桶下的 blobs/xx/yy/<sha>，部署只需 endpoint 与凭据。
+		if cfg.Bucket != "file-share" || cfg.Prefix != "blobs" || cfg.Region != "us-east-1" {
+			t.Errorf("默认值不对: %+v", cfg)
+		}
+		if left := os.Getenv("S3_ACCESS_KEY"); left != "" {
+			t.Errorf("S3_ACCESS_KEY 应当已从环境表删除: %q", left)
+		}
+	})
+	t.Run("合法的 https 配置与自定义前缀", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_ENDPOINT", "https://s3.example.com")
+		t.Setenv("S3_PREFIX", "/blobs/front/")
+		t.Setenv("S3_REGION", "cn-hangzhou")
+		cfg, err := readS3Config()
+		if err != nil {
+			t.Fatalf("readS3Config() 报错: %v", err)
+		}
+		if !cfg.Secure || cfg.Endpoint != "s3.example.com" {
+			t.Errorf("Endpoint/Secure = %q/%v", cfg.Endpoint, cfg.Secure)
+		}
+		if cfg.Prefix != "blobs/front" || cfg.Region != "cn-hangzhou" {
+			t.Errorf("Prefix/Region = %q/%q", cfg.Prefix, cfg.Region)
+		}
+	})
+	t.Run("前缀含非法字符", func(t *testing.T) {
+		setValid(t)
+		t.Setenv("S3_PREFIX", "file share")
+		if _, err := readS3Config(); err == nil {
+			t.Fatal("前缀含空格应当报错")
+		}
+	})
 }

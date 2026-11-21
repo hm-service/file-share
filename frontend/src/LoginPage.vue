@@ -18,10 +18,15 @@ const token = ref("");
 const submitting = ref(false);
 const error = ref("");
 
+/** next 是不是登录页自己（含查询串或子路径）；精确匹配，不误伤以 auth 开头的文件夹。 */
+function isAuthPage(path: string): boolean {
+  return path === "/auth" || path.startsWith("/auth?") || path.startsWith("/auth/");
+}
+
 /** 登录成功后回哪里：只接受站内路径，避免被 ?next= 带到别的站点。 */
 function afterLoginURL(): string {
   const next = new URLSearchParams(location.search).get("next") ?? "";
-  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/auth")) return "/";
+  if (!next.startsWith("/") || next.startsWith("//") || isAuthPage(next)) return "/";
   return next;
 }
 

@@ -1,0 +1,41 @@
+package app_test
+
+// 探针：shaMutex 的「非法 sha 退回全局锁」兜底分支会不会把 DeleteFile 锁死。
+// 由 scripts/repro-deadlock.sh 复制进临时仓库副本的 app/ 目录并执行；
+// 不要在正式工作区里保留这个文件（它属于 code-reviews/scripts）。
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"file-share/db"
+	"file-share/internal/testenv"
+)
+
+func TestProbeDeleteFileWithMalformedSHA(t *testing.T) {
+	instance := testenv.New(t)
+	// 直接写一条 sha256 长度不足 2 的记录，模拟被手工恢复 / 破坏的库。
+	bad := db.File{
+		ID:        "0123456789abcdef0123456789abcdef",
+		Filename:  "bad.txt",
+		SHA256:    "x",
+		Size:      1,
+		CreatedAt: time.Now().Unix(),
+	}
+	if err := instance.Store.InsertFile(bad); err != nil {
+		t.Fatalf("insert bad record: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- instance.DeleteFile(context.Background(), bad.ID)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("DeleteFile 返回了（err=%v）：死锁没有复现", err)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("DeleteFile 3 秒未返回：a.mu 被同一个 goroutine 锁了两次，永久自死锁")
+	}
+}

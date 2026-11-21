@@ -9,8 +9,10 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -56,7 +58,14 @@ type config struct {
 	port int
 }
 
-func main() { os.Exit(run()) }
+func main() {
+	// 运维子命令：把本地 blob 一次性搬到 S3。放在同一个二进制里，
+	// 不需要为迁移引入第二个可执行文件。
+	if len(os.Args) > 1 && os.Args[1] == "migrate-blobs" {
+		os.Exit(runMigrateBlobs(os.Args[2:]))
+	}
+	os.Exit(run())
+}
 
 func run() int {
 	initLogger()
@@ -85,6 +94,7 @@ func run() int {
 	slog.Info("server started",
 		slog.String("addr", listener.Addr().String()),
 		slog.String("data_dir", instance.Config.DataDir),
+		slog.String("blob_store", instance.Storage.Describe()),
 		slog.String("start_at", time.Now().Format(time.RFC3339)),
 	)
 	return serve(server, listener, instance)
@@ -221,6 +231,10 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if urlKey == "" {
 		return zero, limits, errors.New("URL_SIGNATURE_KEY must be set")
 	}
+	s3cfg, err := readS3Config()
+	if err != nil {
+		return zero, limits, err
+	}
 	// 认证令牌只留 Argon2id 摘要：读完立刻散列，明文不参与后续任何逻辑。
 	authTokenHash, err := core.HashToken(authToken)
 	if err != nil {
@@ -235,6 +249,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 			AuthTokenHash:     authTokenHash,
 			ReadyzToken:       readyzToken,
 			MaxFileSize:       maxFileSize,
+			S3:                s3cfg,
 		},
 		host: host,
 		port: port,
@@ -363,6 +378,122 @@ func parseFileSize(raw string) (int64, error) {
 		return 0, fmt.Errorf("MAX_FILE_SIZE value %q is too large", raw)
 	}
 	return size * multiplier, nil
+}
+
+// s3BucketPattern 是 S3 桶名的字符约束：3-63 位小写字母、数字、点、连字符，
+// 首尾必须是字母或数字（具体长度由正则的 {1,61} + 首尾两位保证）。
+var s3BucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// readS3Config 读 S3 后端配置。S3_ENDPOINT 为空表示用本地目录存 blob，
+// 此时其余 S3_* 必须也都为空 —— 只配一半的部署按配置错误处理，不静默退回本地。
+func readS3Config() (*app.S3Config, error) {
+	endpoint := strings.TrimSpace(os.Getenv("S3_ENDPOINT"))
+	bucket := strings.TrimSpace(os.Getenv("S3_BUCKET"))
+	prefix := strings.TrimSpace(os.Getenv("S3_PREFIX"))
+	region := strings.TrimSpace(os.Getenv("S3_REGION"))
+	accessKey, err := readBlobSecret("S3_ACCESS_KEY")
+	if err != nil {
+		return nil, err
+	}
+	secretKey, err := readBlobSecret("S3_SECRET_KEY")
+	if err != nil {
+		return nil, err
+	}
+
+	if endpoint == "" {
+		if bucket != "" || prefix != "" || region != "" || accessKey != "" || secretKey != "" {
+			return nil, errors.New("S3_ENDPOINT is required when other S3_* variables are set")
+		}
+		return nil, nil
+	}
+
+	target, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("S3_ENDPOINT %q is not a valid URL: %w", endpoint, err)
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return nil, fmt.Errorf("S3_ENDPOINT must start with http:// or https://, got %q", endpoint)
+	}
+	if target.Host == "" {
+		return nil, fmt.Errorf("S3_ENDPOINT %q has no host", endpoint)
+	}
+	if (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
+		return nil, fmt.Errorf("S3_ENDPOINT must be scheme://host[:port] without path or query, got %q", endpoint)
+	}
+	if bucket == "" {
+		bucket = "file-share"
+	}
+	if !s3BucketPattern.MatchString(bucket) || strings.Contains(bucket, "..") {
+		return nil, fmt.Errorf("S3_BUCKET %q is not a valid bucket name", bucket)
+	}
+	if accessKey == "" || secretKey == "" {
+		return nil, errors.New("S3_ACCESS_KEY and S3_SECRET_KEY are required when S3_ENDPOINT is set")
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	// 对象 key 是 <prefix>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>。
+	// 常态布局是 file-share 桶下的 blobs/xx/yy/<sha>，所以桶与前缀都有默认值，
+	// 部署只需 S3_ENDPOINT 与凭据；多实例共用一个桶时各自配不同前缀（如 blobs/front），
+	// 否则一个实例删掉最后一个引用会连带删掉另一个实例还在引用的 blob。
+	prefix = strings.Trim(prefix, "/")
+	if prefix == "" {
+		prefix = "blobs"
+	}
+	if err := checkS3Prefix(prefix); err != nil {
+		return nil, err
+	}
+
+	return &app.S3Config{
+		Endpoint:  target.Host,
+		Secure:    target.Scheme == "https",
+		Bucket:    bucket,
+		Prefix:    prefix,
+		Region:    region,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	}, nil
+}
+
+// checkS3Prefix 校验前缀：由 / 分隔的非空段组成，每段只含字母、数字、点、下划线、连字符。
+func checkS3Prefix(prefix string) error {
+	if len(prefix) > 200 {
+		return fmt.Errorf("S3_PREFIX is too long")
+	}
+	for _, segment := range strings.Split(prefix, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("S3_PREFIX %q contains an empty or relative segment", prefix)
+		}
+		for _, r := range segment {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-', r == '_', r == '.':
+			default:
+				return fmt.Errorf("S3_PREFIX %q may only contain letters, digits, '-', '_' and '.'", prefix)
+			}
+		}
+	}
+	return nil
+}
+
+// readBlobSecret 读对象存储的凭据：S3 的 secret 常见形式是 base64（含 + / =），
+// 不能复用只接受 [A-Za-z0-9_] 的 readSecret。只要求可打印、无空白，读完从环境表删除。
+func readBlobSecret(name string) (string, error) {
+	value := os.Getenv(name)
+	_ = os.Unsetenv(name)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 256 {
+		return "", fmt.Errorf("%s is too long (max 256 characters)", name)
+	}
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return "", fmt.Errorf("%s may only contain printable ASCII without spaces", name)
+		}
+	}
+	return value, nil
 }
 
 // readDataDir 读 DATA_DIR：未设置或只写空白时用默认 /data。
