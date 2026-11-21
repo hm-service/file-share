@@ -2,7 +2,7 @@
  * 统一 API 客户端：Bearer 认证 + Accept-Language + 401 处理 + detail 解析。
  *
  * - 每个请求都带 `Authorization: Bearer <session>` 与 `Accept-Language`（后端按它挑错误文案）。
- * - 除登录接口外，401 一律清 session 跳 /auth（登录页自己把 401 显示成「令牌不正确」）。
+ * - 除登录接口外，401 一律清 session 跳 /auth（登录页把 401 显示成用户名或密码错误）。
  * - 错误体是 `{"detail": "..."}`，直接作为 ApiError.message（后端已本地化）。
  * - 下载不能直接导航到需要 Bearer 的接口：先换一个签名 URL，再让浏览器导航到该地址，
  *   由浏览器完成流式下载（Range / 原生进度都在浏览器侧）。

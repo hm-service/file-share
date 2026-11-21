@@ -20,7 +20,7 @@
 - blob 后端：默认本地 `DATA_DIR/blobs/<sha256>`；配 `S3_ENDPOINT` 后写 S3，
   对象 key 为 `blobs/xx/yy/<sha256>`（`S3_PREFIX` / `S3_BUCKET` 可改）。两套实现由
   `app.BlobStore` 隔离，上传、秒传、下载、删除与引用计数语义一致。
-- `k8s.file-share.yaml`：Pod + PVC + ConfigMap + Secret；`readOnlyRootFilesystem: true`、
+- `k8s.file-share.yaml`：Pod + PVC + ConfigMap + 两个 Secret（运行密钥、用户表）；`readOnlyRootFilesystem: true`、
   `capabilities.drop: [ALL]`；探针 `/livez`、`/readyz?token=<READYZ_TOKEN>`。
 - 容器以 root 运行：`DATA_DIR` 必须可写（PVC / 具名卷默认满足；宿主机 bind mount 需先处理属主，
   否则收紧权限会因缺少 `CAP_FOWNER` 失败）。`file-share.kube` 是 Podman Quadlet 模板
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS groups (
 - 列表排序 `sort_order ASC, created_at DESC, id ASC`；上传 / 秒传插入时取 `MAX+1`。
 - 文件夹最多三级，空文件夹也保留，每级都有自己的页面。
   改名 / 删除按路径前缀处理全部后代（同一事务）；删除文件夹时组内文件可上移到父路径或一并删除。
-- 收藏状态全局（服务只有一个凭据身份）。
+- 收藏状态全局：收藏不按用户隔离。
 
 ## 5. 页面
 
@@ -129,8 +129,8 @@ CREATE TABLE IF NOT EXISTS groups (
 | `/<一级>`、`/<一级>/<二级>`、`/<一级>/<二级>/<三级>` | 文件夹 | 内容区列出该文件夹的子文件夹与直属文件 |
 | `/auth` | 登录页 | 输入用户名与密码换取会话 |
 
-- 桌面端是「左侧文件夹树 + 右侧内容区表格 + 右下角上传队列」；窄屏把文件夹树收进抽屉，
-  表格只保留名称与操作列。桌面端可拖动两栏边界调节文件夹树宽度（200px ～ 视口一半，
+- 桌面端是「顶栏 + 左侧文件夹树 + 右侧内容区表格 + 右下角上传队列」，顶栏右侧的搜索、上传与
+  当前账号（只读账号挂「只读」徽标）常驻；窄屏把文件夹树收进抽屉，表格只保留名称与操作列。桌面端可拖动两栏边界调节文件夹树宽度（200px ～ 视口一半，
   宽度只存本次会话，刷新后回到默认；窄屏隐藏分隔条）；侧栏与内容区的滚动条常驻槽位并落在内边距里，
   不压住列表行。
 - 文件夹树：快捷入口（最近 / 收藏 / 未分组）+ 最多三级的文件夹树（空文件夹也显示，行尾是
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS groups (
   （统计信息、重命名、新建子文件夹、删除）。
 - 内容区表格列为名称、大小、上传时间（`created_at`）、指纹（8 位短 SHA-256）、操作：子文件夹行在前（显示子树项数），
   文件行在后；移动端隐藏大小、时间、指纹三列。
-  文件行操作是「下载、复制分享链接、收藏、移动到文件夹、更多（重命名 / 复制 curl / 删除）」，
+  文件行操作是「下载、复制分享链接、收藏、移动到文件夹、更多（24 小时分享链接 / 重命名 / 复制 curl / 删除）」，
   点文件名打开详情（含完整 SHA-256）。顶部面包屑逐级可点回上层。
 - 拖拽：文件夹行与文件行各用一个独立的 SortableJS 列表。文件夹行只在同级文件夹之间排序
   （提交 `PUT /api/groups/order`，失败回滚），永远排在文件之前；文件行在同一文件夹内排序
@@ -163,17 +163,18 @@ CREATE TABLE IF NOT EXISTS groups (
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/auth` | `{"token"}` → `200 {"token":"<session>","expires_at":<unix>}`；错误 400/401/405 |
+| POST | `/api/auth` | `{"username","password"}` → `200 {"token":"<session>","expires_at":<unix>,"user":{"name","permissions"}}`；错误 400（请求体不合法）/ 401（用户名或密码错误）/ 405 / 413（请求体超限）/ 500（签发失败） |
 
 - 原始凭据只出现在 `/api/auth`；校验有 1–1.2 秒最小耗时，防时序侧信道。
-- 会话：`base64url("<exp>|<nonce>") + "." + base64url(HMAC-SHA256(SESSION_SIGNING_KEY, "v1|"+payload))`，
-  nonce 16 字节，有效期 30 天；先验签名再验过期。
+- 会话：`base64url("<exp>|<nonce>|<username>") + "." + base64url(HMAC-SHA256(SESSION_SIGNING_KEY, "v2|"+payload))`，
+  nonce 16 字节，有效期 30 天；先验签名再验过期，再按当前用户表解析用户名与权限（删用户即吊销会话）。
 - 无状态会话不可单独撤销，只能轮换密钥让全部下线；退出登录由前端清除凭据。
 
 ### 6.2 文件（均需登录）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| GET | `/api/me` | 当前用户与权限 `{"name","permissions":["read","write"]}`，界面据此隐藏写操作 |
 | GET | `/api/files` | `{"files":[…],"groups":[…],"max_file_size":<int64>}`；文件按 `sort_order` 升序、创建时间倒序；`groups` 含空文件夹 |
 | GET | `/api/storage` | 当前 blob 方案：`{"backend":"local"}` 或 `{"backend":"s3","bucket","prefix"}`，外加实时探测的 `healthy` 与不可用时的 `error` 文案；不含 endpoint 与凭据 |
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）：命中则建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
@@ -209,7 +210,7 @@ CREATE TABLE IF NOT EXISTS groups (
 两种 blob 后端语义一致，区别只在临时文件如何变成 blob。后端故障（连不上、凭据失效、桶被删、
 本地 blob 目录丢失）在业务层统一回 503 `storage.unavailable`，与「服务器内部错误」区分开；
 对象不存在仍是 404。`/api/storage` 每次请求实时探测后端（S3 探桶、本地确认 blob 目录），
-响应带 `healthy` 与不可用时的 `error`，侧栏底部的存储提示据此变红；同处显示当前用户，
+响应带 `healthy` 与不可用时的 `error`，侧栏底部的存储提示据此变红；顶栏右上角显示当前用户，
 只读账号挂「只读」徽标。
 
 上传先完整写本地临时文件：
@@ -328,8 +329,9 @@ sequenceDiagram
 - 授权：`/api/*` 除 `POST /api/auth` 外均需会话；匿名访问只通过 `/s/{id}?sig&exp`，
   绑定单文件、10 分钟或 24 小时失效、不是会话凭据、不进日志。
 - Secret（会话密钥、URL 密钥、探针令牌、S3 凭据）读完立即从进程环境表删除；用户表文件不落环境变量内容。
-- 数据权限：`DATA_DIR` 0700、`blobs/` 与 `temp/` 0700、数据库 0600、本地 blob 与上传临时文件 0600，启动时收紧，
-  `/readyz` 持续断言；S3 模式改用桶凭据控制访问。
+- 数据权限：`DATA_DIR` 0700、`blobs/` 与 `temp/` 0700、数据库 0600、本地 blob 与上传临时文件 0600，启动时收紧；
+  `/readyz` 断言数据目录、两个子目录与数据库文件的权限与读写。S3 模式改用桶凭据控制访问。
+  用户表由部署方提供（容器里是只读 Secret 挂载），本地部署建议 0600。
 - 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
   `X-Frame-Options: DENY`、严格 CSP
   （`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';`）。
@@ -340,6 +342,7 @@ sequenceDiagram
 - 并发闸门：认证、业务 API、静态资源 / 签名下载各自独立信号量。
 - 反代职责：TLS、限流、访问控制在反向代理完成；应用只信任 `TRUSTED_PROXIES` 内的转发头。
 - 日志：结构化 JSON 到 stdout，一条请求一行，含真实客户端 IP 与 RFC 3339 时间；敏感值不落日志。
+  `/livez` 与静态资源（`/assets/*`）不记访问日志。
 
 ## 8. 构建与验证
 
@@ -348,7 +351,7 @@ sequenceDiagram
 - 二进制用 `CGO_ENABLED=0 -ldflags="-w -s" -trimpath` 构建，`ldd` 应报 `not a dynamic executable`。
 - 测试：标准库 `testing`，表格驱动；`internal/testenv` 提供临时 `DATA_DIR` 实例；
   覆盖认证 / 会话、上传秒传与去重、签名 URL、探针、错误路径、安全头与 i18n，覆盖率记入 README。
-  S3 用例（Range 上传下载、秒传、引用计数删除、迁移、启动校验）需 `S3_TEST_*`，
+  S3 用例（Range 上传下载、秒传、引用计数删除、启动校验）需 `S3_TEST_*`，
   未配置时整组 skip，CI 默认不跑。
 - 前端验证：构建后用无头 Chromium 截图并检查控制台错误；关键截图存 `docs/` 并在 README 引用。
 

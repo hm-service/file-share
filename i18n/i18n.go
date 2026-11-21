@@ -5,7 +5,6 @@
 package i18n
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -87,13 +86,4 @@ func T(lang Lang, key string) string {
 		return item.en
 	}
 	return item.zh
-}
-
-// F 取文案并用 fmt 填占位符（后端占位符是 %d / %s 这一套）。
-func F(lang Lang, key string, args ...any) string {
-	template := T(lang, key)
-	if len(args) == 0 {
-		return template
-	}
-	return fmt.Sprintf(template, args...)
 }

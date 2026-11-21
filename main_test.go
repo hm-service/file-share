@@ -673,6 +673,24 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("DATA_DIR 不存在时先报目录错误", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+		t.Setenv("DATA_DIR", missing)
+		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
+		t.Setenv("READYZ_TOKEN", "")
+		t.Setenv("HOST", "")
+		t.Setenv("PORT", "")
+		t.Setenv("TZ", "")
+		_, _, err := loadConfig()
+		if err == nil {
+			t.Fatal("DATA_DIR 不存在时 loadConfig() 应当报错")
+		}
+		if !strings.Contains(err.Error(), "DATA_DIR") {
+			t.Errorf("错误 = %v，想要提到 DATA_DIR（别被 users.yaml 的读错误盖住）", err)
+		}
+	})
+
 	missingCases := []struct {
 		name   string
 		mutate func(dataDir string)

@@ -68,10 +68,25 @@ func NewMux(instance *app.App) *http.ServeMux {
 	})
 	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
 	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
-	// 非 PUT 的请求因此落到 /api/files/{file_id} 的兜底上回 405，不影响约定内的调用。
-	mux.HandleFunc(http.MethodPut+" /api/files/order", server.requireSession(app.PermissionWrite, server.handleSetOrder))
+	// 与通配符方法重叠的 PATCH / DELETE 会命中真实的文件处理器，必须显式拦下来；
+	// 其余方法落到通配符兜底，靠 literalRoutes 给出正确的 Allow。
+	mux.HandleFunc(http.MethodPut+" "+orderPath, server.requireSession(app.PermissionWrite, server.handleSetOrder))
+	mux.HandleFunc(http.MethodPatch+" "+orderPath, server.rejectOrderMethod)
+	mux.HandleFunc(http.MethodDelete+" "+orderPath, server.rejectOrderMethod)
 	mux.HandleFunc("/", server.handleNotFound)
 	return mux
+}
+
+// orderPath 是批量排序接口的字面量路径：它是 /api/files/{file_id} 下的保留字。
+const orderPath = "/api/files/order"
+
+// literalRoutes 把字面量路径映射到它真正支持的方法：这类路径不会命中通配符的
+// 405 兜底（兜底的 Allow 是通配符自己的方法集合），要单独换算。
+var literalRoutes = map[string]string{orderPath: http.MethodPut}
+
+// rejectOrderMethod 回 405 并声明 /api/files/order 只支持 PUT。
+func (s *Server) rejectOrderMethod(w http.ResponseWriter, r *http.Request) {
+	s.methodNotAllowed(w, r, http.MethodPut)
 }
 
 // register 按「METHOD 路径」注册，并给每条路径补一条不限方法的规则用来回 405。
@@ -91,16 +106,27 @@ func (s *Server) register(mux *http.ServeMux, routes []route) {
 	for pattern, methods := range allowed {
 		allow := allowValue(methods)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Allow", allow)
-			// /api/* 与 /s* 是给程序 / 浏览器下载用的接口，405 也要是 JSON 错误体。
-			if strings.HasPrefix(r.URL.Path, "/api/") ||
-				r.URL.Path == "/s" || strings.HasPrefix(r.URL.Path, "/s/") {
-				fail(w, r, http.StatusMethodNotAllowed, "method-not-allowed")
-				return
+			// 字面量路径实际支持的方法与通配符不同，按路径换算 Allow。
+			// 不能改写闭包里的 allow：同一处理器还会服务通配符路径的请求。
+			header := allow
+			if literal, ok := literalRoutes[r.URL.Path]; ok {
+				header = literal
 			}
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			s.methodNotAllowed(w, r, header)
 		})
 	}
+}
+
+// methodNotAllowed 回 405 并带上该路径支持的 Allow 头。
+// /api/* 与 /s* 是给程序 / 浏览器下载用的接口，405 也要是 JSON 错误体；其余保持纯文本。
+func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow string) {
+	w.Header().Set("Allow", allow)
+	if strings.HasPrefix(r.URL.Path, "/api/") ||
+		r.URL.Path == "/s" || strings.HasPrefix(r.URL.Path, "/s/") {
+		fail(w, r, http.StatusMethodNotAllowed, "method-not-allowed")
+		return
+	}
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 }
 
 // allowValue 拼 Allow 头。Go 的 "GET" 模式同时也接 HEAD，所以 GET 要连 HEAD 一起写出来。

@@ -990,9 +990,25 @@ func TestUnknownRoutesAndMethods(t *testing.T) {
 	})
 
 	t.Run("批量排序路径只接受 PUT", func(t *testing.T) {
-		recorder := testenv.Do(handler, http.MethodPost, "/api/files/order", "")
-		if recorder.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("POST /api/files/order 状态码 = %d，想要 405", recorder.Code)
+		// PATCH / DELETE 与 /api/files/{file_id} 的方法重叠，必须被显式拦下；
+		// GET / POST 落到通配符的 405 兜底，Allow 要按字面量路径换算成 PUT。
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete} {
+			recorder := testenv.Do(handler, method, "/api/files/order", "")
+			if recorder.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s /api/files/order 状态码 = %d（body=%s），想要 405", method, recorder.Code, recorder.Body.String())
+				continue
+			}
+			if got := recorder.Header().Get("Allow"); got != http.MethodPut {
+				t.Errorf("%s /api/files/order Allow = %q，想要 PUT", method, got)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+				t.Errorf("%s /api/files/order Content-Type = %q", method, got)
+			}
+		}
+		// 同一兜底处理器还服务通配符路径：字面量路径的换算不能污染它。
+		recorder := testenv.Do(handler, http.MethodGet, "/api/files/abc", "")
+		if got := recorder.Header().Get("Allow"); got != "PATCH, DELETE" {
+			t.Errorf("字面量路径请求后 GET /api/files/abc Allow = %q，想要 PATCH, DELETE", got)
 		}
 	})
 
@@ -1229,7 +1245,7 @@ func TestAccessLog(t *testing.T) {
 	}
 }
 
-// fileJSON 是列表与 PATCH 响应里一条记录的完整字段（契约 §5 的 file 对象 + 分组/排序）。
+// fileJSON 是列表与 PATCH 响应里一条记录的完整字段（列表接口返回的 file 对象 + 分组/排序）。
 type fileJSON struct {
 	ID         string `json:"id"`
 	Filename   string `json:"filename"`

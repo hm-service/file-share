@@ -90,13 +90,3 @@ func TestT(t *testing.T) {
 		t.Errorf("不认识的语言应当回源语言，得到 %q", got)
 	}
 }
-
-func TestF(t *testing.T) {
-	// 文案表里现在没有带占位符的键，用未知键验证「先取文案再格式化」这条路径。
-	if got := F(En, "no.such.%s", "x"); got != "no.such.x" {
-		t.Errorf("F() = %q", got)
-	}
-	if got := F(ZhHans, "auth.required"); got != "需要登录" {
-		t.Errorf("无参数时 F() = %q", got)
-	}
-}

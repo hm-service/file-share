@@ -201,6 +201,11 @@ func loadConfig() (config, concurrencyLimits, error) {
 		return zero, limits, err
 	}
 	dataDir := readDataDir()
+	// 用户表就在 DATA_DIR 下：先确认目录存在，别让「读不到 users.yaml」把
+	// 卷没挂上 / 路径写错这个真正原因盖住。可写性由 app.Open 统一校验。
+	if info, err := os.Stat(dataDir); err != nil || !info.IsDir() {
+		return zero, limits, fmt.Errorf("DATA_DIR %q must be an existing directory: %w", dataDir, err)
+	}
 	maxFileSize, err := readMaxFileSize()
 	if err != nil {
 		return zero, limits, err
