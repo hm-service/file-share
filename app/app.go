@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,9 +26,10 @@ type Config struct {
 	TrustedProxies    string
 	SessionSigningKey string
 	URLSignatureKey   string
-	AuthTokenHash     string
 	ReadyzToken       string
 	MaxFileSize       int64
+	// Users 是登录用户表，由 main.go 从 USERS_FILE 读入。
+	Users []User
 	// S3 为 nil 时 blob 存在本地 DATA_DIR/blobs 下，否则存在 S3。
 	S3 *S3Config
 }
@@ -68,9 +68,11 @@ type App struct {
 	blobsDir string
 	tempDir  string
 	dbPath   string
-	signer   *core.SessionSigner
-	signurl  *core.URLSigner
-	proxies  *httpx.Proxies
+	// users 按用户名索引的只读用户表：每次请求按当前表解析权限。
+	users   map[string]User
+	signer  *core.SessionSigner
+	signurl *core.URLSigner
+	proxies *httpx.Proxies
 
 	// mu 把「插入记录 / 改分组 / 批量排序」这些 DB 写操作串起来，
 	// 保证插入时看到的当前最大 sort_order 与分组状态是稳定的。
@@ -95,7 +97,8 @@ func Open(cfg Config) (*App, error) {
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return nil, err
 	}
-	if err := moveLegacyBlobDir(cfg.DataDir); err != nil {
+	users, err := indexUsers(cfg.Users)
+	if err != nil {
 		return nil, err
 	}
 	blobsDir := filepath.Join(cfg.DataDir, blobsDirName)
@@ -119,12 +122,9 @@ func Open(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	// 残留的上传临时文件是上次进程异常退出的痕迹，留着只会白占空间。
-	// blobs/ 里的 .upload-* 只可能是旧布局（临时文件曾与 blob 同目录）留下的。
-	for _, dir := range []string{tempDir, blobsDir} {
-		if err := removeLeftoverUploads(dir); err != nil {
-			store.Close()
-			return nil, fmt.Errorf("clean upload temp files in %s: %w", dir, err)
-		}
+	if err := removeLeftoverUploads(tempDir); err != nil {
+		store.Close()
+		return nil, fmt.Errorf("clean upload temp files: %w", err)
 	}
 	var blobs BlobStore
 	if cfg.S3 != nil {
@@ -155,6 +155,7 @@ func Open(cfg Config) (*App, error) {
 		blobsDir: blobsDir,
 		tempDir:  tempDir,
 		dbPath:   dbPath,
+		users:    users,
 		signer:   core.NewSessionSigner([]byte(cfg.SessionSigningKey)),
 		signurl:  core.NewURLSigner([]byte(cfg.URLSignatureKey)),
 		proxies:  proxies,
@@ -206,35 +207,6 @@ func ensureDir(path, label string) error {
 	if err := core.TightenPerm(path, core.DataDirPerm); err != nil {
 		return fmt.Errorf("tighten %s dir: %w", label, err)
 	}
-	return nil
-}
-
-// moveLegacyBlobDir 把旧布局的 blob 目录 DATA_DIR/files 改名为 DATA_DIR/blobs。
-//
-// 旧版本把 blob 与上传临时文件都放在 files/ 下，新版本拆成 blobs/ 与 temp/。
-// 改名只动目录名、不搬内容（同一文件系统内是一次原子 rename）。两个目录同时存在
-// 说明有人手工动过数据，直接报错让人确认，不猜哪份才是真的。
-func moveLegacyBlobDir(dataDir string) error {
-	legacy := filepath.Join(dataDir, "files")
-	info, err := os.Stat(legacy)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return fmt.Errorf("stat legacy blob dir %s: %w", legacy, err)
-	case !info.IsDir():
-		return fmt.Errorf("legacy path %s is not a directory", legacy)
-	}
-	target := filepath.Join(dataDir, blobsDirName)
-	if _, err := os.Stat(target); err == nil {
-		return fmt.Errorf("both %s and %s exist; remove one before starting", legacy, target)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", target, err)
-	}
-	if err := os.Rename(legacy, target); err != nil {
-		return fmt.Errorf("rename %s to %s: %w", legacy, target, err)
-	}
-	slog.Info("moved legacy blob dir", slog.String("from", legacy), slog.String("to", target))
 	return nil
 }
 
@@ -322,29 +294,63 @@ func (a *App) ReadyAuthorized(token string) bool {
 // ClientIP 按可信代理设置取客户端 IP。
 func (a *App) ClientIP(r *http.Request) string { return a.proxies.ClientIP(r) }
 
-// Authenticate 校验登录令牌，恒定至少花 1s + 抖动才返回：
-// token 对不对都等这么久，抹掉「错令牌秒回」这个时序侧信道。
-func (a *App) Authenticate(token string) bool {
+// Authenticate 校验用户名与密码，恒定至少花 1s + 抖动才返回：
+// 对错都等这么久，抹掉「密码不对就秒回」这个时序侧信道。
+func (a *App) Authenticate(username, password string) bool {
 	start := time.Now()
-	ok, err := core.VerifyToken(token, a.Config.AuthTokenHash)
-	if err != nil {
-		// 配置里的哈希串坏了（启动逻辑的 bug）：只记错误，按校验失败处理。
-		slog.Error("auth token hash is invalid", slog.Any("error", err))
-		ok = false
-	}
+	user, found := a.users[username]
+	// 用户不存在时也拿一个固定摘要比较，避免用耗时区分「用户不存在」与「密码不对」。
+	want := sha256.Sum256([]byte(user.Password))
+	got := sha256.Sum256([]byte(password))
+	ok := subtle.ConstantTimeCompare(got[:], want[:]) == 1
 	core.SleepUntil(start, core.LoginFloor())
-	return ok
+	return found && ok
 }
 
-// IssueSession 签一张会话凭据，有效期 30 天。
-func (a *App) IssueSession() (token string, expiresAt int64, err error) {
-	return a.signer.Issue(time.Now())
+// IssueSession 给指定用户签一张会话凭据，有效期 30 天。
+func (a *App) IssueSession(username string) (token string, expiresAt int64, err error) {
+	return a.signer.Issue(time.Now(), username)
 }
 
-// VerifySession 校验会话凭据；签名不对 / 过期分别返回 core.ErrSessionMalformed / ErrSessionExpired。
-func (a *App) VerifySession(token string) error {
-	_, err := a.signer.Verify(token, time.Now())
-	return err
+// VerifySession 校验会话凭据并返回对应用户；签名不对 / 过期分别返回
+// core.ErrSessionMalformed / ErrSessionExpired。用户已从用户表移除时也按凭据无效处理。
+func (a *App) VerifySession(token string) (User, error) {
+	_, username, err := a.signer.Verify(token, time.Now())
+	if err != nil {
+		return User{}, err
+	}
+	user, found := a.users[username]
+	if !found {
+		return User{}, core.ErrSessionMalformed
+	}
+	return user, nil
+}
+
+// User 按用户名取当前用户表里的一项；登录响应与界面初始化要拿权限。
+func (a *App) User(name string) (User, bool) {
+	user, ok := a.users[name]
+	return user, ok
+}
+
+// indexUsers 校验用户表并建索引。空表说明部署漏了 USERS_FILE，直接拒绝启动。
+func indexUsers(users []User) (map[string]User, error) {
+	if len(users) == 0 {
+		return nil, errors.New("at least one user is required")
+	}
+	index := make(map[string]User, len(users))
+	for _, user := range users {
+		if user.Name == "" {
+			return nil, errors.New("user name must not be empty")
+		}
+		if _, exists := index[user.Name]; exists {
+			return nil, fmt.Errorf("duplicate user name %q", user.Name)
+		}
+		if user.Permissions == 0 {
+			return nil, fmt.Errorf("user %q has no permissions", user.Name)
+		}
+		index[user.Name] = user
+	}
+	return index, nil
 }
 
 // shaMutex 按 sha 取一把分片锁：同一份内容的存在性判断、落位与删除互斥，

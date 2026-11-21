@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,30 +26,25 @@ import (
 
 // 测试用的固定凭据，长度与字符集都符合生产校验。
 const (
-	AuthToken         = "test_auth_token_0123456789"
+	// UserName / Password 是默认测试用户的登录凭据（read + write）。
+	UserName          = "tester"
+	Password          = "tester_password_0123456789"
 	SessionSigningKey = "test_session_signing_key_0123456789"
 	URLSignatureKey   = "test_url_signature_key_0123456789"
 	ReadyzToken       = "test_readyz_token_0123456789"
 )
 
+// DefaultUsers 是一套全权限用户表：绝大多数测试用它，权限相关的用例自己覆盖。
+func DefaultUsers() []app.User {
+	return []app.User{{
+		Name:        UserName,
+		Password:    Password,
+		Permissions: app.PermissionRead | app.PermissionWrite,
+	}}
+}
+
 // DefaultMaxFileSize 是测试实例的单文件大小上限：比生产小得多，方便造 413。
 const DefaultMaxFileSize = 1 << 20
-
-var (
-	tokenHashOnce sync.Once
-	tokenHash     string
-	tokenHashErr  error
-)
-
-// authTokenHash 只算一次 Argon2id：每个实例都重算的话一个包要白等好几秒。
-func authTokenHash(t *testing.T) string {
-	t.Helper()
-	tokenHashOnce.Do(func() { tokenHash, tokenHashErr = core.HashToken(AuthToken) })
-	if tokenHashErr != nil {
-		t.Fatalf("计算测试令牌哈希失败: %v", tokenHashErr)
-	}
-	return tokenHash
-}
 
 // New 起一套独立的应用实例，用完自动清理。
 func New(t *testing.T) *app.App {
@@ -66,8 +60,8 @@ func NewWith(t *testing.T, mutate func(*app.Config)) *app.App {
 		TrustedProxies:    httpx.DefaultTrustedProxies,
 		SessionSigningKey: SessionSigningKey,
 		URLSignatureKey:   URLSignatureKey,
-		AuthTokenHash:     authTokenHash(t),
 		ReadyzToken:       "",
+		Users:             DefaultUsers(),
 		MaxFileSize:       DefaultMaxFileSize,
 	}
 	if mutate != nil {
@@ -88,7 +82,13 @@ func signer(instance *app.App) *core.SessionSigner {
 // Token 直接签一张有效会话，不走登录接口（登录有 1 秒最短耗时，集成测试不必为它反复等待）。
 func Token(t *testing.T, instance *app.App) string {
 	t.Helper()
-	token, _, err := signer(instance).Issue(time.Now())
+	return TokenFor(t, instance, UserName)
+}
+
+// TokenFor 给指定用户签一张有效会话，用来测权限差异。
+func TokenFor(t *testing.T, instance *app.App, username string) string {
+	t.Helper()
+	token, _, err := signer(instance).Issue(time.Now(), username)
 	if err != nil {
 		t.Fatalf("签发测试会话失败: %v", err)
 	}
@@ -98,7 +98,7 @@ func Token(t *testing.T, instance *app.App) string {
 // ExpiredToken 签一张已经过期的会话，用来验证 auth.expired 与「验签先于过期」。
 func ExpiredToken(t *testing.T, instance *app.App) string {
 	t.Helper()
-	token, _, err := signer(instance).Issue(time.Now().Add(-core.SessionTTL - time.Hour))
+	token, _, err := signer(instance).Issue(time.Now().Add(-core.SessionTTL-time.Hour), UserName)
 	if err != nil {
 		t.Fatalf("签发生过期会话失败: %v", err)
 	}
@@ -148,7 +148,7 @@ func DoRequest(handler http.Handler, method, target string, body io.Reader, cont
 // Login 走一遍真实登录接口，返回会话凭据与过期时间。
 func Login(t *testing.T, handler http.Handler) (token string, expiresAt int64) {
 	t.Helper()
-	recorder := DoJSON(handler, http.MethodPost, "/api/auth", map[string]any{"token": AuthToken}, "")
+	recorder := DoJSON(handler, http.MethodPost, "/api/auth", map[string]any{"username": UserName, "password": Password}, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("登录失败: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}

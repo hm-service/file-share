@@ -5,6 +5,8 @@ metadata:
     name: file-share-env
 data:
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+    # 用户表：Secret users 挂到 /etc/file-share/users.yaml（见下方 Secret）
+    USERS_FILE: "/etc/file-share/users.yaml"
     # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/blobs）：
     # 桶必须已存在；S3_BUCKET 默认 file-share、S3_PREFIX 默认 blobs（key 为 blobs/xx/yy/<sha>），
     # 多实例共桶时每个实例用不同的 S3_PREFIX。
@@ -21,13 +23,27 @@ metadata:
     name: secrets
 type: Opaque
 stringData:
-    AUTH_TOKEN: "your_auth_token_123"
     READYZ_TOKEN: "your_readyz_token"
     SESSION_SIGNING_KEY: "your_very_safe_session_signing_key"
     URL_SIGNATURE_KEY: "your_very_safe_url_signature_key"
     # 物理文件存 S3 时需要的凭据：
     # S3_ACCESS_KEY: "your_s3_access_key"
     # S3_SECRET_KEY: "your_s3_secret_key"
+
+---
+# 用户表：结构对齐 SeaweedFS 的 s3 config（身份列表 + 权限数组）。
+# 密码明文保存在这里，改完重启 Pod 生效；只读账号去掉 write 即可。
+apiVersion: v1
+kind: Secret
+metadata:
+    name: users
+type: Opaque
+stringData:
+    users.yaml: |
+        users:
+          - name: admin
+            password: "change_me_please"
+            permissions: [read, write]
 
 ---
 apiVersion: v1
@@ -104,7 +120,13 @@ spec:
           volumeMounts:
               - name: data
                 mountPath: /data
+              - name: users
+                mountPath: /etc/file-share
+                readOnly: true
     volumes:
         - name: data
           persistentVolumeClaim:
               claimName: file-share-data
+        - name: users
+          secret:
+              secretName: users

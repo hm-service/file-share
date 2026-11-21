@@ -20,7 +20,6 @@ import (
 
 	"file-share/api"
 	"file-share/app"
-	"file-share/core"
 )
 
 // shutdownTimeout 是优雅关闭的时限：等在手请求最多等这么久，超时就强制关掉，
@@ -59,11 +58,6 @@ type config struct {
 }
 
 func main() {
-	// 运维子命令：把本地 blob 一次性搬到 S3。放在同一个二进制里，
-	// 不需要为迁移引入第二个可执行文件。
-	if len(os.Args) > 1 && os.Args[1] == "migrate-blobs" {
-		os.Exit(runMigrateBlobs(os.Args[2:]))
-	}
 	os.Exit(run())
 }
 
@@ -210,12 +204,13 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if err != nil {
 		return zero, limits, err
 	}
-	authToken, err := readSecret("AUTH_TOKEN", 16, 128)
+	usersPath := os.Getenv("USERS_FILE")
+	if usersPath == "" {
+		return zero, limits, errors.New("USERS_FILE must be set")
+	}
+	users, err := app.LoadUsersFile(usersPath)
 	if err != nil {
 		return zero, limits, err
-	}
-	if authToken == "" {
-		return zero, limits, errors.New("AUTH_TOKEN must be set")
 	}
 	sessionKey, err := readSecret("SESSION_SIGNING_KEY", 32, 128)
 	if err != nil {
@@ -235,19 +230,14 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if err != nil {
 		return zero, limits, err
 	}
-	// 认证令牌只留 Argon2id 摘要：读完立刻散列，明文不参与后续任何逻辑。
-	authTokenHash, err := core.HashToken(authToken)
-	if err != nil {
-		return zero, limits, fmt.Errorf("hash AUTH_TOKEN: %w", err)
-	}
 	return config{
 		app: app.Config{
 			DataDir:           dataDir,
 			TrustedProxies:    os.Getenv("TRUSTED_PROXIES"),
 			SessionSigningKey: sessionKey,
 			URLSignatureKey:   urlKey,
-			AuthTokenHash:     authTokenHash,
 			ReadyzToken:       readyzToken,
+			Users:             users,
 			MaxFileSize:       maxFileSize,
 			S3:                s3cfg,
 		},

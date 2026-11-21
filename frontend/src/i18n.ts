@@ -37,7 +37,8 @@ export type MessageKey =
   | "auth.point.private"
   | "auth.title"
   | "auth.hint"
-  | "auth.token-placeholder"
+  | "auth.username-placeholder"
+  | "auth.password-placeholder"
   | "auth.submit"
   | "auth.error"
   | "nav.recent"
@@ -72,6 +73,7 @@ export type MessageKey =
   | "action.unfavorite"
   | "action.download"
   | "action.download-group-size"
+  | "action.download-group-hint"
   | "action.stats"
   | "action.rename"
   | "action.rename-group"
@@ -126,6 +128,8 @@ export type MessageKey =
   | "storage.s3-hint"
   | "storage.local-hint"
   | "storage.unreachable"
+  | "user.readonly"
+  | "user.readonly-hint"
   | "nav.all"
   | "nav.tree"
   | "nav.resize-sidebar"
@@ -158,12 +162,13 @@ const messages: Record<MessageKey, Message> = {
     zh: "临时签名链接，10 分钟内下载免登录",
     en: "Signed links valid for 10 minutes, no sign-in to download",
   },
-  "auth.point.private": { zh: "默认私有，单个访问令牌控制", en: "Private by default, guarded by one token" },
+  "auth.point.private": { zh: "默认私有，按用户分配读写权限", en: "Private by default with per-user read/write permissions" },
   "auth.title": { zh: "登录", en: "Sign in" },
-  "auth.hint": { zh: "输入访问令牌进入你的文件空间", en: "Enter the access token to open your space" },
-  "auth.token-placeholder": { zh: "访问令牌", en: "Access token" },
+  "auth.hint": { zh: "输入用户名与密码进入文件空间", en: "Sign in with your username and password" },
+  "auth.username-placeholder": { zh: "用户名", en: "Username" },
+  "auth.password-placeholder": { zh: "密码", en: "Password" },
   "auth.submit": { zh: "进入", en: "Continue" },
-  "auth.error": { zh: "登录失败，请检查令牌", en: "Sign-in failed, check the token" },
+  "auth.error": { zh: "登录失败，请检查用户名与密码", en: "Sign-in failed, check your username and password" },
   "nav.recent": { zh: "最近", en: "Recent" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
   "nav.no-groups": { zh: "暂无文件夹", en: "No folders yet" },
@@ -204,7 +209,11 @@ const messages: Record<MessageKey, Message> = {
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
-  "action.download-group-size": { zh: "全部下载（{size}）", en: "Download all ({size})" },
+  "action.download-group-size": { zh: "下载本目录文件（{size}）", en: "Download files here ({size})" },
+  "action.download-group-hint": {
+    zh: "只下载当前文件夹里的 {count} 个文件，不含子文件夹",
+    en: "Only the {count} files directly in this folder, not subfolders",
+  },
   "action.stats": { zh: "统计信息", en: "Statistics" },
   "action.rename": { zh: "重命名", en: "Rename" },
   "action.rename-group": { zh: "重命名文件夹", en: "Rename folder" },
@@ -271,6 +280,8 @@ const messages: Record<MessageKey, Message> = {
     en: "Object storage · {bucket}/{prefix}",
   },
   "storage.local": { zh: "本地磁盘", en: "Local disk" },
+  "user.readonly": { zh: "只读", en: "read-only" },
+  "user.readonly-hint": { zh: "当前账号只能浏览和下载", en: "This account can only browse and download" },
   "storage.s3-hint": {
     zh: "文件内容存放在 S3 对象存储中",
     en: "File contents are stored in S3 object storage",

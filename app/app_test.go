@@ -58,7 +58,7 @@ func TestOpenTightensDataLayout(t *testing.T) {
 	instance, err := app.Open(app.Config{
 		DataDir:           dataDir,
 		SessionSigningKey: testenv.SessionSigningKey,
-		AuthTokenHash:     "not-used-in-this-test",
+		Users:             testenv.DefaultUsers(),
 		MaxFileSize:       testenv.DefaultMaxFileSize,
 	})
 	if err != nil {
@@ -98,7 +98,7 @@ func TestOpenRejectsLegacyData(t *testing.T) {
 			_, err := app.Open(app.Config{
 				DataDir:           dataDir,
 				SessionSigningKey: testenv.SessionSigningKey,
-				AuthTokenHash:     "hash",
+				Users:             testenv.DefaultUsers(),
 				MaxFileSize:       1024,
 			})
 			if err == nil {
@@ -116,26 +116,17 @@ func TestOpenRejectsLegacyData(t *testing.T) {
 	}
 }
 
-// 旧布局把 blob 与上传临时文件都放在 files/：启动时整体改名为 blobs/，
-// 顺手清掉里面的残留临时文件，blob 权限收紧。
-func TestOpenMovesLegacyFilesDir(t *testing.T) {
+// 旧版本的 files/ 目录已经不再兼容：启动只认 blobs/ 与 temp/，既不迁移也不拦截。
+func TestOpenIgnoresLegacyFilesDir(t *testing.T) {
 	dataDir := t.TempDir()
 	legacy := filepath.Join(dataDir, "files")
-	if err := os.Mkdir(legacy, 0o755); err != nil {
+	if err := os.Mkdir(legacy, 0o700); err != nil {
 		t.Fatalf("准备旧 files 目录失败: %v", err)
 	}
-	sha := testenv.SHA256([]byte("existing blob"))
-	if err := os.WriteFile(filepath.Join(legacy, sha), []byte("existing blob"), 0o644); err != nil {
-		t.Fatalf("准备 blob 失败: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacy, ".upload-leftover.tmp"), []byte("partial"), 0o600); err != nil {
-		t.Fatalf("准备残留临时文件失败: %v", err)
-	}
-
 	instance, err := app.Open(app.Config{
 		DataDir:           dataDir,
 		SessionSigningKey: testenv.SessionSigningKey,
-		AuthTokenHash:     "hash",
+		Users:             testenv.DefaultUsers(),
 		MaxFileSize:       1024,
 	})
 	if err != nil {
@@ -143,41 +134,14 @@ func TestOpenMovesLegacyFilesDir(t *testing.T) {
 	}
 	defer instance.Close()
 
-	blobsDir := filepath.Join(dataDir, "blobs")
-	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("旧的 files/ 应当已改名为 blobs/: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(blobsDir, ".upload-leftover.tmp")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("改名后残留的临时文件应当被清掉: %v", err)
-	}
-	info, err := os.Stat(filepath.Join(blobsDir, sha))
-	if err != nil {
-		t.Fatalf("stat blob 失败: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("blob 权限 = %04o，想要 0600", info.Mode().Perm())
+	if _, err := os.Stat(filepath.Join(dataDir, "blobs")); err != nil {
+		t.Errorf("启动应当建出 blobs/: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "temp")); err != nil {
-		t.Errorf("temp 目录应当被建出来: %v", err)
+		t.Errorf("启动应当建出 temp/: %v", err)
 	}
-}
-
-// 新旧两个 blob 目录同时存在时不能猜哪份是真的：当场报错让人确认。
-func TestOpenRejectsAmbiguousBlobDirs(t *testing.T) {
-	dataDir := t.TempDir()
-	for _, name := range []string{"files", "blobs"} {
-		if err := os.Mkdir(filepath.Join(dataDir, name), 0o700); err != nil {
-			t.Fatalf("准备 %s 目录失败: %v", name, err)
-		}
-	}
-	_, err := app.Open(app.Config{
-		DataDir:           dataDir,
-		SessionSigningKey: testenv.SessionSigningKey,
-		AuthTokenHash:     "hash",
-		MaxFileSize:       1024,
-	})
-	if err == nil || !strings.Contains(err.Error(), "both") {
-		t.Fatalf("新旧 blob 目录并存时应当报错，得到 %v", err)
+	if info, err := os.Stat(legacy); err != nil || !info.IsDir() {
+		t.Errorf("旧的 files/ 目录不该被应用改动: %v", err)
 	}
 }
 
@@ -186,9 +150,10 @@ func TestOpenRejectsBadConfig(t *testing.T) {
 		name string
 		cfg  app.Config
 	}{
-		{name: "缺 DATA_DIR", cfg: app.Config{SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 1}},
-		{name: "DATA_DIR 不存在", cfg: app.Config{DataDir: filepath.Join(t.TempDir(), "missing"), SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 1}},
-		{name: "文件大小上限为 0", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", AuthTokenHash: "hash", MaxFileSize: 0}},
+		{name: "缺 DATA_DIR", cfg: app.Config{SessionSigningKey: "key", MaxFileSize: 1, Users: testenv.DefaultUsers()}},
+		{name: "DATA_DIR 不存在", cfg: app.Config{DataDir: filepath.Join(t.TempDir(), "missing"), SessionSigningKey: "key", MaxFileSize: 1, Users: testenv.DefaultUsers()}},
+		{name: "文件大小上限为 0", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", MaxFileSize: 0, Users: testenv.DefaultUsers()}},
+		{name: "没有用户", cfg: app.Config{DataDir: t.TempDir(), SessionSigningKey: "key", MaxFileSize: 1}},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
@@ -205,7 +170,7 @@ func TestOpenRequiresExistingDataDir(t *testing.T) {
 	_, err := app.Open(app.Config{
 		DataDir:           missing,
 		SessionSigningKey: testenv.SessionSigningKey,
-		AuthTokenHash:     "hash",
+		Users:             testenv.DefaultUsers(),
 		MaxFileSize:       1024,
 	})
 	if err == nil {
@@ -256,39 +221,66 @@ func TestAuthenticate(t *testing.T) {
 	instance := testenv.New(t)
 
 	start := time.Now()
-	if !instance.Authenticate(testenv.AuthToken) {
-		t.Fatal("正确令牌应当通过")
+	if !instance.Authenticate(testenv.UserName, testenv.Password) {
+		t.Fatal("正确的用户名与密码应当通过")
 	}
 	if elapsed := time.Since(start); elapsed < time.Second {
 		t.Errorf("登录校验耗时 %v，应当至少 1s", elapsed)
 	}
 
 	start = time.Now()
-	if instance.Authenticate("wrong_token_000000") {
-		t.Fatal("错误令牌不该通过")
+	if instance.Authenticate(testenv.UserName, "wrong_password_000000") {
+		t.Fatal("密码错误不该通过")
 	}
 	if elapsed := time.Since(start); elapsed < time.Second {
 		t.Errorf("失败校验耗时 %v，应当至少 1s（抹掉时序侧信道）", elapsed)
+	}
+
+	start = time.Now()
+	if instance.Authenticate("nobody", testenv.Password) {
+		t.Fatal("用户不存在不该通过")
+	}
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Errorf("用户不存在时校验耗时 %v，应当至少 1s（不泄露用户是否存在）", elapsed)
 	}
 }
 
 func TestSessionRoundTrip(t *testing.T) {
 	instance := testenv.New(t)
-	token, expiresAt, err := instance.IssueSession()
+	token, expiresAt, err := instance.IssueSession(testenv.UserName)
 	if err != nil {
 		t.Fatalf("IssueSession() 报错: %v", err)
 	}
 	if expiresAt <= time.Now().Unix() {
 		t.Errorf("expires_at = %d，应当在未来", expiresAt)
 	}
-	if err := instance.VerifySession(token); err != nil {
+	user, err := instance.VerifySession(token)
+	if err != nil {
 		t.Errorf("签发出来的会话应当有效: %v", err)
 	}
-	if err := instance.VerifySession(token + "x"); !errors.Is(err, core.ErrSessionMalformed) {
+	if user.Name != testenv.UserName || !user.Can(app.PermissionWrite) {
+		t.Errorf("会话应还原出测试用户及其权限，得到 %+v", user)
+	}
+	if _, err := instance.VerifySession(token + "x"); !errors.Is(err, core.ErrSessionMalformed) {
 		t.Errorf("被篡改的会话应当报格式无效，得到 %v", err)
 	}
-	if err := instance.VerifySession(testenv.ExpiredToken(t, instance)); !errors.Is(err, core.ErrSessionExpired) {
+	if _, err := instance.VerifySession(testenv.ExpiredToken(t, instance)); !errors.Is(err, core.ErrSessionExpired) {
 		t.Errorf("过期会话应当报过期，得到 %v", err)
+	}
+	// 用户被移出用户表后，旧会话不再被接受。
+	other, err := app.Open(app.Config{
+		DataDir:           t.TempDir(),
+		SessionSigningKey: testenv.SessionSigningKey,
+		URLSignatureKey:   testenv.URLSignatureKey,
+		MaxFileSize:       testenv.DefaultMaxFileSize,
+		Users:             []app.User{{Name: "other", Password: testenv.Password, Permissions: app.PermissionRead}},
+	})
+	if err != nil {
+		t.Fatalf("Open() 报错: %v", err)
+	}
+	defer other.Close()
+	if _, err := other.VerifySession(token); !errors.Is(err, core.ErrSessionMalformed) {
+		t.Errorf("用户已不在用户表时会话应当无效，得到 %v", err)
 	}
 }
 

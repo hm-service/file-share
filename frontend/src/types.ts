@@ -44,10 +44,23 @@ export interface DownloadURLResponse {
   url: string;
 }
 
+/** 权限名：与后端用户表里的 read / write 一一对应。 */
+export type PermissionName = "read" | "write";
+
+/** 当前登录用户：只有名字与权限，永远是后端下发的，不落本地存储。 */
+export interface UserInfo {
+  name: string;
+  permissions: PermissionName[];
+}
+
+/** GET /api/me 的响应。 */
+export type MeResponse = UserInfo;
+
 /** POST /api/auth 成功体。 */
 export interface AuthResponse {
   token: string;
   expires_at: number;
+  user: UserInfo;
 }
 
 /** 存进 localStorage 的会话。 */

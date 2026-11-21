@@ -30,6 +30,8 @@ const props = defineProps<{
   showGroup?: boolean;
   /** 正在拖拽的内部文件 id（单一事实来源在 App）：用来区分移动文件与上传外部文件。 */
   draggingFileId?: string | null;
+  /** 当前账号是否有写权限：没有就藏掉收藏 / 移动 / 重命名 / 删除这些入口。 */
+  canWrite: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -225,6 +227,7 @@ onBeforeUnmount(() => {
         :file="file"
         :groups="groups"
         :draggable="sortable"
+        :can-write="canWrite"
         :show-group="showGroup"
         @favorite="emit('favorite', file)"
         @download="emit('download', file)"

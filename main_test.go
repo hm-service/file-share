@@ -8,13 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"file-share/api"
-	"file-share/core"
+	"file-share/app"
 	"file-share/internal/testenv"
 )
 
@@ -559,11 +560,30 @@ func TestReadSecret(t *testing.T) {
 	}
 }
 
+// writeUsersFile 在临时目录里写一份合法用户表，返回路径；测试只关心能不能读到它。
+func writeUsersFile(t *testing.T) string {
+	t.Helper()
+	return writeUsersFileContent(t, `users:
+  - name: tester
+    password: tester_password_0123456789
+    permissions: [read, write]
+`)
+}
+
+func writeUsersFileContent(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "users.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写用户表失败: %v", err)
+	}
+	return path
+}
+
 // loadConfig 把必填项凑齐后能组装出配置，缺任何一项都报错。
 func TestLoadConfig(t *testing.T) {
 	t.Run("完整配置", func(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("USERS_FILE", writeUsersFile(t))
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", testenv.ReadyzToken)
@@ -585,12 +605,11 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.app.MaxFileSize != 4096 || cfg.app.ReadyzToken != testenv.ReadyzToken {
 			t.Errorf("app 配置 = %+v", cfg.app)
 		}
-		ok, err := core.VerifyToken(testenv.AuthToken, cfg.app.AuthTokenHash)
-		if err != nil || !ok {
-			t.Errorf("AUTH_TOKEN 摘要不可用: ok=%v err=%v", ok, err)
+		if len(cfg.app.Users) != 1 {
+			t.Fatalf("用户表 = %+v，想要 1 个用户", cfg.app.Users)
 		}
-		if left := os.Getenv("AUTH_TOKEN"); left != "" {
-			t.Errorf("AUTH_TOKEN 应当已从环境表删除: %q", left)
+		if user := cfg.app.Users[0]; user.Name != testenv.UserName || !user.Can(app.PermissionRead) || !user.Can(app.PermissionWrite) {
+			t.Errorf("用户 = %+v，想要 tester 且 read+write", user)
 		}
 		if left := os.Getenv("SESSION_SIGNING_KEY"); left != "" {
 			t.Errorf("SESSION_SIGNING_KEY 应当已从环境表删除: %q", left)
@@ -602,7 +621,7 @@ func TestLoadConfig(t *testing.T) {
 
 	t.Run("MAX_FILE_SIZE 支持 GiB 后缀", func(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("USERS_FILE", writeUsersFile(t))
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
@@ -619,7 +638,7 @@ func TestLoadConfig(t *testing.T) {
 
 	t.Run("MAX_FILE_SIZE 非法时启动失败", func(t *testing.T) {
 		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("USERS_FILE", writeUsersFile(t))
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
@@ -632,7 +651,7 @@ func TestLoadConfig(t *testing.T) {
 
 	t.Run("DATA_DIR 未设置时用默认 /data", func(t *testing.T) {
 		t.Setenv("DATA_DIR", "")
-		t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+		t.Setenv("USERS_FILE", writeUsersFile(t))
 		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 		t.Setenv("READYZ_TOKEN", "")
@@ -649,15 +668,23 @@ func TestLoadConfig(t *testing.T) {
 		name   string
 		mutate func()
 	}{
-		{name: "缺 AUTH_TOKEN", mutate: func() { t.Setenv("AUTH_TOKEN", "") }},
+		{name: "缺 USERS_FILE", mutate: func() { t.Setenv("USERS_FILE", "") }},
+		{name: "用户表文件不存在", mutate: func() { t.Setenv("USERS_FILE", filepath.Join(t.TempDir(), "missing.yaml")) }},
+		{name: "用户表里没有用户", mutate: func() { t.Setenv("USERS_FILE", writeUsersFileContent(t, "users: []\n")) }},
+		{name: "用户表里有未知权限", mutate: func() {
+			t.Setenv("USERS_FILE", writeUsersFileContent(t, `users:
+  - name: tester
+    password: tester_password_0123456789
+    permissions: [read, admin]
+`))
+		}},
 		{name: "缺 SESSION_SIGNING_KEY", mutate: func() { t.Setenv("SESSION_SIGNING_KEY", "") }},
 		{name: "缺 URL_SIGNATURE_KEY", mutate: func() { t.Setenv("URL_SIGNATURE_KEY", "") }},
-		{name: "AUTH_TOKEN 太短", mutate: func() { t.Setenv("AUTH_TOKEN", "short") }},
 	}
 	for _, item := range missingCases {
 		t.Run(item.name, func(t *testing.T) {
 			t.Setenv("DATA_DIR", t.TempDir())
-			t.Setenv("AUTH_TOKEN", testenv.AuthToken)
+			t.Setenv("USERS_FILE", writeUsersFile(t))
 			t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 			t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 			t.Setenv("READYZ_TOKEN", "")

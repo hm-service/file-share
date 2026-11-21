@@ -25,7 +25,7 @@
 - **上传与拖放**：点击「上传文件」或把文件拖到内容区即可上传；拖到左侧文件夹树或内容区的文件夹行上时直接传进该文件夹。右下角上传队列显示指纹计算 / 秒传预检 / 上传进度与实时速度，支持取消与重试；单个文件上限由 `MAX_FILE_SIZE` 控制（默认 2GiB），上限随列表接口下发，超限文件在入队时就被拦下（不计算指纹、不发请求），服务端 413 是最后一道防线。
 - **文件夹树与文件列表**：桌面端左侧是快捷入口（最近 / 收藏 / 未分组）与最多三级的文件夹树，展开 / 折叠状态记在浏览器本地；右侧内容区是当前文件夹的表格，子文件夹行在前、文件行在后，列为名称、大小、上传时间、指纹（8 位短 SHA-256，悬停看完整值）、操作。文件行操作是「下载、复制分享链接（10 分钟）、收藏、移动到文件夹、更多（24 小时分享链接 / 重命名 / 复制 curl / 删除）」，点文件名打开详情（含完整 SHA-256）。当前文件夹可「全部下载（X GiB）」：按可见顺序逐个签 10 分钟有效的签名地址并触发下载（不打包成 zip）。顶部搜索全局按文件名过滤（写进 `?q=`），结果行内标出所在文件夹。
 - **文件夹管理与拖拽**：文件夹最多三级、空文件夹也保留，每级都有自己的页面（`/<一级>`、`/<一级>/<二级>`、`/<一级>/<二级>/<三级>`），地址可刷新、可前进后退、可直接打开。右键文件夹或点「⋯」可查看统计信息（文件数量、总大小与大小分布）、重命名、新建子文件夹、删除（确认框可勾选「同时删除这些文件」，否则组内文件上移到父路径）。文件行可在同一文件夹内拖拽排序（`sort_order` 持久化到服务端），拖到文件夹上即移动到该文件夹；文件夹行也可拖拽排序（`PUT /api/groups/order`），且只排在同级文件夹之间——文件夹永远在文件之前；「最近」是固定时间序，不参与拖拽。新建文件夹时输入 `父/子/孙` 可一次建多层（父级不存在会一并创建）。
-- **单 token 登录**：输入 `AUTH_TOKEN` 换取 30 天会话；所有 `/api/*` 需要 `Authorization: Bearer`。未登录打开深链接会先跳登录页，登录后回到原地址（含搜索词）。
+- **用户与权限**：用户表在 YAML 里配置（`USERS_FILE`），每个用户带 `read` / `write` 权限数组；登录用用户名 + 密码换 30 天会话，所有 `/api/*` 需要 `Authorization: Bearer`。只读账号只能浏览与下载，写接口回 403，界面也会隐藏上传 / 新建 / 重命名 / 删除等入口。未登录打开深链接会先跳登录页，登录后回到原地址（含搜索词）。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为左侧文件夹树 + 内容区表格 + 右下角上传队列；≤900px 把文件夹树收进抽屉，表格只保留名称与操作列。
 - **单文件交付**：静态链接的 Go 二进制（amd64/arm64），容器以只读根文件系统、丢弃全部 capabilities 运行。
@@ -36,7 +36,16 @@
 
 ```bash
 export DATA_DIR=./.data
-export AUTH_TOKEN=change_me_please          # 16-128 位 [A-Za-z0-9_]
+cat > users.yaml <<'EOF'                        # 用户表：名字 + 密码 + 权限，改完重启生效
+users:
+  - name: admin
+    password: change_me_please
+    permissions: [read, write]
+  - name: guest
+    password: guest_password_123
+    permissions: [read]
+EOF
+export USERS_FILE=./users.yaml
 export SESSION_SIGNING_KEY=change_me_please_1234567890  # 32-128 位 [A-Za-z0-9_]
 export URL_SIGNATURE_KEY=change_me_please_0987654321   # 32-128 位 [A-Za-z0-9_]
 export READYZ_TOKEN=optional_readyz_token   # 可选
@@ -50,7 +59,7 @@ export S3_SECRET_KEY=change_me_secret_key
 just run
 ```
 
-打开 <http://127.0.0.1:8080>，在 `/auth` 输入 `AUTH_TOKEN` 登录。
+打开 <http://127.0.0.1:8080>，在 `/auth` 输入用户表里的用户名与密码登录。
 停止服务：`just stop`（按端口定位本项目进程并发送 SIGINT）。
 
 `DATA_DIR` 未设置时默认 `/data`（容器内由卷挂载）；本机 `just run` 会建好 `./.data` 并传入。
@@ -70,7 +79,7 @@ just run
 | `S3_PREFIX` | `blobs` | 对象 key 前缀；最终 key 为 `<前缀>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>` |
 | `S3_REGION` | `us-east-1` | 签名区域；自建网关通常任意值即可 |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | 无 | S3 凭据（Secret）；允许 `+ / =` 等可打印字符，读完从环境表删除 |
-| `AUTH_TOKEN` | 无，必填 | 登录令牌（Secret） |
+| `USERS_FILE` | 无，必填 | 用户表 YAML 路径（结构见下），改表要重启 |
 | `SESSION_SIGNING_KEY` | 无，必填 | 会话签名密钥（Secret），轮换即所有会话下线 |
 | `URL_SIGNATURE_KEY` | 无，必填 | 签名 URL 密钥（Secret），轮换即所有已签出的下载 / 分享链接失效 |
 | `READYZ_TOKEN` | 空 | 非空时 `/readyz` 需要 `?token=` |
@@ -94,12 +103,13 @@ docker build -t file-share .
 podman kube play k8s.file-share.yaml
 ```
 
-- `k8s.file-share.yaml`：Pod + PVC + ConfigMap + Secret；探针 `/livez` 与 `/readyz?token=…`，
+- `k8s.file-share.yaml`：Pod + PVC + ConfigMap + 两个 Secret（运行密钥、用户表）；探针 `/livez` 与 `/readyz?token=…`，
   容器以只读根文件系统、丢弃全部 capabilities 运行。
 - `file-share.kube`：Podman Quadlet 模板（systemd 单元）。
 - CI（`.github/workflows/build-and-push-docker-image.yml`）在 push 到 `main` 时跑 Go/前端测试，
   并推送 `linux/amd64` + `linux/arm64` 镜像：日期 tag 与 `latest` 各一份（GHCR 与阿里云 ACR）。
-  首次部署前把 Secret 里的 `AUTH_TOKEN` / `SESSION_SIGNING_KEY` / `URL_SIGNATURE_KEY` / `READYZ_TOKEN` 换成随机值。
+  首次部署前把 Secret 里的 `SESSION_SIGNING_KEY` / `URL_SIGNATURE_KEY` / `READYZ_TOKEN` 换成随机值，
+  并按「用户表」一节挂一份真实的 `users.yaml`（部署清单里是 Secret `users`，挂到 `/etc/file-share`）。
 - 用 S3 存 blob：ConfigMap 加 `S3_ENDPOINT` / `S3_BUCKET`（默认 `file-share`）/
   `S3_PREFIX`（默认 `blobs`）/ `S3_REGION`，Secret 加 `S3_ACCESS_KEY` / `S3_SECRET_KEY`；
   桶要提前建好（启动时校验）。
@@ -107,9 +117,6 @@ podman kube play k8s.file-share.yaml
   直连宿主上的对象存储（普通桥接网络里容器内的 127.0.0.1 不是宿主）。
   **多实例共用一个桶时每个实例必须配不同 `S3_PREFIX`**：引用计数是各实例自己 SQLite 里的，
   共享前缀会让一个实例删掉另一个实例还在引用的对象。
-- 从本地目录切 S3：停服 → `./app.bin migrate-blobs --dry-run` 核对 → `./app.bin migrate-blobs`
-  （按 sha 去重上传，逐个校验 sha256 与大小，可重复执行）→ 加 S3 配置重启。
-  迁移不删本地文件，回滚就是去掉 `S3_*` 重启。
 - 镜像不设 `USER`，容器以 root 运行（配合 `readOnlyRootFilesystem` + `capabilities.drop: [ALL]`）。
   `DATA_DIR` 必须对容器用户可写：PVC / 具名卷默认满足；若用宿主机 bind mount，请先把该目录的属主
   或权限交给容器用户，否则启动时收紧权限（chmod 0700/0600）会因缺少 `CAP_FOWNER` 而失败。
@@ -118,7 +125,8 @@ podman kube play k8s.file-share.yaml
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/auth` | 用 `AUTH_TOKEN` 换会话 |
+| `POST` | `/api/auth` | 用用户名与密码换会话，返回 `{"token","expires_at","user":{"name","permissions"}}` |
+| `GET` | `/api/me` | 当前用户与权限（界面据此隐藏写操作） |
 | `GET` | `/api/files` | 文件列表、全部文件夹（含空文件夹）与单文件上传上限（`max_file_size`） |
 | `GET` | `/api/storage` | 当前 blob 存放方案（本地 / S3 桶与前缀）与后端可达性（`healthy`） |
 | `POST` | `/api/check_file` | 秒传预检 |
@@ -136,6 +144,26 @@ podman kube play k8s.file-share.yaml
 | `GET` | `/s/{id}?sig=…&exp=…` | 凭签名下载单个文件（无需登录凭据） |
 | `DELETE` | `/api/files/{id}` | 删除 |
 | `GET` | `/livez` / `/readyz` | 存活 / 就绪探针 |
+
+## 用户表
+
+`USERS_FILE` 指向一份 YAML：结构对齐 SeaweedFS 的 s3 config —— 身份列表 + 权限数组。
+用户表是登录的唯一依据，任何字段不合法都会拒绝启动；改完要重启进程。
+
+```yaml
+users:
+  - name: admin            # 1-64 位 [A-Za-z0-9._-]，字母或数字开头，全局唯一
+    password: "change_me"  # 8-256 字节，明文保存，文件权限建议 0600
+    permissions: [read, write]
+  - name: guest
+    password: "guest_password_123"
+    permissions: [read]
+```
+
+- `read`：浏览列表、看统计、下载、签分享链接。
+- `write`：加上上传（含秒传与上传预检）、收藏、重命名 / 移动 / 删除文件、新建 / 重命名 / 删除 / 排序文件夹。
+- 只读账号调用写接口统一回 `403`（`{"detail":"当前账号没有该操作权限"}`），界面按 `/api/me` 的权限隐藏写入口。
+- 会话只带用户名，权限每次按当前用户表解析：删掉用户后其会话立即失效。
 
 `/api/*` 的错误体统一为 `{"detail": "…"}`，详情与鉴权规则见 [DESIGN.md](DESIGN.md)。
 
@@ -278,8 +306,6 @@ DATA_DIR/
   temp/                  上传暂存（两种模式都用；启动时清理 .upload-*.tmp）
 ```
 
-旧版本把 blob 放在 `DATA_DIR/files`：启动时自动改名为 `DATA_DIR/blobs`，
-两个目录同时存在则拒绝启动，需要人工确认哪份是有效数据后再启动。
 
 配置 S3 后，物理文件写成 `<S3_PREFIX>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>`
 （默认桶 `file-share`、默认前缀 `blobs`，即 `blobs/xx/yy/<sha256>`）；对象内容与记录里的
@@ -295,24 +321,14 @@ v4 把 `group_order` 升级为文件夹注册表 `groups`，v5 让文件夹支�
 更高版本会拒绝启动。检测到更旧的 Python 版本数据（`files.db` / `favorite.json`）仍要求清空 `DATA_DIR`。
 升级前先备份 `DATA_DIR`。用 S3 存 blob 时还要备份桶（或对象存储自身的快照）。
 
-本地目录 → S3 的一次性迁移：
-
-```bash
-./app.bin migrate-blobs --dry-run   # 只检查本地文件与记录，不写对象存储
-./app.bin migrate-blobs             # 上传缺失对象；已存在且大小一致的跳过
-```
-
-迁移要求停写（停服或只读窗口），只上传不删除；切换后确认稳定再由运维清理本地 `blobs/`。
-
 ## 目录结构
 
 ```
 main.go       入口：环境变量 → 应用容器 → 路由 → 监听 / 优雅关闭
-migrate.go    运维子命令：把本地 blob 一次性迁移到 S3
 web.go        go:embed frontend/dist，页面与静态资源
 api/          HTTP 层：路由、中间件、认证、文件接口、探针
 app/          用例层：启动一次性工作、上传编排、文件操作
-core/         纯逻辑：会话签名、Argon2id、UUID、校验、文件权限
+core/         纯逻辑：会话签名、UUID、随机数、校验、文件权限
 db/           SQLite：打开、建表、查询（SQL 只在这里）
 httpx/        JSON 响应、错误、客户端 IP
 i18n/         后端中英文案表

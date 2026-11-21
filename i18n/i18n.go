@@ -26,9 +26,10 @@ type entry struct {
 
 var catalog = map[string]entry{
 	"auth.required":            {"需要登录", "Sign-in required"},
-	"auth.invalid":             {"认证令牌不正确", "Incorrect access token"},
+	"auth.invalid":             {"用户名或密码错误", "Wrong username or password"},
 	"auth.expired":             {"登录已过期，请重新登录", "Session expired, sign in again"},
 	"auth.malformed":           {"登录凭据格式无效", "Invalid session credential"},
+	"permission.denied":        {"当前账号没有该操作权限", "This account is not allowed to do that"},
 	"request.json":             {"请求体不是合法的 JSON", "Malformed JSON body"},
 	"request.too-big":          {"请求体过大", "Request body is too large"},
 	"request.empty":            {"请求未包含要修改的字段", "Request contains no fields to update"},

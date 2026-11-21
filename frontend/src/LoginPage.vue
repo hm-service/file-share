@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 登录页（/auth）：输入访问令牌换会话。
+ * 登录页（/auth）：输入用户名与密码换会话。
  * 401 显示 auth.error，网络层失败显示 error.network；成功后写 localStorage，
  * 回到进入登录页前的位置（?next= 带你打开的那个深链接，比如带搜索词 / 分组段的地址）。
  *
@@ -14,7 +14,8 @@ import { ICONS } from "@/icons";
 import { t } from "@/i18n";
 import { saveSession } from "@/session";
 
-const token = ref("");
+const username = ref("");
+const password = ref("");
 const submitting = ref(false);
 const error = ref("");
 
@@ -32,19 +33,19 @@ function afterLoginURL(): string {
 
 async function submit(): Promise<void> {
   if (submitting.value) return;
-  const value = token.value.trim();
-  if (!value) {
+  const name = username.value.trim();
+  if (!name || !password.value) {
     error.value = t("auth.error");
     return;
   }
   submitting.value = true;
   error.value = "";
   try {
-    const session = await login(value);
+    const session = await login(name, password.value);
     saveSession({ token: session.token, expires_at: session.expires_at });
     location.href = afterLoginURL();
   } catch (cause) {
-    // 401 = 令牌不对；status 0 = 网络层失败；其余（400 之类）也按登录失败处理
+    // 401 = 用户名或密码不对；status 0 = 网络层失败；其余（400 之类）也按登录失败处理
     if (cause instanceof ApiError && cause.status === 0) error.value = t("error.network");
     else error.value = t("auth.error");
   } finally {
@@ -97,15 +98,27 @@ async function submit(): Promise<void> {
         <p class="login-hint">{{ t("auth.hint") }}</p>
 
         <label class="field">
-          <span class="field-label">{{ t("auth.token-placeholder") }}</span>
+          <span class="field-label">{{ t("auth.username-placeholder") }}</span>
           <input
-            v-model="token"
+            v-model="username"
+            class="field-input"
+            type="text"
+            name="username"
+            autocomplete="username"
+            autocapitalize="off"
+            spellcheck="false"
+            autofocus
+          />
+        </label>
+
+        <label class="field">
+          <span class="field-label">{{ t("auth.password-placeholder") }}</span>
+          <input
+            v-model="password"
             class="field-input"
             type="password"
-            name="token"
+            name="password"
             autocomplete="current-password"
-            placeholder="AUTH_TOKEN"
-            autofocus
           />
         </label>
 

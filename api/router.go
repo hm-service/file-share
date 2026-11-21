@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -33,6 +34,8 @@ type route struct {
 	pattern   string
 	handler   http.HandlerFunc
 	protected bool
+	// permission 是访问该接口所需权限；public 路由不看它。
+	permission app.Permission
 }
 
 // NewMux 挂载 /api/* 与探针。页面与静态资源不在这里（那是根目录 web.go 的事），
@@ -41,31 +44,32 @@ func NewMux(instance *app.App) *http.ServeMux {
 	server := &Server{App: instance}
 	mux := http.NewServeMux()
 	server.register(mux, []route{
-		{http.MethodPost, "/api/auth", server.handleAuth, false},
-		{http.MethodGet, "/livez", server.handleLivez, false},
-		{http.MethodGet, "/readyz", server.handleReadyz, false},
-		{http.MethodGet, "/api/files", server.handleListFiles, true},
-		{http.MethodGet, "/api/storage", server.handleStorage, true},
-		{http.MethodPost, "/api/check_file", server.handleCheckFile, true},
-		{http.MethodPost, "/api/upload", server.handleUpload, true},
-		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true},
-		{http.MethodPost, "/api/files/{file_id}/share", server.handleShareLink, true},
-		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true},
-		{http.MethodGet, "/api/files/{file_id}/download-url", server.handleDownloadURL, true},
-		{http.MethodPost, "/api/groups", server.handleCreateGroup, true},
-		{http.MethodPost, "/api/groups/rename", server.handleRenameGroup, true},
-		{http.MethodPost, "/api/groups/delete", server.handleDeleteGroup, true},
-		{http.MethodPut, "/api/groups/order", server.handleSetGroupOrder, true},
-		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true},
-		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true},
+		{http.MethodPost, "/api/auth", server.handleAuth, false, 0},
+		{http.MethodGet, "/livez", server.handleLivez, false, 0},
+		{http.MethodGet, "/readyz", server.handleReadyz, false, 0},
+		{http.MethodGet, "/api/me", server.handleMe, true, app.PermissionRead},
+		{http.MethodGet, "/api/files", server.handleListFiles, true, app.PermissionRead},
+		{http.MethodGet, "/api/storage", server.handleStorage, true, app.PermissionRead},
+		{http.MethodPost, "/api/check_file", server.handleCheckFile, true, app.PermissionWrite},
+		{http.MethodPost, "/api/upload", server.handleUpload, true, app.PermissionWrite},
+		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true, app.PermissionWrite},
+		{http.MethodPost, "/api/files/{file_id}/share", server.handleShareLink, true, app.PermissionRead},
+		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true, app.PermissionRead},
+		{http.MethodGet, "/api/files/{file_id}/download-url", server.handleDownloadURL, true, app.PermissionRead},
+		{http.MethodPost, "/api/groups", server.handleCreateGroup, true, app.PermissionWrite},
+		{http.MethodPost, "/api/groups/rename", server.handleRenameGroup, true, app.PermissionWrite},
+		{http.MethodPost, "/api/groups/delete", server.handleDeleteGroup, true, app.PermissionWrite},
+		{http.MethodPut, "/api/groups/order", server.handleSetGroupOrder, true, app.PermissionWrite},
+		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true, app.PermissionWrite},
+		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true, app.PermissionWrite},
 		// /s/{file_id}?sig=&exp= 是浏览器导航下载与分享链接入口：签名绑定单个文件，
 		// 不需要 Authorization。
-		{http.MethodGet, "/s/{file_id}", server.handleSignedDownload, false},
+		{http.MethodGet, "/s/{file_id}", server.handleSignedDownload, false, 0},
 	})
 	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
 	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
 	// 非 PUT 的请求因此落到 /api/files/{file_id} 的兜底上回 405，不影响约定内的调用。
-	mux.HandleFunc(http.MethodPut+" /api/files/order", server.requireSession(server.handleSetOrder))
+	mux.HandleFunc(http.MethodPut+" /api/files/order", server.requireSession(app.PermissionWrite, server.handleSetOrder))
 	mux.HandleFunc("/", server.handleNotFound)
 	return mux
 }
@@ -79,7 +83,7 @@ func (s *Server) register(mux *http.ServeMux, routes []route) {
 	for _, item := range routes {
 		handler := item.handler
 		if item.protected {
-			handler = s.requireSession(handler)
+			handler = s.requireSession(item.permission, handler)
 		}
 		allowed[item.pattern] = append(allowed[item.pattern], item.method)
 		mux.HandleFunc(item.method+" "+item.pattern, handler)
@@ -119,36 +123,63 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAuth 校验 AUTH_TOKEN 并签发会话凭据。整个请求的最短耗时由 app.Authenticate 保证。
+// handleAuth 校验用户名与密码并签发会话凭据。整个请求的最短耗时由 app.Authenticate 保证。
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Token string `json:"token"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return
 	}
-	if !s.App.Authenticate(payload.Token) {
+	if !s.App.Authenticate(strings.TrimSpace(payload.Username), payload.Password) {
 		unauthorized(w, r, "auth.invalid")
 		return
 	}
-	token, expiresAt, err := s.App.IssueSession()
+	username := strings.TrimSpace(payload.Username)
+	token, expiresAt, err := s.App.IssueSession(username)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "issue session failed", slog.Any("error", err))
 		fail(w, r, http.StatusInternalServerError, "session.issue")
 		return
 	}
-	httpx.Write(w, http.StatusOK, map[string]any{"token": token, "expires_at": expiresAt})
+	user, _ := s.App.User(username)
+	httpx.Write(w, http.StatusOK, map[string]any{
+		"token":      token,
+		"expires_at": expiresAt,
+		"user":       userPayload(user),
+	})
 }
 
-// requireSession 是 /api/*（登录除外）的身份闸门：缺凭据、格式错、过期分别给不同文案键。
-func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
+// handleMe 返回当前登录用户与权限，供界面决定显示哪些操作。
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	httpx.Write(w, http.StatusOK, userPayload(currentUser(r)))
+}
+
+// userPayload 是给界面的用户信息：只暴露名字与权限，永远不带密码。
+func userPayload(user app.User) map[string]any {
+	return map[string]any{"name": user.Name, "permissions": user.Permissions.Names()}
+}
+
+// userContextKey 是请求上下文里放当前用户的键（包内私有类型，别的包塞不进来）。
+type userContextKey struct{}
+
+// currentUser 取 requireSession 放进上下文的当前用户；只有经过身份闸门的处理函数能拿到。
+func currentUser(r *http.Request) app.User {
+	user, _ := r.Context().Value(userContextKey{}).(app.User)
+	return user
+}
+
+// requireSession 是 /api/*（登录除外）的身份与权限闸门：
+// 缺凭据 / 格式错 / 过期分别给不同文案键，凭据有效但缺所需权限回 403。
+func (s *Server) requireSession(permission app.Permission, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearerToken(r)
 		if !ok {
 			unauthorized(w, r, "auth.required")
 			return
 		}
-		err := s.App.VerifySession(token)
+		user, err := s.App.VerifySession(token)
 		switch {
 		case err == nil:
 		case errors.Is(err, core.ErrSessionExpired):
@@ -158,7 +189,11 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			unauthorized(w, r, "auth.malformed")
 			return
 		}
-		next(w, r)
+		if !user.Can(permission) {
+			fail(w, r, http.StatusForbidden, "permission.denied")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
 	}
 }
 

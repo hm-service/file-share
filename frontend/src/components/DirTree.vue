@@ -35,6 +35,12 @@ const props = defineProps<{
   internalDrag: boolean;
   /** 当前视图是否还能新建文件夹（三级文件夹下不能再建）。 */
   canCreate: boolean;
+  /** 当前账号是否有写权限：没有就藏掉「新建文件夹」入口。 */
+  canWrite: boolean;
+  /** 侧栏底部显示当前登录用户名（空串表示不显示）。 */
+  userName: string;
+  /** 当前账号是否只读：只读时在用户名后面挂一个徽标。 */
+  userReadonly: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -134,7 +140,13 @@ function onDrop(event: DragEvent, path: string): void {
 
     <div class="section-head">
       <span>{{ t("nav.tree") }}</span>
-      <button type="button" class="section-add" :title="t('action.new-group')" @click="emit('new-folder')">
+      <button
+        v-if="canWrite"
+        type="button"
+        class="section-add"
+        :title="t('action.new-group')"
+        @click="emit('new-folder')"
+      >
         <span v-html="ICONS.plus"></span>
       </button>
     </div>
@@ -232,6 +244,7 @@ function onDrop(event: DragEvent, path: string): void {
     </div>
 
     <button
+      v-if="canWrite"
       type="button"
       class="new-folder"
       :disabled="!canCreate"
@@ -241,6 +254,12 @@ function onDrop(event: DragEvent, path: string): void {
       <span v-html="ICONS.plus"></span>
       {{ t("action.new-group") }}
     </button>
+
+    <div v-if="userName" class="user" :title="userReadonly ? t('user.readonly-hint') : undefined">
+      <span class="user-icon" v-html="ICONS.user"></span>
+      <span class="user-name">{{ userName }}</span>
+      <span v-if="userReadonly" class="user-badge">{{ t("user.readonly") }}</span>
+    </div>
 
     <div v-if="storageText" class="storage" :title="storageHint">
       <span class="storage-dot" :class="{ 'is-bad': !storageHealthy }"></span>
@@ -500,6 +519,43 @@ function onDrop(event: DragEvent, path: string): void {
   margin: 4px 8px;
   color: var(--ink-3);
   font-size: 12.5px;
+}
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 8px 4px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+.user-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--ink-3);
+}
+
+.user-icon:deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 11px;
 }
 
 .storage {

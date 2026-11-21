@@ -32,6 +32,8 @@ const props = defineProps<{
   groups: readonly GroupItem[];
   /** 可拖拽排序的列表才显示把手；搜索过滤时顺序不可提交，把手隐藏。 */
   draggable: boolean;
+  /** 当前账号是否有写权限：没有就藏掉收藏、移动、重命名、删除。 */
+  canWrite: boolean;
   /** 在元信息行里额外显示所属分组（「最近」视图用）。 */
   showGroup?: boolean;
 }>();
@@ -428,6 +430,7 @@ onBeforeUnmount(() => {
       ></button>
 
       <button
+        v-if="canWrite"
         type="button"
         class="icon-btn star"
         :class="{ on: file.is_favorite }"
@@ -438,6 +441,7 @@ onBeforeUnmount(() => {
       ></button>
 
       <button
+        v-if="canWrite"
         type="button"
         class="icon-btn group"
         :class="{ on: openMenu === 'group' }"
@@ -550,7 +554,13 @@ onBeforeUnmount(() => {
         role="menu"
         :aria-label="t('action.more')"
       >
-        <button type="button" class="row-menu-item" role="menuitem" @click="openGroupMenuFromMore">
+        <button
+          v-if="canWrite"
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          @click="openGroupMenuFromMore"
+        >
           <span class="row-menu-icon" v-html="ICONS.folder"></span>
           <span class="row-menu-label">{{ t("action.move-group") }}</span>
         </button>
@@ -565,7 +575,7 @@ onBeforeUnmount(() => {
           <span class="row-menu-label">{{ t("action.copy-link-24h") }}</span>
         </button>
 
-        <button type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
+        <button v-if="canWrite" type="button" class="row-menu-item" role="menuitem" @click="chooseRename">
           <span class="row-menu-icon" v-html="ICONS.pencil"></span>
           <span class="row-menu-label">{{ t("action.rename") }}</span>
         </button>
@@ -583,12 +593,14 @@ onBeforeUnmount(() => {
           </span>
         </button>
 
-        <div class="row-menu-sep" role="separator"></div>
+        <template v-if="canWrite">
+          <div class="row-menu-sep" role="separator"></div>
 
-        <button type="button" class="row-menu-item is-danger" role="menuitem" @click="chooseDelete">
-          <span class="row-menu-icon" v-html="ICONS.trash"></span>
-          <span class="row-menu-label">{{ t("action.delete") }}</span>
-        </button>
+          <button type="button" class="row-menu-item is-danger" role="menuitem" @click="chooseDelete">
+            <span class="row-menu-icon" v-html="ICONS.trash"></span>
+            <span class="row-menu-label">{{ t("action.delete") }}</span>
+          </button>
+        </template>
       </div>
     </Teleport>
 

@@ -25,6 +25,7 @@ import {
   deleteFile,
   deleteGroup,
   downloadFile,
+  getMe,
   getStorageInfo,
   listFiles,
   renameFile,
@@ -39,7 +40,7 @@ import { ICONS } from "@/icons";
 import { t } from "@/i18n";
 import { viewFromPath, viewPath, type View } from "@/routes";
 import { toLogin } from "@/session";
-import type { DirEntry, FileItem, GroupItem, StorageInfo } from "@/types";
+import type { DirEntry, FileItem, GroupItem, StorageInfo, UserInfo } from "@/types";
 
 /** 「最近」最多列这么多条；搜索时不受限制。 */
 const RECENT_LIMIT = 20;
@@ -68,6 +69,10 @@ const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
 let storageTimer = 0;
 const maxFileSize = ref(0);
 const storage = ref<StorageInfo | null>(null);
+/** 当前登录用户与权限：界面据此隐藏写操作；每次打开页面都向后端要一次，不信本地缓存。 */
+const currentUser = ref<UserInfo | null>(null);
+/** 写权限：拉不到用户信息时按只读处理，宁可少显示按钮也不让操作直接 403。 */
+const canWrite = computed(() => currentUser.value?.permissions.includes("write") ?? false);
 /** 窄屏抽屉：侧栏在移动端默认收起。 */
 const sidebarOpen = ref(false);
 
@@ -189,7 +194,9 @@ const dirs = computed<DirEntry[]>(() => {
 const pageFilesSize = computed(() => visibleFiles.value.reduce((sum, file) => sum + file.size, 0));
 
 /** 文件行是否可拖拽排序：只有文件夹视图、且没有搜索过滤时提交顺序才有意义。 */
-const sortable = computed(() => view.value.kind === "group" && !searching.value);
+const sortable = computed(
+  () => canWrite.value && view.value.kind === "group" && !searching.value,
+);
 
 /** 最近与搜索结果是跨文件夹的，行内要标出文件所在文件夹。 */
 const showGroup = computed(() => searching.value || view.value.kind === "recent");
@@ -221,8 +228,8 @@ function canCreateSubfolder(path: string): boolean {
 }
 
 /** 当前视图是否还能新建文件夹：非文件夹视图建顶级，三级文件夹下不能再建。 */
-const canCreateFolder = computed(() =>
-  view.value.kind === "group" ? canCreateSubfolder(view.value.group) : true,
+const canCreateFolder = computed(
+  () => canWrite.value && (view.value.kind === "group" ? canCreateSubfolder(view.value.group) : true),
 );
 
 /* ---------- 侧栏折叠状态 ---------- */
@@ -357,6 +364,15 @@ function showActionError(error: unknown): void {
   void loadStorage();
 }
 
+/** 拉当前用户与权限；401 由 api 客户端跳登录页，其它错误按只读处理。 */
+async function loadMe(): Promise<void> {
+  try {
+    currentUser.value = await getMe();
+  } catch {
+    currentUser.value = null;
+  }
+}
+
 /** 拉存储方案给侧栏提示用；失败只影响这行提示，不影响列表与操作。 */
 async function loadStorage(): Promise<void> {
   try {
@@ -415,6 +431,7 @@ async function refresh(): Promise<void> {
 }
 
 async function onFavorite(file: FileItem): Promise<void> {
+  if (!canWrite.value) return;
   try {
     await toggleFavorite(file.id);
     await refresh();
@@ -456,6 +473,7 @@ function applyOrder(orderedIds: string[]): void {
 }
 
 async function onReorder(orderedIds: string[]): Promise<void> {
+  if (!canWrite.value) return;
   applyOrder(orderedIds);
   try {
     await reorderFiles(orderedIds.map((id, index) => ({ id, sort_order: index })));
@@ -487,6 +505,7 @@ function applyGroupOrder(parent: string, names: string[]): void {
 }
 
 async function onReorderDirs(orderedPaths: string[]): Promise<void> {
+  if (!canWrite.value) return;
   const parent = currentPath.value;
   const names = orderedPaths.map((path) => path.split("/").pop() ?? "");
   applyGroupOrder(parent, names);
@@ -501,7 +520,7 @@ async function onReorderDirs(orderedPaths: string[]): Promise<void> {
 
 /** 移动到某个文件夹（空串 = 未分组）。 */
 async function onMoveGroup(file: FileItem, path: string): Promise<void> {
-  if (file.group_path === path) return;
+  if (!canWrite.value || file.group_path === path) return;
   try {
     await updateFileGroup(file.id, path);
     await refresh();
@@ -571,7 +590,7 @@ function groupPathOf(state: PromptState, value: string): string {
 
 async function onPromptConfirm(value: string): Promise<void> {
   const state = promptState.value;
-  if (!state) return;
+  if (!state || !canWrite.value) return;
   promptState.value = null;
   switch (state.kind) {
     case "rename-file": {
@@ -627,18 +646,20 @@ async function onPromptConfirm(value: string): Promise<void> {
 }
 
 function onRename(file: FileItem): void {
+  if (!canWrite.value) return;
   promptState.value = { kind: "rename-file", file };
 }
 
 const deleteFileTarget = ref<FileItem | null>(null);
 
 function onDelete(file: FileItem): void {
+  if (!canWrite.value) return;
   deleteFileTarget.value = file;
 }
 
 async function confirmDeleteFile(): Promise<void> {
   const file = deleteFileTarget.value;
-  if (!file) return;
+  if (!file || !canWrite.value) return;
   deleteFileTarget.value = null;
   try {
     await deleteFile(file.id);
@@ -714,14 +735,14 @@ function onShowStats(): void {
 function onRenameFolderFromMenu(): void {
   const target = folderMenu.value;
   closeFolderMenu();
-  if (!target) return;
+  if (!target || !canWrite.value) return;
   promptState.value = { kind: "rename-folder", path: target.path, name: target.name };
 }
 
 function onCreateSubfolderFromMenu(): void {
   const target = folderMenu.value;
   closeFolderMenu();
-  if (!target) return;
+  if (!target || !canWrite.value) return;
   promptState.value = { kind: "new-folder", parent: target.path };
 }
 
@@ -730,7 +751,7 @@ const deleteFolderTarget = ref<{ path: string; name: string } | null>(null);
 function onDeleteFolderFromMenu(): void {
   const target = folderMenu.value;
   closeFolderMenu();
-  if (!target) return;
+  if (!target || !canWrite.value) return;
   deleteFolderTarget.value = { path: target.path, name: target.name };
 }
 
@@ -750,7 +771,7 @@ const deleteFolderFallback = computed(() => {
 
 async function confirmDeleteFolder(deleteFiles: boolean): Promise<void> {
   const target = deleteFolderTarget.value;
-  if (!target) return;
+  if (!target || !canWrite.value) return;
   deleteFolderTarget.value = null;
   try {
     await deleteGroup(target.path, deleteFiles);
@@ -771,6 +792,7 @@ async function confirmDeleteFolder(deleteFiles: boolean): Promise<void> {
 /* ---------- 上传 ---------- */
 
 function pickFiles(): void {
+  if (!canWrite.value) return;
   uploadDock.value?.pick();
 }
 
@@ -789,6 +811,7 @@ function resetDropState(): void {
 }
 
 function onFileDragStart(file: FileItem): void {
+  if (!canWrite.value) return;
   draggingFileId.value = file.id;
 }
 
@@ -799,6 +822,7 @@ function onFileDragEnd(): void {
 
 /** 拖到文件夹树 / 文件夹行：内部文件移动，外部文件上传到该文件夹。 */
 async function onDropOnFolder(dropped: FileList | null, path: string): Promise<void> {
+  if (!canWrite.value) return;
   const draggedId = draggingFileId.value;
   draggingFileId.value = null;
   dropActive.value = false;
@@ -839,6 +863,7 @@ function onMainDragLeave(event: DragEvent): void {
 
 async function onMainDrop(event: DragEvent): Promise<void> {
   event.preventDefault();
+  if (!canWrite.value) return;
   if (draggingFileId.value) {
     const draggedId = draggingFileId.value;
     draggingFileId.value = null;
@@ -871,6 +896,7 @@ onMounted(() => {
   window.addEventListener("popstate", syncViewFromLocation);
   window.addEventListener("resize", onWindowResize);
   syncViewFromLocation();
+  void loadMe();
   void refresh();
   void loadStorage();
   // 定时重新探测存储状态：S3 恢复后侧栏的提示能自己变回绿色，不用等用户操作。
@@ -920,6 +946,7 @@ onBeforeUnmount(() => {
 
       <div class="top-actions">
         <button
+          v-if="canWrite"
           type="button"
           class="btn"
           :disabled="!canCreateFolder"
@@ -928,7 +955,7 @@ onBeforeUnmount(() => {
           <span class="btn-icon" v-html="ICONS.plus"></span>
           {{ t("action.new-group") }}
         </button>
-        <button type="button" class="btn primary" @click="pickFiles">
+        <button v-if="canWrite" type="button" class="btn primary" @click="pickFiles">
           <span class="btn-icon" v-html="ICONS.upload"></span>
           {{ t("upload.button") }}
         </button>
@@ -963,7 +990,10 @@ onBeforeUnmount(() => {
           :storage-hint="storageHint"
           :storage-healthy="storageHealthy"
           :internal-drag="draggingFileId !== null"
-        :can-create="canCreateFolder"
+          :can-create="canCreateFolder"
+          :can-write="canWrite"
+          :user-name="currentUser?.name ?? ''"
+          :user-readonly="!canWrite"
           @show-recent="showRecent"
           @show-favorites="showFavorites"
           @show-ungrouped="showUngrouped"
@@ -1033,6 +1063,7 @@ onBeforeUnmount(() => {
               type="button"
               class="btn"
               :disabled="refreshing"
+              :title="t('action.download-group-hint', { count: visibleFiles.length })"
               @click="onDownloadAll"
             >
               <span class="btn-icon" v-html="ICONS.download"></span>
@@ -1040,7 +1071,7 @@ onBeforeUnmount(() => {
             </button>
 
             <button
-              v-if="viewKind === 'group' && canCreateSubfolder(currentPath)"
+              v-if="canWrite && viewKind === 'group' && canCreateSubfolder(currentPath)"
               type="button"
               class="btn"
               @click="promptState = { kind: 'new-folder', parent: currentPath }"
@@ -1070,6 +1101,7 @@ onBeforeUnmount(() => {
           :sortable="sortable"
           :show-group="showGroup"
           :dragging-file-id="draggingFileId"
+          :can-write="canWrite"
           @open-folder="openFolder"
           @folder-menu="onFolderMenuFromRow"
           @favorite="onFavorite"
@@ -1098,7 +1130,7 @@ onBeforeUnmount(() => {
           </p>
           <p v-if="loaded && !searching" class="empty-text">{{ t("content.empty-hint") }}</p>
           <button
-            v-if="loaded && !searching"
+            v-if="canWrite && loaded && !searching"
             type="button"
             class="btn primary"
             @click="pickFiles"
@@ -1112,12 +1144,12 @@ onBeforeUnmount(() => {
           {{ t("content.folder-empty") }}
         </p>
 
-        <p v-if="loaded && (dirs.length || visibleFiles.length)" class="drop-hint">
+        <p v-if="canWrite && loaded && (dirs.length || visibleFiles.length)" class="drop-hint">
           <span class="drop-hint-icon" v-html="ICONS.upload"></span>
           {{ t("content.drop-hint") }}
         </p>
 
-        <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
+        <div v-if="canWrite && dropActive" class="drop-overlay" aria-hidden="true">
           <span class="drop-overlay-icon" v-html="ICONS.upload"></span>
           <p class="drop-overlay-text">{{ t("upload.drop-overlay") }}</p>
         </div>
@@ -1137,12 +1169,18 @@ onBeforeUnmount(() => {
           <span class="row-menu-icon" v-html="ICONS.stats"></span>
           <span class="row-menu-label">{{ t("action.stats") }}</span>
         </button>
-        <button type="button" class="row-menu-item" role="menuitem" @click="onRenameFolderFromMenu">
+        <button
+          v-if="canWrite"
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          @click="onRenameFolderFromMenu"
+        >
           <span class="row-menu-icon" v-html="ICONS.pencil"></span>
           <span class="row-menu-label">{{ t("action.rename-group") }}</span>
         </button>
         <button
-          v-if="canCreateSubfolder(folderMenu.path)"
+          v-if="canWrite && canCreateSubfolder(folderMenu.path)"
           type="button"
           class="row-menu-item"
           role="menuitem"
@@ -1151,11 +1189,13 @@ onBeforeUnmount(() => {
           <span class="row-menu-icon" v-html="ICONS.folder"></span>
           <span class="row-menu-label">{{ t("action.create-subgroup") }}</span>
         </button>
-        <div class="row-menu-sep" role="separator"></div>
-        <button type="button" class="row-menu-item is-danger" role="menuitem" @click="onDeleteFolderFromMenu">
-          <span class="row-menu-icon" v-html="ICONS.trash"></span>
-          <span class="row-menu-label">{{ t("action.delete-group") }}</span>
-        </button>
+        <template v-if="canWrite">
+          <div class="row-menu-sep" role="separator"></div>
+          <button type="button" class="row-menu-item is-danger" role="menuitem" @click="onDeleteFolderFromMenu">
+            <span class="row-menu-icon" v-html="ICONS.trash"></span>
+            <span class="row-menu-label">{{ t("action.delete-group") }}</span>
+          </button>
+        </template>
       </div>
     </Teleport>
 
@@ -1200,6 +1240,7 @@ onBeforeUnmount(() => {
     />
 
     <UploadDock
+      v-if="canWrite"
       ref="uploadDock"
       :target-group="uploadTarget"
       :max-file-size="maxFileSize"

@@ -32,7 +32,13 @@ func TestMain(m *testing.M) {
 
 func newAPI(t *testing.T) (*app.App, http.Handler) {
 	t.Helper()
-	instance := testenv.New(t)
+	return newAPIWith(t, nil)
+}
+
+// newAPIWith 允许先改 Config（例如加一个只读用户来测权限）。
+func newAPIWith(t *testing.T, mutate func(*app.Config)) (*app.App, http.Handler) {
+	t.Helper()
+	instance := testenv.NewWith(t, mutate)
 	return instance, api.NewHandler(instance)
 }
 
@@ -72,6 +78,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		method string
 		target string
 	}{
+		{http.MethodGet, "/api/me"},
 		{http.MethodGet, "/api/files"},
 		{http.MethodGet, "/api/storage"},
 		{http.MethodPost, "/api/check_file"},
@@ -148,7 +155,8 @@ func TestLoginFlow(t *testing.T) {
 	_, handler := newAPI(t)
 
 	start := time.Now()
-	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/auth", map[string]any{"token": testenv.AuthToken}, "")
+	recorder := testenv.DoJSON(handler, http.MethodPost, "/api/auth",
+		map[string]any{"username": testenv.UserName, "password": testenv.Password}, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("登录状态码 = %d（body=%s）", recorder.Code, recorder.Body.String())
 	}
@@ -160,10 +168,20 @@ func TestLoginFlow(t *testing.T) {
 	var payload struct {
 		Token     string `json:"token"`
 		ExpiresAt int64  `json:"expires_at"`
+		User      struct {
+			Name        string   `json:"name"`
+			Permissions []string `json:"permissions"`
+		} `json:"user"`
 	}
 	testenv.DecodeInto(t, recorder, &payload)
 	if payload.Token == "" {
 		t.Fatal("登录响应缺少 token")
+	}
+	if payload.User.Name != testenv.UserName {
+		t.Errorf("登录响应里的用户名 = %q，想要 %q", payload.User.Name, testenv.UserName)
+	}
+	if len(payload.User.Permissions) != 2 || payload.User.Permissions[0] != "read" || payload.User.Permissions[1] != "write" {
+		t.Errorf("登录响应里的权限 = %v，想要 [read write]", payload.User.Permissions)
 	}
 	if want := time.Now().Add(30 * 24 * time.Hour).Unix(); payload.ExpiresAt < want-5 || payload.ExpiresAt > want+5 {
 		t.Errorf("expires_at = %d，想要约 %d（30 天后）", payload.ExpiresAt, want)
@@ -178,9 +196,10 @@ func TestLoginFlow(t *testing.T) {
 func TestLoginFailures(t *testing.T) {
 	_, handler := newAPI(t)
 
-	t.Run("令牌不对", func(t *testing.T) {
-		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/auth", map[string]any{"token": "wrong_token_000000"}, "")
-		assertJSONError(t, recorder, http.StatusUnauthorized, "认证令牌不正确")
+	t.Run("密码不对", func(t *testing.T) {
+		recorder := testenv.DoJSON(handler, http.MethodPost, "/api/auth",
+			map[string]any{"username": testenv.UserName, "password": "wrong_password_000000"}, "")
+		assertJSONError(t, recorder, http.StatusUnauthorized, "用户名或密码错误")
 		if got := recorder.Header().Get("WWW-Authenticate"); got != "Bearer" {
 			t.Errorf("WWW-Authenticate = %q", got)
 		}
@@ -188,9 +207,9 @@ func TestLoginFailures(t *testing.T) {
 
 	t.Run("错误文案走 Accept-Language", func(t *testing.T) {
 		recorder := testenv.DoRequest(handler, http.MethodPost, "/api/auth",
-			bytes.NewReader([]byte(`{"token":"wrong_token_000000"}`)), "application/json", "",
+			bytes.NewReader([]byte(`{"username":"nobody","password":"wrong_password_000000"}`)), "application/json", "",
 			map[string]string{"Accept-Language": "en-US"})
-		assertJSONError(t, recorder, http.StatusUnauthorized, "Incorrect access token")
+		assertJSONError(t, recorder, http.StatusUnauthorized, "Wrong username or password")
 		if got := recorder.Header().Get("Content-Language"); got != "en" {
 			t.Errorf("Content-Language = %q，想要 en", got)
 		}
@@ -204,7 +223,7 @@ func TestLoginFailures(t *testing.T) {
 
 	t.Run("请求体字段类型不对", func(t *testing.T) {
 		recorder := testenv.DoRaw(handler, http.MethodPost, "/api/auth",
-			bytes.NewReader([]byte(`{"token":123}`)), "application/json", "")
+			bytes.NewReader([]byte(`{"username":123}`)), "application/json", "")
 		assertJSONError(t, recorder, http.StatusBadRequest, "请求体不是合法的 JSON")
 	})
 
@@ -223,6 +242,91 @@ func TestLoginFailures(t *testing.T) {
 			t.Errorf("Allow = %q，想要 POST", got)
 		}
 	})
+}
+
+// 只读用户能浏览与下载，但所有修改类接口都回 403；写用户照常。
+func TestReadOnlyPermissions(t *testing.T) {
+	const (
+		readerName     = "reader"
+		readerPassword = "reader_password_0123456789"
+	)
+	instance, handler := newAPIWith(t, func(cfg *app.Config) {
+		cfg.Users = append(cfg.Users, app.User{
+			Name:        readerName,
+			Password:    readerPassword,
+			Permissions: app.PermissionRead,
+		})
+	})
+	writer := testenv.Token(t, instance)
+	reader := testenv.TokenFor(t, instance, readerName)
+
+	// 先用写用户造一条记录，只读用户才有东西可看、可下载。
+	content := []byte("read only")
+	body, contentType := testenv.MultipartBody(t, "read.txt", content, testenv.SHA256(content), true)
+	recorder := testenv.DoRaw(handler, http.MethodPost, "/api/upload", body, contentType, writer)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("造数据失败: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	testenv.DecodeInto(t, recorder, &created)
+
+	allowed := []struct {
+		method string
+		target string
+	}{
+		{http.MethodGet, "/api/me"},
+		{http.MethodGet, "/api/files"},
+		{http.MethodGet, "/api/storage"},
+		{http.MethodGet, "/api/files/" + created.ID + "/download"},
+		{http.MethodGet, "/api/files/" + created.ID + "/download-url"},
+		{http.MethodPost, "/api/files/" + created.ID + "/share"},
+	}
+	for _, route := range allowed {
+		t.Run("允许 "+route.method+" "+route.target, func(t *testing.T) {
+			recorder := testenv.Do(handler, route.method, route.target, reader)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("只读用户应当能访问 %s %s，得到 %d（body=%s）",
+					route.method, route.target, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	recorder = testenv.Do(handler, http.MethodGet, "/api/me", reader)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("/api/me 状态码 = %d", recorder.Code)
+	}
+	var me struct {
+		Name        string   `json:"name"`
+		Permissions []string `json:"permissions"`
+	}
+	testenv.DecodeInto(t, recorder, &me)
+	if me.Name != readerName || len(me.Permissions) != 1 || me.Permissions[0] != "read" {
+		t.Errorf("/api/me = %+v，想要 name=%q permissions=[read]", me, readerName)
+	}
+
+	denied := []struct {
+		method string
+		target string
+	}{
+		{http.MethodPost, "/api/check_file"},
+		{http.MethodPost, "/api/upload"},
+		{http.MethodPut, "/api/files/order"},
+		{http.MethodPatch, "/api/files/" + created.ID},
+		{http.MethodDelete, "/api/files/" + created.ID},
+		{http.MethodPost, "/api/files/" + created.ID + "/favorite"},
+		{http.MethodPost, "/api/groups"},
+		{http.MethodPost, "/api/groups/rename"},
+		{http.MethodPost, "/api/groups/delete"},
+		{http.MethodPut, "/api/groups/order"},
+	}
+	for _, route := range denied {
+		t.Run("拒绝 "+route.method+" "+route.target, func(t *testing.T) {
+			recorder := testenv.Do(handler, route.method, route.target, reader)
+			assertJSONError(t, recorder, http.StatusForbidden, "当前账号没有该操作权限")
+		})
+	}
 }
 
 func TestListFiles(t *testing.T) {

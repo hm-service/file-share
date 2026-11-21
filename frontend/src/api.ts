@@ -17,6 +17,7 @@ import type {
   FileItem,
   FileListResponse,
   FileOrderItem,
+  MeResponse,
   StorageInfo,
   UploadResponse,
 } from "./types";
@@ -85,14 +86,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return payload as T;
 }
 
-/** POST /api/auth：成功返回会话，失败抛 ApiError（401 = 令牌不对）。 */
-export function login(token: string): Promise<AuthResponse> {
+/** POST /api/auth：成功返回会话与用户信息，失败抛 ApiError（401 = 用户名或密码不对）。 */
+export function login(username: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>("/api/auth", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ username, password }),
     redirectOn401: false,
   });
+}
+
+/** GET /api/me：当前登录用户与权限，界面据此决定显示哪些写操作。 */
+export function getMe(): Promise<MeResponse> {
+  return request<MeResponse>("/api/me");
 }
 
 /** GET /api/files：文件列表 + 全部分组（含空分组）+ 单文件上传上限。 */
