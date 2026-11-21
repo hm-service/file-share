@@ -243,28 +243,48 @@ const canCreateFolder = computed(() =>
 
 /* ---------- 侧栏折叠状态 ---------- */
 
-function loadFolded(): Set<string> {
+/** 读本机保存的折叠状态；null 表示从没保存过（首次打开，走默认折叠）。 */
+function loadFolded(): Set<string> | null {
   try {
     const raw = localStorage.getItem(FOLDED_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
     return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
   } catch {
-    return new Set();
+    return null;
   }
 }
 
-const folded = ref<Set<string>>(loadFolded());
+function saveFolded(next: Set<string>): void {
+  try {
+    localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+  } catch {
+    /* 存不下就只在本次会话里生效 */
+  }
+}
+
+const storedFolded = loadFolded();
+const folded = ref<Set<string>>(storedFolded ?? new Set());
+/** 首次拉到文件夹列表前不套默认值（那时还不知道有哪些二级文件夹）。 */
+let foldedInitialized = storedFolded !== null;
+
+/** 默认只展开到第二级：二级文件夹全部折叠，三级不占侧栏空间；用户展开后会记住自己的选择。 */
+function applyDefaultFolded(): void {
+  if (foldedInitialized) return;
+  foldedInitialized = true;
+  const next = new Set(
+    groups.value.filter((group) => group.path.split("/").length === 2).map((group) => group.path),
+  );
+  folded.value = next;
+  saveFolded(next);
+}
 
 function toggleFolder(path: string): void {
   const next = new Set(folded.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   folded.value = next;
-  try {
-    localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
-  } catch {
-    /* 存不下就只在本次会话里生效 */
-  }
+  saveFolded(next);
 }
 
 /* ---------- 地址栏 ---------- */
@@ -397,6 +417,7 @@ async function refresh(): Promise<void> {
     groups.value = payload.groups;
     maxFileSize.value = payload.max_file_size;
     loadError.value = "";
+    applyDefaultFolded();
     validateView();
   } catch (error) {
     if (seq !== refreshSeq || isUnauthorized(error)) return;
