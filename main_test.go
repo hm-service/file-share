@@ -664,11 +664,36 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("USERS_FILE 未设置时读 DATA_DIR/users.yaml", func(t *testing.T) {
+		dataDir := t.TempDir()
+		path := filepath.Join(dataDir, defaultUsersFileName)
+		content := []byte(`users:
+  - name: tester
+    password: tester_password_0123456789
+    permissions: [read, write]
+`)
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("写用户表失败: %v", err)
+		}
+		t.Setenv("DATA_DIR", dataDir)
+		t.Setenv("USERS_FILE", "")
+		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
+		t.Setenv("READYZ_TOKEN", "")
+		cfg, _, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig() 报错: %v", err)
+		}
+		if len(cfg.app.Users) != 1 || cfg.app.Users[0].Name != testenv.UserName {
+			t.Errorf("用户表 = %+v，想要从 %s 读到 tester", cfg.app.Users, path)
+		}
+	})
+
 	missingCases := []struct {
 		name   string
 		mutate func()
 	}{
-		{name: "缺 USERS_FILE", mutate: func() { t.Setenv("USERS_FILE", "") }},
+		{name: "用户表默认位置没有文件", mutate: func() { t.Setenv("USERS_FILE", "") }},
 		{name: "用户表文件不存在", mutate: func() { t.Setenv("USERS_FILE", filepath.Join(t.TempDir(), "missing.yaml")) }},
 		{name: "用户表里没有用户", mutate: func() { t.Setenv("USERS_FILE", writeUsersFileContent(t, "users: []\n")) }},
 		{name: "用户表里有未知权限", mutate: func() {

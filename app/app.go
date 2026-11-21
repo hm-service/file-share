@@ -28,7 +28,7 @@ type Config struct {
 	URLSignatureKey   string
 	ReadyzToken       string
 	MaxFileSize       int64
-	// Users 是登录用户表，由 main.go 从 USERS_FILE 读入。
+	// Users 是登录用户表，由 main.go 从用户表文件（默认 DATA_DIR/users.yaml）读入。
 	Users []User
 	// S3 为 nil 时 blob 存在本地 DATA_DIR/blobs 下，否则存在 S3。
 	S3 *S3Config
@@ -332,7 +332,7 @@ func (a *App) User(name string) (User, bool) {
 	return user, ok
 }
 
-// indexUsers 校验用户表并建索引。空表说明部署漏了 USERS_FILE，直接拒绝启动。
+// indexUsers 校验用户表并建索引。空表说明部署漏了用户表文件，直接拒绝启动。
 func indexUsers(users []User) (map[string]User, error) {
 	if len(users) == 0 {
 		return nil, errors.New("at least one user is required")
