@@ -28,7 +28,7 @@ type Config struct {
 	URLSignatureKey   string
 	ReadyzToken       string
 	MaxFileSize       int64
-	// Users 是登录用户表，由 main.go 从用户表文件（默认 DATA_DIR/users.yaml）读入。
+	// Users 是登录用户表，由 main.go 从 DATA_DIR/users.yaml 读入。
 	Users []User
 	// S3 为 nil 时 blob 存在本地 DATA_DIR/blobs 下，否则存在 S3。
 	S3 *S3Config

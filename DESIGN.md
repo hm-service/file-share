@@ -45,7 +45,6 @@
 | `S3_REGION` | `us-east-1` | 签名区域；自建网关任意值即可 |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | 无（S3 模式必填） | Secret；可打印 ASCII，不能含空白；读完从环境表删除 |
 | `GOMEMLIMIT` | — | 交给 Go 运行时，应用不读取 |
-| `USERS_FILE` | `DATA_DIR/users.yaml` | 用户表 YAML 路径；启动时加载并校验，运行期只读（见 §3.1） |
 | `SESSION_SIGNING_KEY` | 无，**必填** | Secret；32–128 字符同上；会话 HMAC 密钥，轮换即全部下线 |
 | `URL_SIGNATURE_KEY` | 无，**必填** | Secret；32–128 字符同上；签名 URL 的 HMAC 密钥，轮换即已签链接失效 |
 | `READYZ_TOKEN` | 空 | 空表示 `/readyz` 不设门槛；非空时 16–128 字符同上 |
@@ -54,7 +53,7 @@
 
 ### 3.1 用户表
 
-用户表是一份 YAML（默认读 `DATA_DIR/users.yaml`，可用 `USERS_FILE` 指定别处），结构对齐 SeaweedFS 的 s3 config：身份列表 + 权限数组。
+用户表固定在 `DATA_DIR/users.yaml`，是一份 YAML，结构对齐 SeaweedFS 的 s3 config：身份列表 + 权限数组。
 用户表在启动时加载校验（任一字段不合法即拒绝启动），运行期只读，改表要重启。
 
 ```yaml
@@ -81,7 +80,7 @@ DATA_DIR/                   0700
   file-share.db-wal/-shm          WAL 附带文件
   blobs/                    0700  本地模式下的 blob 目录（S3 模式为空）
     <sha256>                0600  内容寻址的物理文件
-  users.yaml                     用户表默认位置（容器部署时由 Secret 挂进来；可用 USERS_FILE 改路径）
+  users.yaml                     用户表（容器部署时由 Secret 挂进来）
   temp/                     0700  上传暂存
     .upload-*.tmp                 上传中的临时文件，启动时清理残留
 ```
@@ -324,7 +323,7 @@ sequenceDiagram
 
 ## 7. 安全模型
 
-- 认证：用户表（默认 `DATA_DIR/users.yaml`）里的用户名 + 明文密码。密码比较用 SHA-256 摘要 + 恒定时间比较，
+- 认证：用户表（`DATA_DIR/users.yaml`）里的用户名 + 明文密码。密码比较用 SHA-256 摘要 + 恒定时间比较，
   用户名不存在也走同一路径，并统一补足最小登录耗时，避免用耗时区分「用户不存在」与「密码错误」。
 - 授权：`/api/*` 除 `POST /api/auth` 外均需会话；匿名访问只通过 `/s/{id}?sig&exp`，
   绑定单文件、10 分钟或 24 小时失效、不是会话凭据、不进日志。

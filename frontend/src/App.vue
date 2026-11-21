@@ -960,6 +960,16 @@ onBeforeUnmount(() => {
           {{ t("upload.button") }}
         </button>
         <LocaleSwitch class="lang" />
+        <!-- 当前账号：右上角显示名字与只读标记，退出按钮在最右 -->
+        <div
+          v-if="currentUser"
+          class="user-chip"
+          :title="canWrite ? undefined : t('user.readonly-hint')"
+        >
+          <span class="user-avatar" v-html="ICONS.user"></span>
+          <span class="user-name">{{ currentUser.name }}</span>
+          <span v-if="!canWrite" class="user-badge">{{ t("user.readonly") }}</span>
+        </div>
         <button
           type="button"
           class="icon-btn logout"
@@ -992,8 +1002,6 @@ onBeforeUnmount(() => {
           :internal-drag="draggingFileId !== null"
           :can-create="canCreateFolder"
           :can-write="canWrite"
-          :user-name="currentUser?.name ?? ''"
-          :user-readonly="!canWrite"
           @show-recent="showRecent"
           @show-favorites="showFavorites"
           @show-ungrouped="showUngrouped"
@@ -1367,6 +1375,53 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+/* 当前账号：右上角的小胶囊，只读时挂「只读」徽标 */
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 200px;
+  height: 30px;
+  padding: 0 10px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+.user-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink-3);
+}
+
+.user-avatar:deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1733,6 +1788,19 @@ onBeforeUnmount(() => {
   }
 
   .top-actions :deep(.locale-switch) {
+    display: none;
+  }
+
+  /* 窄屏顶栏只留一个头像，名字和只读徽标收进 title */
+  .user-chip {
+    height: 34px;
+    padding: 0 2px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .user-chip .user-name,
+  .user-chip .user-badge {
     display: none;
   }
 

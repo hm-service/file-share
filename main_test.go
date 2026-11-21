@@ -560,36 +560,51 @@ func TestReadSecret(t *testing.T) {
 	}
 }
 
-// writeUsersFile 在临时目录里写一份合法用户表，返回路径；测试只关心能不能读到它。
-func writeUsersFile(t *testing.T) string {
-	t.Helper()
-	return writeUsersFileContent(t, `users:
+// usersContent 是一份合法用户表：测试只关心能不能从 DATA_DIR/users.yaml 读到它。
+const usersContent = `users:
   - name: tester
     password: tester_password_0123456789
     permissions: [read, write]
-`)
+`
+
+// writeUsersFile 在 dataDir 下写一份默认内容的用户表，返回路径。
+func writeUsersFile(t *testing.T, dataDir string) string {
+	t.Helper()
+	return writeUsersFileContent(t, dataDir, usersContent)
 }
 
-func writeUsersFileContent(t *testing.T, content string) string {
+func writeUsersFileContent(t *testing.T, dataDir, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "users.yaml")
+	path := filepath.Join(dataDir, usersFileName)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("写用户表失败: %v", err)
 	}
 	return path
 }
 
+// prepareConfigEnv 把一份最小可用的配置塞进环境变量，返回数据目录。
+// 用户表固定读 DATA_DIR/users.yaml，需要用户表的用例自己往 dataDir 里写。
+func prepareConfigEnv(t *testing.T) string {
+	t.Helper()
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
+	t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
+	t.Setenv("READYZ_TOKEN", "")
+	t.Setenv("HOST", "")
+	t.Setenv("PORT", "")
+	t.Setenv("TZ", "")
+	return dataDir
+}
+
 // loadConfig 把必填项凑齐后能组装出配置，缺任何一项都报错。
 func TestLoadConfig(t *testing.T) {
 	t.Run("完整配置", func(t *testing.T) {
-		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("USERS_FILE", writeUsersFile(t))
-		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
+		dataDir := prepareConfigEnv(t)
+		writeUsersFile(t, dataDir)
 		t.Setenv("READYZ_TOKEN", testenv.ReadyzToken)
 		t.Setenv("HOST", "0.0.0.0")
 		t.Setenv("PORT", "18080")
-		t.Setenv("TZ", "")
 		t.Setenv("MAX_FILE_SIZE", "4096")
 
 		cfg, limits, err := loadConfig()
@@ -620,12 +635,7 @@ func TestLoadConfig(t *testing.T) {
 	})
 
 	t.Run("MAX_FILE_SIZE 支持 GiB 后缀", func(t *testing.T) {
-		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("USERS_FILE", writeUsersFile(t))
-		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
-		t.Setenv("READYZ_TOKEN", "")
-		t.Setenv("TZ", "")
+		writeUsersFile(t, prepareConfigEnv(t))
 		t.Setenv("MAX_FILE_SIZE", "2GiB")
 		cfg, _, err := loadConfig()
 		if err != nil {
@@ -637,12 +647,7 @@ func TestLoadConfig(t *testing.T) {
 	})
 
 	t.Run("MAX_FILE_SIZE 非法时启动失败", func(t *testing.T) {
-		t.Setenv("DATA_DIR", t.TempDir())
-		t.Setenv("USERS_FILE", writeUsersFile(t))
-		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
-		t.Setenv("READYZ_TOKEN", "")
-		t.Setenv("TZ", "")
+		writeUsersFile(t, prepareConfigEnv(t))
 		t.Setenv("MAX_FILE_SIZE", "1.5GiB")
 		if _, _, err := loadConfig(); err == nil {
 			t.Fatal("非法 MAX_FILE_SIZE 应当让 loadConfig() 报错")
@@ -650,36 +655,15 @@ func TestLoadConfig(t *testing.T) {
 	})
 
 	t.Run("DATA_DIR 未设置时用默认 /data", func(t *testing.T) {
-		t.Setenv("DATA_DIR", "")
-		t.Setenv("USERS_FILE", writeUsersFile(t))
-		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
-		t.Setenv("READYZ_TOKEN", "")
-		cfg, _, err := loadConfig()
-		if err != nil {
-			t.Fatalf("loadConfig() 报错: %v", err)
-		}
-		if cfg.app.DataDir != defaultDataDir {
-			t.Errorf("DataDir = %q，想要默认 %q", cfg.app.DataDir, defaultDataDir)
+		t.Setenv("DATA_DIR", " ")
+		if got := readDataDir(); got != defaultDataDir {
+			t.Errorf("DataDir = %q，想要默认 %q", got, defaultDataDir)
 		}
 	})
 
-	t.Run("USERS_FILE 未设置时读 DATA_DIR/users.yaml", func(t *testing.T) {
-		dataDir := t.TempDir()
-		path := filepath.Join(dataDir, defaultUsersFileName)
-		content := []byte(`users:
-  - name: tester
-    password: tester_password_0123456789
-    permissions: [read, write]
-`)
-		if err := os.WriteFile(path, content, 0o600); err != nil {
-			t.Fatalf("写用户表失败: %v", err)
-		}
-		t.Setenv("DATA_DIR", dataDir)
-		t.Setenv("USERS_FILE", "")
-		t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-		t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
-		t.Setenv("READYZ_TOKEN", "")
+	t.Run("用户表固定读 DATA_DIR/users.yaml", func(t *testing.T) {
+		dataDir := prepareConfigEnv(t)
+		path := writeUsersFile(t, dataDir)
 		cfg, _, err := loadConfig()
 		if err != nil {
 			t.Fatalf("loadConfig() 报错: %v", err)
@@ -691,32 +675,40 @@ func TestLoadConfig(t *testing.T) {
 
 	missingCases := []struct {
 		name   string
-		mutate func()
+		mutate func(dataDir string)
 	}{
-		{name: "用户表默认位置没有文件", mutate: func() { t.Setenv("USERS_FILE", "") }},
-		{name: "用户表文件不存在", mutate: func() { t.Setenv("USERS_FILE", filepath.Join(t.TempDir(), "missing.yaml")) }},
-		{name: "用户表里没有用户", mutate: func() { t.Setenv("USERS_FILE", writeUsersFileContent(t, "users: []\n")) }},
-		{name: "用户表里有未知权限", mutate: func() {
-			t.Setenv("USERS_FILE", writeUsersFileContent(t, `users:
+		{name: "用户表缺失", mutate: func(dataDir string) {
+			if err := os.Remove(filepath.Join(dataDir, usersFileName)); err != nil {
+				t.Fatalf("删除用户表失败: %v", err)
+			}
+		}},
+		{name: "用户表位置是目录", mutate: func(dataDir string) {
+			path := filepath.Join(dataDir, usersFileName)
+			if err := os.Remove(path); err != nil {
+				t.Fatalf("删除用户表失败: %v", err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatalf("创建目录失败: %v", err)
+			}
+		}},
+		{name: "用户表里没有用户", mutate: func(dataDir string) {
+			writeUsersFileContent(t, dataDir, "users: []\n")
+		}},
+		{name: "用户表里有未知权限", mutate: func(dataDir string) {
+			writeUsersFileContent(t, dataDir, `users:
   - name: tester
     password: tester_password_0123456789
     permissions: [read, admin]
-`))
+`)
 		}},
-		{name: "缺 SESSION_SIGNING_KEY", mutate: func() { t.Setenv("SESSION_SIGNING_KEY", "") }},
-		{name: "缺 URL_SIGNATURE_KEY", mutate: func() { t.Setenv("URL_SIGNATURE_KEY", "") }},
+		{name: "缺 SESSION_SIGNING_KEY", mutate: func(string) { t.Setenv("SESSION_SIGNING_KEY", "") }},
+		{name: "缺 URL_SIGNATURE_KEY", mutate: func(string) { t.Setenv("URL_SIGNATURE_KEY", "") }},
 	}
 	for _, item := range missingCases {
 		t.Run(item.name, func(t *testing.T) {
-			t.Setenv("DATA_DIR", t.TempDir())
-			t.Setenv("USERS_FILE", writeUsersFile(t))
-			t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
-			t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
-			t.Setenv("READYZ_TOKEN", "")
-			t.Setenv("HOST", "")
-			t.Setenv("PORT", "")
-			t.Setenv("TZ", "")
-			item.mutate()
+			dataDir := prepareConfigEnv(t)
+			writeUsersFile(t, dataDir)
+			item.mutate(dataDir)
 			if _, _, err := loadConfig(); err == nil {
 				t.Fatal("缺配置时 loadConfig() 应当报错")
 			}

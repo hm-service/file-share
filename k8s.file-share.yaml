@@ -5,8 +5,7 @@ metadata:
     name: file-share-env
 data:
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
-    # 用户表默认读 DATA_DIR/users.yaml：下面的 Secret users 以 subPath 挂成 /data/users.yaml。
-    # 放到别的路径时再设 USERS_FILE 指过去。
+    # 用户表固定读 DATA_DIR/users.yaml：下面的 Secret users 以 subPath 挂成 /data/users.yaml。
     # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/blobs）：
     # 桶必须已存在；S3_BUCKET 默认 file-share、S3_PREFIX 默认 blobs（key 为 blobs/xx/yy/<sha>），
     # 多实例共桶时每个实例用不同的 S3_PREFIX。
@@ -120,8 +119,8 @@ spec:
           volumeMounts:
               - name: data
                 mountPath: /data
-              # 用户表：Secret 里的 users.yaml 直接挂成数据目录下的默认路径，
-              # 应用不必再配 USERS_FILE。改用户表要重启 Pod（subPath 挂载不随 Secret 热更新）。
+              # 用户表：Secret 里的 users.yaml 挂成数据目录下的固定路径，
+              # 改用户表要重启 Pod（subPath 挂载不随 Secret 热更新）。
               - name: users
                 mountPath: /data/users.yaml
                 subPath: users.yaml

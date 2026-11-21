@@ -33,9 +33,9 @@ const defaultMaxFileSize = 2 << 30 // 2147483648
 // defaultDataDir 是未设置 DATA_DIR 时的默认数据目录：容器部署时 /data 由卷挂载进来。
 const defaultDataDir = "/data"
 
-// defaultUsersFileName 是未设置 USERS_FILE 时的用户表文件名：放在 DATA_DIR 下，
+// usersFileName 是数据目录下的用户表文件名：用户表固定读 DATA_DIR/users.yaml，
 // 与库文件、blob 目录同级；容器部署时由 Secret 挂成这个文件。
-const defaultUsersFileName = "users.yaml"
+const usersFileName = "users.yaml"
 
 // initLogger 把默认 logger 换成输出到 stdout 的 JSON handler，
 // 时间字段按约定叫 timestamp。
@@ -209,13 +209,9 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if err != nil {
 		return zero, limits, err
 	}
-	// 用户表默认在 DATA_DIR/users.yaml：容器部署时把 Secret 挂成这个文件即可，
-	// 本地部署把 users.yaml 放进数据目录就行，不必多设一个环境变量。
-	usersPath := strings.TrimSpace(os.Getenv("USERS_FILE"))
-	if usersPath == "" {
-		usersPath = filepath.Join(dataDir, defaultUsersFileName)
-	}
-	users, err := app.LoadUsersFile(usersPath)
+	// 用户表固定读 DATA_DIR/users.yaml：容器部署时把 Secret 挂成这个文件，
+	// 本地部署把 users.yaml 放进数据目录。
+	users, err := app.LoadUsersFile(filepath.Join(dataDir, usersFileName))
 	if err != nil {
 		return zero, limits, err
 	}
