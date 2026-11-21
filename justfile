@@ -126,4 +126,6 @@ push message:
     else
         git commit -m "$1"
     fi
-    git push
+    # 两个远端都要推：origin（GitHub）与 local（自建）
+    git push origin
+    git push local

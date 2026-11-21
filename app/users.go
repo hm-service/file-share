@@ -152,5 +152,10 @@ func parsePermissions(names []string) (Permission, error) {
 	if permissions == 0 {
 		return 0, errors.New("permissions must contain at least one of read, write")
 	}
+	// 只读浏览是写操作的前提（界面与 /api/files、/api/me 都要求 read），
+	// 只配 write 的账号登录后等于不可用，直接在加载时拒绝。
+	if permissions.Has(PermissionWrite) && !permissions.Has(PermissionRead) {
+		return 0, errors.New("write requires read; add read to permissions")
+	}
 	return permissions, nil
 }

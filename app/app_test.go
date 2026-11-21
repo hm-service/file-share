@@ -1,8 +1,10 @@
 package app_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -117,6 +119,69 @@ func TestOpenRejectsLegacyData(t *testing.T) {
 }
 
 // 旧版本的 files/ 目录已经不再兼容：启动只认 blobs/ 与 temp/，既不迁移也不拦截。
+// 旧布局（blobs/ 空、files/ 有内容）要打一条带迁移命令的警告：升级后文件看起来「消失」时，
+// 运维能从日志里拿到原因与动作。这里只验证日志，应用不改动任何文件。
+func TestOpenWarnsLegacyBlobDir(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	dataDir := t.TempDir()
+	legacy := filepath.Join(dataDir, "files")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatalf("准备旧 files 目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "blob"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("写旧 blob 失败: %v", err)
+	}
+	instance, err := app.Open(app.Config{
+		DataDir:           dataDir,
+		SessionSigningKey: testenv.SessionSigningKey,
+		Users:             testenv.DefaultUsers(),
+		MaxFileSize:       1024,
+	})
+	if err != nil {
+		t.Fatalf("Open() 报错: %v", err)
+	}
+	defer instance.Close()
+
+	logged := buf.String()
+	if !strings.Contains(logged, "legacy blob directory found") {
+		t.Errorf("启动日志 = %q，想要包含 legacy blob directory found", logged)
+	}
+	if !strings.Contains(logged, "mv files blobs") {
+		t.Errorf("启动日志 = %q，想要带迁移命令提示", logged)
+	}
+
+	// blobs/ 已经有内容时不再提示：那是有意迁移过的部署。
+	if err := os.WriteFile(filepath.Join(dataDir, "blobs", "current"), []byte("y"), 0o600); err != nil {
+		t.Fatalf("写 blobs 失败: %v", err)
+	}
+	buf.Reset()
+	warnThroughOpen(t, dataDir)
+	if buf.Len() != 0 {
+		t.Errorf("blobs/ 非空时不该再提示: %q", buf.String())
+	}
+}
+
+// warnThroughOpen 用最小配置再打开一次，触发旧布局检测。
+func warnThroughOpen(t *testing.T, dataDir string) {
+	t.Helper()
+	instance, err := app.Open(app.Config{
+		DataDir:           dataDir,
+		SessionSigningKey: testenv.SessionSigningKey,
+		Users:             testenv.DefaultUsers(),
+		MaxFileSize:       1024,
+	})
+	if err != nil {
+		t.Fatalf("Open() 报错: %v", err)
+	}
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close() 报错: %v", err)
+	}
+}
+
 func TestOpenIgnoresLegacyFilesDir(t *testing.T) {
 	dataDir := t.TempDir()
 	legacy := filepath.Join(dataDir, "files")

@@ -10,6 +10,7 @@
 - 认证是 YAML 用户表 + 明文密码 + SHA-256 恒时比较；会话凭据是 v2 `<exp>|<nonce>|<username>`。
   不用 argon2，也不用 `uuid|exp|nonce` 的 v1 格式。
 - 用户表固定读 `DATA_DIR/users.yaml`，不提供 `USERS_FILE` 这类路径覆盖。
+- 权限 `write` 必须同时带 `read`（只写 `write` 的配置在加载时被拒绝）。
 - 签名 URL 只有 10 分钟与 24 小时两档，不做时间取整。
 - `TZ` 默认空（Go 默认时区）；`READYZ_TOKEN` 可空；`SESSION_SIGNING_KEY` / `URL_SIGNATURE_KEY` 必填。
 - 数据库用 TEXT 主键、表名 `file` / `groups`，`PRAGMA user_version` 逐级迁移并保留旧库兼容。

@@ -712,6 +712,13 @@ func TestLoadConfig(t *testing.T) {
 		{name: "用户表里没有用户", mutate: func(dataDir string) {
 			writeUsersFileContent(t, dataDir, "users: []\n")
 		}},
+		{name: "用户表里只有 write", mutate: func(dataDir string) {
+			writeUsersFileContent(t, dataDir, `users:
+  - name: tester
+    password: tester_password_0123456789
+    permissions: [write]
+`)
+		}},
 		{name: "用户表里有未知权限", mutate: func(dataDir string) {
 			writeUsersFileContent(t, dataDir, `users:
   - name: tester

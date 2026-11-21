@@ -89,6 +89,7 @@ func TestAuthRequiredRoutes(t *testing.T) {
 		{http.MethodGet, "/api/files/abc/download-url"},
 		{http.MethodPost, "/api/groups"},
 		{http.MethodPost, "/api/groups/rename"},
+		{http.MethodPost, "/api/groups/delete"},
 		{http.MethodPut, "/api/groups/order"},
 		{http.MethodPatch, "/api/files/abc"},
 		{http.MethodDelete, "/api/files/abc"},
@@ -318,6 +319,7 @@ func TestReadOnlyPermissions(t *testing.T) {
 		{http.MethodPost, "/api/files/" + created.ID + "/favorite"},
 		{http.MethodPost, "/api/groups"},
 		{http.MethodPost, "/api/groups/rename"},
+		{http.MethodPost, "/api/groups/delete"},
 		{http.MethodPost, "/api/groups/delete"},
 		{http.MethodPut, "/api/groups/order"},
 	}

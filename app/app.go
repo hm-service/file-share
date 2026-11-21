@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +41,10 @@ const (
 	tempDirName  = "temp"
 	dbFileName   = "file-share.db"
 )
+
+// legacyBlobDirName 是旧版本存 blob 的目录名。当前只认 blobs/，不做改名兼容，
+// 只在检测到旧布局时提醒迁移 —— 否则升级后列表照常、下载却全部 404，没人知道为什么。
+const legacyBlobDirName = "files"
 
 // StorageInfo 描述当前 blob 的存放方案：本地目录或 S3 对象存储。
 // 只含可公开的信息（后端类型、桶名、前缀），不含 endpoint 与凭据；
@@ -105,6 +110,7 @@ func Open(cfg Config) (*App, error) {
 	if err := ensureDir(blobsDir, "blobs"); err != nil {
 		return nil, err
 	}
+	warnLegacyBlobDir(cfg.DataDir, blobsDir)
 	tempDir := filepath.Join(cfg.DataDir, tempDirName)
 	if err := ensureDir(tempDir, "upload temp"); err != nil {
 		return nil, err
@@ -196,6 +202,26 @@ func prepareDataDir(dataDir string) error {
 		return fmt.Errorf("remove DATA_DIR probe: %w", err)
 	}
 	return nil
+}
+
+// warnLegacyBlobDir 在 blobs/ 为空而旧的 files/ 有内容时提醒迁移。只打日志：
+// 自动改名与拒绝启动都属于反向兼容，当前版本明确不做。
+func warnLegacyBlobDir(dataDir, blobsDir string) {
+	legacy := filepath.Join(dataDir, legacyBlobDirName)
+	if !dirHasEntries(legacy) || dirHasEntries(blobsDir) {
+		return
+	}
+	slog.Warn("legacy blob directory found",
+		slog.String("legacy_dir", legacy),
+		slog.String("blobs_dir", blobsDir),
+		slog.String("hint", "old versions stored blobs under files/; stop the service and run `mv files blobs` inside DATA_DIR, otherwise existing files will 404"),
+	)
+}
+
+// dirHasEntries 报告目录存在且至少有一个条目。
+func dirHasEntries(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
 }
 
 // ensureDir 建出 DATA_DIR 下的固定子目录并收紧权限。子目录由应用自己维护，

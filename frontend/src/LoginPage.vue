@@ -24,11 +24,20 @@ function isAuthPage(path: string): boolean {
   return path === "/auth" || path.startsWith("/auth?") || path.startsWith("/auth/");
 }
 
-/** 登录成功后回哪里：只接受站内路径，避免被 ?next= 带到别的站点。 */
+/**
+ * 登录成功后回哪里：只接受站内路径，避免被 ?next= 带到别的站点。
+ * 不能只做字符串前缀判断：按 URL 规则 `//host`、`/\\host` 都会被解析成外站地址。
+ */
 function afterLoginURL(): string {
   const next = new URLSearchParams(location.search).get("next") ?? "";
-  if (!next.startsWith("/") || next.startsWith("//") || isAuthPage(next)) return "/";
-  return next;
+  let url: URL;
+  try {
+    url = new URL(next, location.origin);
+  } catch {
+    return "/";
+  }
+  if (url.origin !== location.origin || isAuthPage(url.pathname + url.search)) return "/";
+  return url.pathname + url.search;
 }
 
 async function submit(): Promise<void> {
