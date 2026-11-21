@@ -105,7 +105,7 @@ func (a *App) CheckFile(ctx context.Context, clientSHA, filename string) (file *
 	}
 	if err != nil {
 		slog.Error("stat blob for instant upload failed", slog.Any("error", err))
-		return nil, false, core.Fail(500, "internal")
+		return nil, false, storageFailure(err)
 	}
 
 	a.mu.Lock()
@@ -239,11 +239,10 @@ func (a *App) issueSignedURL(ctx context.Context, id string, exp int64) (string,
 		return "", storeFailure(err, "internal")
 	}
 	if _, err := a.Blobs.Head(ctx, record.SHA256); err != nil {
-		if errors.Is(err, ErrBlobNotFound) {
-			return "", core.Fail(404, "file.not-found")
+		if !errors.Is(err, ErrBlobNotFound) {
+			slog.Error("stat blob for signed url failed", slog.Any("error", err))
 		}
-		slog.Error("stat blob for signed url failed", slog.Any("error", err))
-		return "", core.Fail(500, "internal")
+		return "", storageFailure(err)
 	}
 	return a.signurl.SignedURL("/s/"+record.ID, exp), nil
 }
@@ -309,12 +308,11 @@ func (a *App) OpenDownload(ctx context.Context, id string) (*DownloadedFile, err
 func (a *App) openBlob(ctx context.Context, record *db.File) (*DownloadedFile, error) {
 	blob, err := a.Blobs.Open(ctx, record.SHA256)
 	if err != nil {
-		if errors.Is(err, ErrBlobNotFound) {
-			// 记录在而 blob 丢了：对外与「记录不存在」一样是 404，不泄露存储后端的状态。
-			return nil, core.Fail(404, "file.not-found")
+		if !errors.Is(err, ErrBlobNotFound) {
+			slog.Error("open blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
 		}
-		slog.Error("open blob failed", slog.String("sha256", record.SHA256), slog.Any("error", err))
-		return nil, core.Fail(500, "internal")
+		// 记录在而 blob 丢了：对外与「记录不存在」一样是 404，不泄露存储后端的状态。
+		return nil, storageFailure(err)
 	}
 	return &DownloadedFile{File: record, Blob: blob}, nil
 }

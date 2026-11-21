@@ -120,7 +120,7 @@ podman kube play k8s.file-share.yaml
 | --- | --- | --- |
 | `POST` | `/api/auth` | 用 `AUTH_TOKEN` 换会话 |
 | `GET` | `/api/files` | 文件列表、全部文件夹（含空文件夹）与单文件上传上限（`max_file_size`） |
-| `GET` | `/api/storage` | 当前 blob 存放方案（本地 / S3 桶与前缀） |
+| `GET` | `/api/storage` | 当前 blob 存放方案（本地 / S3 桶与前缀）与后端可达性（`healthy`） |
 | `POST` | `/api/check_file` | 秒传预检 |
 | `POST` | `/api/upload` | 上传（流式校验 SHA-256） |
 | `POST` | `/api/files/{id}/favorite` | 切换收藏 |

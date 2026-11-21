@@ -30,6 +30,9 @@ func validBlobSHA(sha string) error {
 type BlobStore interface {
 	// Kind 返回后端的简短名字（local / s3），只用于日志。
 	Kind() string
+	// Check 探测后端当前是否可用：本地后端确认 blob 目录还在，S3 后端探一次桶
+	// （HeadBucket）。只用于 /api/storage 的健康提示，不参与 blob 的读写路径。
+	Check(ctx context.Context) error
 	// Head 返回 blob 的字节数；blob 不存在返回 ErrBlobNotFound。
 	Head(ctx context.Context, sha string) (size int64, err error)
 	// PutFile 把本地文件 path 的内容存成 blob。成功后 path 不再存在

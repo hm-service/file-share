@@ -71,11 +71,15 @@ export interface UploadResponse {
   sha256: string;
 }
 
-/** GET /api/storage：当前 blob 的存放方案。 */
+/** GET /api/storage：当前 blob 的存放方案，以及后端此刻是否可达。 */
 export interface StorageInfo {
   backend: "local" | "s3";
   bucket?: string;
   prefix?: string;
+  /** 每次请求实时探测：false 表示存储后端连不上（下载、上传会失败）。 */
+  healthy: boolean;
+  /** healthy 为 false 时的本地化错误文案。 */
+  error?: string;
 }
 
 /** 内容区里的一行子文件夹：path 是完整路径，fileCount 是子树（含后代）的文件数。 */

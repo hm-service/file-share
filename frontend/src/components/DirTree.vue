@@ -29,6 +29,8 @@ const props = defineProps<{
   /** 侧栏底部的存储提示文案（空串表示不显示）。 */
   storageText: string;
   storageHint: string;
+  /** 存储后端此刻是否可达：不可达时底部圆点变红。 */
+  storageHealthy: boolean;
   /** 是否有内部文件正在拖拽：内部拖拽的 dataTransfer 不带 Files 类型。 */
   internalDrag: boolean;
   /** 当前视图是否还能新建文件夹（三级文件夹下不能再建）。 */
@@ -241,7 +243,7 @@ function onDrop(event: DragEvent, path: string): void {
     </button>
 
     <div v-if="storageText" class="storage" :title="storageHint">
-      <span class="storage-dot"></span>
+      <span class="storage-dot" :class="{ 'is-bad': !storageHealthy }"></span>
       <span class="storage-text">{{ storageText }}</span>
     </div>
   </aside>
@@ -517,6 +519,12 @@ function onDrop(event: DragEvent, path: string): void {
   border-radius: 50%;
   background: var(--green);
   box-shadow: 0 0 0 3px rgb(14 159 110 / 0.14);
+}
+
+/* 存储后端连不上：圆点变红，提示下载 / 上传会失败 */
+.storage-dot.is-bad {
+  background: var(--rose);
+  box-shadow: 0 0 0 3px rgb(225 29 72 / 0.14);
 }
 
 .storage-text {

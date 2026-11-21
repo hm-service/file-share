@@ -80,6 +80,19 @@ func newS3BlobStore(cfg S3Config) (*s3BlobStore, error) {
 
 func (s *s3BlobStore) Kind() string { return "s3" }
 
+// Check 探一次桶：只读配置时看不出「连不上 / 凭据错 / 桶被删」，
+// 必须真实发一个 HeadBucket 才能区分。
+func (s *s3BlobStore) Check(ctx context.Context) error {
+	exists, err := s.client.BucketExists(ctx, s.bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("bucket %q does not exist", s.bucket)
+	}
+	return nil
+}
+
 // key 按两层散列前缀布局对象：前 2 位 / 第 3-4 位 / 完整 sha。
 // 调用方都用 validBlobSHA 校验过长度，这里可以安全切片。
 func (s *s3BlobStore) key(sha string) string {

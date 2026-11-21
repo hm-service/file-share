@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -19,7 +20,29 @@ func newLocalBlobStore(dir string) BlobStore { return &localBlobStore{dir: dir} 
 
 func (s *localBlobStore) Kind() string { return "local" }
 
+// Check 确认 blob 目录还在：本地后端没有远端依赖，目录被移走 / 卷未挂载才算故障。
+func (s *localBlobStore) Check(_ context.Context) error {
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		return fmt.Errorf("blob dir %s: %w", s.dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("blob dir %s is not a directory", s.dir)
+	}
+	return nil
+}
+
 func (s *localBlobStore) path(sha string) string { return filepath.Join(s.dir, sha) }
+
+// blobMissing 判断 stat/open 的错误是不是「blob 文件不存在」。blob 目录本身不见了
+// （卷未挂载、目录被移走）属于存储不可用，不能冒充成 404 —— 否则界面会报「文件不存在」。
+func (s *localBlobStore) blobMissing(err error) bool {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	_, dirErr := os.Stat(s.dir)
+	return dirErr == nil
+}
 
 func (s *localBlobStore) Head(_ context.Context, sha string) (int64, error) {
 	if err := validBlobSHA(sha); err != nil {
@@ -27,7 +50,7 @@ func (s *localBlobStore) Head(_ context.Context, sha string) (int64, error) {
 	}
 	info, err := os.Stat(s.path(sha))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if s.blobMissing(err) {
 			return 0, ErrBlobNotFound
 		}
 		return 0, err
@@ -50,7 +73,7 @@ func (s *localBlobStore) Open(_ context.Context, sha string) (io.ReadSeekCloser,
 	}
 	file, err := os.Open(s.path(sha))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if s.blobMissing(err) {
 			return nil, ErrBlobNotFound
 		}
 		return nil, err

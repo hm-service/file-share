@@ -35,7 +35,7 @@ const props = defineProps<{
   maxFileSize?: number;
 }>();
 
-const emit = defineEmits<{ uploaded: [] }>();
+const emit = defineEmits<{ uploaded: []; failed: [] }>();
 
 type UploadStatus =
   | "pending"
@@ -257,6 +257,8 @@ async function processItem(item: QueueItem): Promise<void> {
     } else {
       item.status = "failed";
       item.error = messageOf(error);
+      // 上传失败可能是存储后端连不上：让父组件刷新侧栏的存储状态。
+      emit("failed");
     }
   } finally {
     item.controller = null;

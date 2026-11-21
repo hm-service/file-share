@@ -55,6 +55,7 @@ var catalog = map[string]entry{
 	"store.create":             {"新建分组失败", "Failed to create the group"},
 	"order.invalid":            {"排序数据无效", "Invalid ordering data"},
 	"internal":                 {"服务器内部错误", "Internal server error"},
+	"storage.unavailable":      {"存储服务暂时不可用，请稍后重试", "Storage service is temporarily unavailable, please retry later"},
 	"not-found":                {"资源不存在", "Not found"},
 	"method-not-allowed":       {"方法不允许", "Method not allowed"},
 	"session.issue":            {"签发登录凭据失败", "Failed to issue a session credential"},

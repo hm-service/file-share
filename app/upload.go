@@ -140,13 +140,13 @@ func (a *App) FinishUpload(ctx context.Context, upload *Upload, filename, client
 		if err := a.Blobs.PutFile(ctx, clientSHA, upload.tempPath, upload.Size()); err != nil {
 			slog.Error("store upload blob failed", slog.Any("error", err))
 			upload.discardTemp()
-			return nil, core.Fail(500, "upload.write")
+			return nil, storageFailure(err)
 		}
 		upload.consumeTemp()
 	default:
 		slog.Error("stat blob before storing upload failed", slog.Any("error", err))
 		upload.discardTemp()
-		return nil, core.Fail(500, "upload.write")
+		return nil, storageFailure(err)
 	}
 
 	a.mu.Lock()

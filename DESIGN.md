@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS groups (
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/files` | `{"files":[…],"groups":[…],"max_file_size":<int64>}`；文件按 `sort_order` 升序、创建时间倒序；`groups` 含空文件夹 |
-| GET | `/api/storage` | 当前 blob 方案：`{"backend":"local"}` 或 `{"backend":"s3","bucket","prefix"}`；不含 endpoint 与凭据 |
+| GET | `/api/storage` | 当前 blob 方案：`{"backend":"local"}` 或 `{"backend":"s3","bucket","prefix"}`，外加实时探测的 `healthy` 与不可用时的 `error` 文案；不含 endpoint 与凭据 |
 | POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）：命中则建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
 | POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256，成功 `{"id","sha256"}`，超限 413 |
 | PATCH | `/api/files/{id}` | 重命名 / 改文件夹 `{"filename","group_path"}`（至少一个，空串 = 未分组，改文件夹移到末尾） |
@@ -183,7 +183,12 @@ CREATE TABLE IF NOT EXISTS groups (
 
 ### 6.4 上传与下载链路
 
-两种 blob 后端语义一致，区别只在临时文件如何变成 blob。上传先完整写本地临时文件：
+两种 blob 后端语义一致，区别只在临时文件如何变成 blob。后端故障（连不上、凭据失效、桶被删、
+本地 blob 目录丢失）在业务层统一回 503 `storage.unavailable`，与「服务器内部错误」区分开；
+对象不存在仍是 404。`/api/storage` 每次请求实时探测后端（S3 探桶、本地确认 blob 目录），
+响应带 `healthy` 与不可用时的 `error`，侧栏底部的存储提示据此变红。
+
+上传先完整写本地临时文件：
 `multipart` 字段顺序不固定，且要边收边算哈希、超限早拒，请求结束才决定临时文件留不留。
 同一 sha 的「Head + 落位 + 插记录」由 64 路 sha 分片锁串行，网络 IO 不占 `App.mu`；
 落库用不带取消信号的 ctx，避免客户端断连让已收完的内容落库半途而废。

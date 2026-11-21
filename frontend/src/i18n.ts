@@ -125,6 +125,7 @@ export type MessageKey =
   | "storage.local"
   | "storage.s3-hint"
   | "storage.local-hint"
+  | "storage.unreachable"
   | "nav.all"
   | "nav.tree"
   | "nav.resize-sidebar"
@@ -274,6 +275,7 @@ const messages: Record<MessageKey, Message> = {
     zh: "文件内容存放在 S3 对象存储中",
     en: "File contents are stored in S3 object storage",
   },
+  "storage.unreachable": { zh: "（无法连接）", en: " (unreachable)" },
   "storage.local-hint": {
     zh: "文件内容存放在服务器本地磁盘",
     en: "File contents are stored on the server's local disk",

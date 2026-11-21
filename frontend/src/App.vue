@@ -64,6 +64,8 @@ const view = ref<View>({ kind: "recent" });
 const query = ref("");
 
 const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
+/** 定时探测存储状态的定时器（页面可见时才真正请求）。 */
+let storageTimer = 0;
 const maxFileSize = ref(0);
 const storage = ref<StorageInfo | null>(null);
 /** 窄屏抽屉：侧栏在移动端默认收起。 */
@@ -347,6 +349,8 @@ function showActionError(error: unknown): void {
   actionErrorTimer = window.setTimeout(() => {
     actionError.value = "";
   }, 5000);
+  // 操作失败可能是存储后端连不上：顺手刷新一次状态，让侧栏的存储提示跟上。
+  void loadStorage();
 }
 
 /** 拉存储方案给侧栏提示用；失败只影响这行提示，不影响列表与操作。 */
@@ -361,14 +365,23 @@ async function loadStorage(): Promise<void> {
 const storageText = computed(() => {
   const info = storage.value;
   if (!info) return "";
-  return info.backend === "s3"
-    ? t("storage.s3-detail", { bucket: info.bucket ?? "", prefix: info.prefix ?? "" })
-    : t("storage.local");
+  const detail =
+    info.backend === "s3"
+      ? t("storage.s3-detail", { bucket: info.bucket ?? "", prefix: info.prefix ?? "" })
+      : t("storage.local");
+  // 后端已连不上时不隐藏这行提示，而是标出来：用户点下载 / 上传前就知道会失败。
+  return info.healthy ? detail : `${detail}${t("storage.unreachable")}`;
 });
 
-const storageHint = computed(() =>
-  storage.value?.backend === "s3" ? t("storage.s3-hint") : t("storage.local-hint"),
-);
+const storageHint = computed(() => {
+  const info = storage.value;
+  if (!info) return "";
+  if (!info.healthy && info.error) return info.error;
+  return info.backend === "s3" ? t("storage.s3-hint") : t("storage.local-hint");
+});
+
+/** 未知（还没拉到）时按健康处理，避免页面一闪就红点。 */
+const storageHealthy = computed(() => storage.value?.healthy !== false);
 
 /**
  * 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。
@@ -855,6 +868,10 @@ onMounted(() => {
   syncViewFromLocation();
   void refresh();
   void loadStorage();
+  // 定时重新探测存储状态：S3 恢复后侧栏的提示能自己变回绿色，不用等用户操作。
+  storageTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") void loadStorage();
+  }, 30000);
 });
 
 onBeforeUnmount(() => {
@@ -863,6 +880,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("dragend", onFileDragEnd);
   window.removeEventListener("popstate", syncViewFromLocation);
   window.removeEventListener("resize", onWindowResize);
+  window.clearInterval(storageTimer);
   stopSidebarResize?.();
   window.clearTimeout(actionErrorTimer);
 });
@@ -938,6 +956,7 @@ onBeforeUnmount(() => {
           :folded="folded"
           :storage-text="storageText"
           :storage-hint="storageHint"
+          :storage-healthy="storageHealthy"
           :internal-drag="draggingFileId !== null"
         :can-create="canCreateFolder"
           @show-recent="showRecent"
@@ -1180,6 +1199,7 @@ onBeforeUnmount(() => {
       :target-group="uploadTarget"
       :max-file-size="maxFileSize"
       @uploaded="refresh"
+      @failed="loadStorage"
     />
 
     <div v-if="actionError" class="toast" role="status">{{ actionError }}</div>
