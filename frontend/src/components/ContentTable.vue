@@ -441,7 +441,8 @@ onBeforeUnmount(() => {
     --col-size: 0px;
     --col-time: 0px;
     --col-hash: 0px;
-    --col-actions: 150px;
+    /* 移动端只显示下载 / 收藏 / 更多三个图标，收窄操作列把宽度让给文件名 */
+    --col-actions: 100px;
   }
 
   .table-head,

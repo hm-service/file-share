@@ -145,8 +145,7 @@ export type MessageKey =
   | "content.search-results"
   | "content.drop-hint"
   | "content.search-count"
-  | "content.folder-empty"
-  | "action.new-folder";
+  | "content.folder-empty";
 
 interface Message {
   readonly zh: string;
@@ -313,7 +312,6 @@ const messages: Record<MessageKey, Message> = {
   },
   "content.search-count": { zh: "{count} 个结果", en: "{count} results" },
   "content.folder-empty": { zh: "这个文件夹里还没有文件", en: "No files in this folder yet" },
-  "action.new-folder": { zh: "新建子文件夹", en: "New sub-folder" },
 };
 
 /** 浏览器语言 / 存下来的值归一化；认不出来返回空串。 */

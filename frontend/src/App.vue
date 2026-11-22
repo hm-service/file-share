@@ -940,16 +940,6 @@ onBeforeUnmount(() => {
       </label>
 
       <div class="top-actions">
-        <button
-          v-if="canWrite"
-          type="button"
-          class="btn"
-          :disabled="!canCreateFolder"
-          @click="onCreateFolder"
-        >
-          <span class="btn-icon" v-html="ICONS.plus"></span>
-          {{ t("action.new-group") }}
-        </button>
         <button v-if="canWrite" type="button" class="btn primary" @click="pickFiles">
           <span class="btn-icon" v-html="ICONS.upload"></span>
           {{ t("upload.button") }}
@@ -1071,16 +1061,6 @@ onBeforeUnmount(() => {
             >
               <span class="btn-icon" v-html="ICONS.download"></span>
               {{ t("action.download-group-size", { size: formatSize(pageFilesSize) }) }}
-            </button>
-
-            <button
-              v-if="canWrite && viewKind === 'group' && canCreateSubfolder(currentPath)"
-              type="button"
-              class="btn"
-              @click="promptState = { kind: 'new-folder', parent: currentPath }"
-            >
-              <span class="btn-icon" v-html="ICONS.plus"></span>
-              {{ t("action.new-folder") }}
             </button>
 
             <button
@@ -1805,6 +1785,11 @@ onBeforeUnmount(() => {
   .content {
     /* 底部留出 FAB 的空间，避免挡住列表最后一行 */
     padding: 14px 14px 92px;
+  }
+
+  /* 移动端没有文件拖放上传，底部的拖拽提示没有意义 */
+  .drop-hint {
+    display: none;
   }
 
   .toolbar {
