@@ -84,6 +84,7 @@ export type MessageKey =
   | "action.delete"
   | "action.move-group"
   | "action.more"
+  | "action.upload-menu"
   | "action.new-group"
   | "action.group-menu"
   | "action.create-subgroup"
@@ -223,6 +224,7 @@ const messages: Record<MessageKey, Message> = {
   "action.delete": { zh: "删除", en: "Delete" },
   "action.move-group": { zh: "移动到文件夹", en: "Move to folder" },
   "action.more": { zh: "更多操作", en: "More actions" },
+  "action.upload-menu": { zh: "上传与下载", en: "Upload and download" },
   "action.new-group": { zh: "新建文件夹", en: "New folder" },
   "action.group-menu": { zh: "文件夹操作", en: "Folder actions" },
   "action.create-subgroup": { zh: "创建子文件夹", en: "New sub-folder" },

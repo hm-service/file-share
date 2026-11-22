@@ -75,6 +75,9 @@ const currentUser = ref<UserInfo | null>(null);
 const canWrite = computed(() => currentUser.value?.permissions.includes("write") ?? false);
 /** 窄屏抽屉：侧栏在移动端默认收起。 */
 const sidebarOpen = ref(false);
+/** 窄屏断点与样式里的 @media (max-width: 900px) 保持一致；窄屏的上传走 FAB 聚合菜单。 */
+const NARROW_QUERY = window.matchMedia("(max-width: 900px)");
+const isNarrow = ref(NARROW_QUERY.matches);
 
 /* ---------- 侧栏宽度（桌面端拖右缘调节） ---------- */
 
@@ -126,6 +129,8 @@ function startSidebarResize(event: PointerEvent): void {
 /** 窗口变窄时把侧栏夹回上限以内（宽度只存内存，不覆盖任何持久值）。 */
 function onWindowResize(): void {
   sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
+  isNarrow.value = NARROW_QUERY.matches;
+  if (!isNarrow.value) closeFabMenu();
 }
 
 /* ---------- 视图与派生数据 ---------- */
@@ -799,6 +804,46 @@ function pickFiles(): void {
 /** 上传目标：当前文件夹；非文件夹视图落到未分组。 */
 const uploadTarget = computed(() => currentPath.value);
 
+/**
+ * 窄屏把上传 / 下载全部聚合进右下角的悬浮按钮：点按钮弹出菜单，省掉工具栏一行。
+ * 宽屏仍然是普通的上传按钮，点一下直接选文件。
+ */
+const fabMenuOpen = ref(false);
+
+function closeFabMenu(): void {
+  fabMenuOpen.value = false;
+}
+
+function onFabClick(): void {
+  if (!isNarrow.value) {
+    pickFiles();
+    return;
+  }
+  fabMenuOpen.value = !fabMenuOpen.value;
+}
+
+function onFabUpload(): void {
+  closeFabMenu();
+  pickFiles();
+}
+
+function onFabDownloadAll(): void {
+  closeFabMenu();
+  void onDownloadAll();
+}
+
+/** 点菜单和悬浮按钮以外的地方收起菜单（与文件行菜单同一种处理方式）。 */
+function onFabMenuPointerDown(event: PointerEvent): void {
+  const target = event.target;
+  if (target instanceof Element && target.closest(".fab-menu, .top-actions .btn.primary")) return;
+  closeFabMenu();
+}
+
+watch(fabMenuOpen, (open) => {
+  if (open) window.addEventListener("pointerdown", onFabMenuPointerDown, true);
+  else window.removeEventListener("pointerdown", onFabMenuPointerDown, true);
+});
+
 /* ---------- 整页拖放 / 文件拖到文件夹 ---------- */
 
 const dropActive = ref(false);
@@ -940,8 +985,15 @@ onBeforeUnmount(() => {
       </label>
 
       <div class="top-actions">
-        <button v-if="canWrite" type="button" class="btn primary" @click="pickFiles">
-          <span class="btn-icon" v-html="ICONS.upload"></span>
+        <button
+          v-if="canWrite"
+          type="button"
+          class="btn primary"
+          :aria-label="t('upload.button')"
+          :aria-expanded="isNarrow ? fabMenuOpen : undefined"
+          @click="onFabClick"
+        >
+          <span class="btn-icon" v-html="isNarrow && fabMenuOpen ? ICONS.close : ICONS.upload"></span>
           {{ t("upload.button") }}
         </button>
         <LocaleSwitch class="lang" />
@@ -1138,6 +1190,33 @@ onBeforeUnmount(() => {
         </div>
       </main>
     </div>
+
+    <!-- 窄屏 FAB 聚合菜单：上传与下载全部收进同一个悬浮按钮 -->
+    <Teleport to="body">
+      <div
+        v-if="isNarrow && fabMenuOpen"
+        class="row-menu fab-menu"
+        role="menu"
+        :aria-label="t('action.upload-menu')"
+      >
+        <button type="button" class="row-menu-item" role="menuitem" @click="onFabUpload">
+          <span class="row-menu-icon" v-html="ICONS.upload"></span>
+          <span class="row-menu-label">{{ t("upload.button") }}</span>
+        </button>
+        <button
+          v-if="visibleFiles.length"
+          type="button"
+          class="row-menu-item"
+          role="menuitem"
+          @click="onFabDownloadAll"
+        >
+          <span class="row-menu-icon" v-html="ICONS.download"></span>
+          <span class="row-menu-label">
+            {{ t("action.download-group-size", { size: formatSize(pageFilesSize) }) }}
+          </span>
+        </button>
+      </div>
+    </Teleport>
 
     <!-- 文件夹菜单 -->
     <Teleport to="body">
@@ -1803,6 +1882,32 @@ onBeforeUnmount(() => {
 
   .crumb {
     max-width: 140px;
+  }
+
+  /* 「下载全部」收进了 FAB 聚合菜单，工具栏不再被下载按钮挤出一行 */
+  .toolbar-right .btn {
+    display: none;
+  }
+
+  /* FAB 聚合菜单：弹出在悬浮按钮上方 */
+  .fab-menu {
+    top: auto;
+    left: auto;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px) + 54px + 10px);
+    z-index: 61;
+    width: min(280px, calc(100vw - 32px));
+  }
+
+  /* 触屏点击目标放大到 44px 上下 */
+  .fab-menu .row-menu-item {
+    padding: 12px 10px;
+    font-size: 14px;
+  }
+
+  .fab-menu .row-menu-icon:deep(svg) {
+    width: 18px;
+    height: 18px;
   }
 }
 </style>
