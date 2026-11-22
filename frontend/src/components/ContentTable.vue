@@ -71,6 +71,9 @@ function setupSortable(): void {
   if (!props.sortable || !filesEl.value) return;
   sorter = Sortable.create(filesEl.value, {
     handle: ".drag-handle",
+    delay: 150,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 4,
     animation: 150,
     ghostClass: "drag-ghost",
     chosenClass: "drag-chosen",
@@ -101,6 +104,9 @@ function setupSortableDirs(): void {
   if (!props.sortable || !dirsEl.value) return;
   sorterDirs = Sortable.create(dirsEl.value, {
     handle: ".drag-handle",
+    delay: 150,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 4,
     animation: 150,
     ghostClass: "drag-ghost",
     chosenClass: "drag-chosen",
@@ -451,6 +457,18 @@ onBeforeUnmount(() => {
   .dir-row .cell-time,
   .dir-row .cell-hash {
     display: none;
+  }
+
+  /* 竖屏下文件夹行的拖拽把手常显（触摸无 hover） */
+  .dir-row .drag-handle {
+    opacity: 1;
+    touch-action: none;
+  }
+}
+
+@media (hover: none) {
+  .dir-row .drag-handle {
+    opacity: 1;
   }
 }
 </style>

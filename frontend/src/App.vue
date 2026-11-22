@@ -929,11 +929,6 @@ onBeforeUnmount(() => {
         v-html="ICONS.menu"
       ></button>
 
-      <div class="brand">
-        <span class="brand-mark" v-html="ICONS.upload"></span>
-        <span class="brand-name">{{ t("app.title") }}</span>
-      </div>
-
       <label class="search">
         <span class="search-icon" v-html="ICONS.search"></span>
         <input
@@ -1294,36 +1289,6 @@ onBeforeUnmount(() => {
 .hamburger:deep(svg) {
   width: 19px;
   height: 19px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 0 0 auto;
-}
-
-.brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, var(--accent), #7b6cf6);
-  color: #fff;
-  box-shadow: var(--shadow-sm);
-}
-
-.brand-mark:deep(svg) {
-  width: 17px;
-  height: 17px;
-}
-
-.brand-name {
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: 0.2px;
 }
 
 .search {
@@ -1760,10 +1725,6 @@ onBeforeUnmount(() => {
     display: inline-flex;
   }
 
-  .brand-name {
-    display: none;
-  }
-
   .search {
     width: auto;
     flex: 1;
@@ -1774,17 +1735,26 @@ onBeforeUnmount(() => {
     display: none;
   }
 
+  /* 上传改为右下角悬浮按钮（FAB）：脱离顶栏，拇指可达 */
   .top-actions .btn.primary {
-    width: 34px;
-    justify-content: center;
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 60;
+    width: 54px;
+    height: 54px;
+    min-height: 54px;
     padding: 0;
+    border-radius: 50%;
+    justify-content: center;
     font-size: 0;
     gap: 0;
+    box-shadow: var(--shadow-lg);
   }
 
   .top-actions .btn.primary .btn-icon:deep(svg) {
-    width: 17px;
-    height: 17px;
+    width: 22px;
+    height: 22px;
   }
 
   .top-actions :deep(.locale-switch) {
@@ -1833,7 +1803,8 @@ onBeforeUnmount(() => {
   }
 
   .content {
-    padding: 14px 14px 20px;
+    /* 底部留出 FAB 的空间，避免挡住列表最后一行 */
+    padding: 14px 14px 92px;
   }
 
   .toolbar {

@@ -838,14 +838,26 @@ onBeforeUnmount(() => {
     display: none;
   }
 
-  .drag-handle,
   .file-group {
     display: none;
+  }
+
+  /* 竖屏也保留拖拽排序入口：触摸设备没有 hover，把手常显 */
+  .drag-handle {
+    opacity: 1;
+    touch-action: none;
   }
 
   .cell-actions .icon-btn.link,
   .cell-actions .icon-btn.group {
     display: none;
+  }
+}
+
+/* 触摸设备（含平板）没有 hover：拖拽把手常显 */
+@media (hover: none) {
+  .drag-handle {
+    opacity: 1;
   }
 }
 </style>
