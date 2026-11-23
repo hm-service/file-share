@@ -43,110 +43,55 @@ export type MessageKey =
   | "auth.error"
   | "nav.recent"
   | "nav.favorites"
-  | "nav.no-groups"
-  | "nav.ungrouped"
+  | "nav.all"
+  | "nav.root"
+  | "nav.tree"
+  | "nav.resize-sidebar"
   | "nav.search-placeholder"
   | "nav.file-count"
   | "nav.no-results"
   | "nav.empty-recent"
   | "nav.empty-favorites"
-  | "upload.button"
-  | "upload.drop-overlay"
-  | "upload.queue-title"
-  | "upload.dock-collapse"
-  | "upload.dock-expand"
-  | "upload.dock-items"
-  | "upload.status.pending"
-  | "upload.status.hashing"
-  | "upload.status.checking"
-  | "upload.status.uploading"
-  | "upload.status.uploading-speed"
-  | "upload.status.instant"
-  | "upload.status.done"
-  | "upload.status.failed"
-  | "upload.status.cancelled"
-  | "upload.error.too-big"
-  | "upload.action.remove"
-  | "upload.action.cancel"
-  | "upload.action.retry"
+  | "nav.no-groups"
   | "action.favorite"
   | "action.unfavorite"
   | "action.download"
   | "action.download-group-size"
   | "action.download-group-hint"
-  | "action.stats"
-  | "action.rename"
-  | "action.rename-group"
   | "action.copy-link"
   | "action.copy-link-24h"
-  | "action.copy-curl"
   | "action.copied"
-  | "action.delete"
-  | "action.move-group"
   | "action.more"
-  | "action.upload-menu"
-  | "action.new-group"
-  | "action.group-menu"
-  | "action.create-subgroup"
-  | "action.delete-group"
-  | "action.create"
   | "action.expand-group"
   | "action.collapse-group"
   | "action.cancel"
   | "action.close"
   | "action.logout"
-  | "file.sha256"
+  | "column.name"
+  | "column.size"
+  | "column.uploaded"
+  | "column.actions"
   | "file.detail.title"
   | "file.detail.size"
   | "file.detail.time"
   | "file.detail.group"
-  | "group.new-title"
-  | "group.new-hint"
-  | "group.rename-title"
-  | "group.new-subgroup-title"
-  | "group.delete-title"
-  | "group.delete-message"
-  | "group.delete-empty"
-  | "group.delete-files"
-  | "group.delete-files-hint"
-  | "group.stats.title"
-  | "group.stats.hint"
-  | "group.stats.files"
-  | "group.stats.file-count"
-  | "group.stats.total-size"
-  | "group.stats.distribution"
-  | "group.stats.empty"
-  | "rename.title"
-  | "confirm.delete"
+  | "file.detail.path"
   | "meta.unknown-time"
   | "lang.label"
   | "state.loading"
   | "error.load"
   | "error.copy"
   | "error.network"
-  | "storage.s3-detail"
-  | "storage.local"
-  | "storage.s3-hint"
-  | "storage.local-hint"
+  | "storage.readonly"
+  | "storage.readonly-hint"
   | "storage.unreachable"
   | "user.readonly"
-  | "user.readonly-hint"
-  | "nav.all"
-  | "nav.tree"
-  | "nav.resize-sidebar"
-  | "column.name"
-  | "column.size"
-  | "column.uploaded"
-  | "column.hash"
-  | "column.actions"
   | "content.folder-count"
   | "content.item-count"
   | "content.empty-folder"
   | "content.empty-hint"
   | "content.search-results"
-  | "content.drop-hint"
-  | "content.search-count"
-  | "content.folder-empty";
+  | "content.search-count";
 
 interface Message {
   readonly zh: string;
@@ -155,118 +100,61 @@ interface Message {
 
 const messages: Record<MessageKey, Message> = {
   "app.title": { zh: "文件分享", en: "File Share" },
-  "app.tagline": { zh: "上传、整理、分享，一个页面搞定", en: "Upload, organize and share in one place" },
-  "auth.hero-title": { zh: "把文件分享变简单", en: "File sharing, simplified" },
-  "auth.point.instant": { zh: "SHA-256 秒传与去重，不浪费空间", en: "SHA-256 instant uploads with dedupe" },
+  "app.tagline": { zh: "浏览、搜索、下载，一个页面搞定", en: "Browse, search and download in one place" },
+  "auth.hero-title": { zh: "文件随取随用", en: "Your files, always at hand" },
+  "auth.point.instant": { zh: "按目录整理，找文件更快", en: "Organized by folders for quick browsing" },
   "auth.point.share": {
     zh: "临时签名链接，10 分钟内下载免登录",
     en: "Signed links valid for 10 minutes, no sign-in to download",
   },
-  "auth.point.private": { zh: "默认私有，按用户分配读写权限", en: "Private by default with per-user read/write permissions" },
+  "auth.point.private": {
+    zh: "只读访问，浏览与下载都安全",
+    en: "Read-only access keeps browsing and downloads safe",
+  },
   "auth.title": { zh: "登录", en: "Sign in" },
-  "auth.hint": { zh: "输入用户名与密码进入文件空间", en: "Sign in with your username and password" },
+  "auth.hint": { zh: "输入用户名与密码查看文件", en: "Sign in with your username and password" },
   "auth.username-placeholder": { zh: "用户名", en: "Username" },
   "auth.password-placeholder": { zh: "密码", en: "Password" },
   "auth.submit": { zh: "进入", en: "Continue" },
   "auth.error": { zh: "登录失败，请检查用户名与密码", en: "Sign-in failed, check your username and password" },
   "nav.recent": { zh: "最近", en: "Recent" },
   "nav.favorites": { zh: "收藏", en: "Favorites" },
-  "nav.no-groups": { zh: "暂无文件夹", en: "No folders yet" },
-  "nav.ungrouped": { zh: "未分组", en: "Ungrouped" },
+  "nav.all": { zh: "全部", en: "All" },
+  "nav.root": { zh: "根目录", en: "Root" },
+  "nav.tree": { zh: "文件夹", en: "Folders" },
+  "nav.resize-sidebar": { zh: "拖动调整侧栏宽度", en: "Drag to resize sidebar" },
   "nav.search-placeholder": { zh: "搜索文件名…", en: "Search files…" },
   "nav.file-count": { zh: "共 {count} 个文件", en: "{count} files" },
   "nav.no-results": { zh: "没有匹配的文件", en: "No matching files" },
-  "nav.empty-recent": { zh: "还没有文件，上传第一个吧", en: "No files yet — upload your first one" },
+  "nav.empty-recent": { zh: "还没有文件", en: "No files yet" },
   "nav.empty-favorites": { zh: "还没有收藏的文件", en: "No favorites yet" },
-  "upload.button": { zh: "上传文件", en: "Upload files" },
-  "upload.drop-overlay": { zh: "松开即可上传", en: "Drop to upload" },
-  "upload.queue-title": { zh: "上传队列", en: "Upload queue" },
-  "upload.dock-collapse": { zh: "收起", en: "Collapse" },
-  "upload.dock-expand": { zh: "展开", en: "Expand" },
-  "upload.dock-items": { zh: "{count} 项", en: "{count} items" },
-  "upload.status.pending": { zh: "等待中", en: "Waiting" },
-  "upload.status.hashing": { zh: "计算指纹 {percent}%", en: "Checksum {percent}%" },
-  "upload.status.checking": { zh: "检查服务器…", en: "Checking server…" },
-  "upload.status.uploading": {
-    zh: "{percent}% · {loaded} / {total}",
-    en: "{percent}% · {loaded} / {total}",
-  },
-  "upload.status.uploading-speed": {
-    zh: "{percent}% · {loaded} / {total} · {speed}",
-    en: "{percent}% · {loaded} / {total} · {speed}",
-  },
-  "upload.status.instant": { zh: "秒传成功", en: "Instant upload" },
-  "upload.status.done": { zh: "上传完成", en: "Uploaded" },
-  "upload.status.failed": { zh: "上传失败", en: "Upload failed" },
-  "upload.status.cancelled": { zh: "已取消", en: "Cancelled" },
-  "upload.error.too-big": {
-    zh: "超过单文件上限 {max}",
-    en: "Exceeds the {max} per-file limit",
-  },
-  "upload.action.remove": { zh: "移除", en: "Remove" },
-  "upload.action.cancel": { zh: "取消", en: "Cancel" },
-  "upload.action.retry": { zh: "重试", en: "Retry" },
+  "nav.no-groups": { zh: "暂无文件夹", en: "No folders yet" },
   "action.favorite": { zh: "收藏", en: "Favorite" },
   "action.unfavorite": { zh: "取消收藏", en: "Unfavorite" },
   "action.download": { zh: "下载", en: "Download" },
-  "action.download-group-size": { zh: "下载本目录文件（{size}）", en: "Download files here ({size})" },
+  "action.download-group-size": { zh: "下载全部（{size}）", en: "Download all ({size})" },
   "action.download-group-hint": {
-    zh: "只下载当前文件夹里的 {count} 个文件，不含子文件夹",
-    en: "Only the {count} files directly in this folder, not subfolders",
+    zh: "下载当前视图里的 {count} 个文件",
+    en: "Download the {count} files in this view",
   },
-  "action.stats": { zh: "统计信息", en: "Statistics" },
-  "action.rename": { zh: "重命名", en: "Rename" },
-  "action.rename-group": { zh: "重命名文件夹", en: "Rename folder" },
   "action.copy-link": { zh: "复制分享链接（10 分钟）", en: "Copy share link (10 minutes)" },
   "action.copy-link-24h": { zh: "复制分享链接（24 小时）", en: "Copy share link (24 hours)" },
-  "action.copy-curl": { zh: "复制 curl 命令", en: "Copy curl command" },
   "action.copied": { zh: "已复制", en: "Copied" },
-  "action.delete": { zh: "删除", en: "Delete" },
-  "action.move-group": { zh: "移动到文件夹", en: "Move to folder" },
   "action.more": { zh: "更多操作", en: "More actions" },
-  "action.upload-menu": { zh: "上传与下载", en: "Upload and download" },
-  "action.new-group": { zh: "新建文件夹", en: "New folder" },
-  "action.group-menu": { zh: "文件夹操作", en: "Folder actions" },
-  "action.create-subgroup": { zh: "创建子文件夹", en: "New sub-folder" },
-  "action.delete-group": { zh: "删除文件夹", en: "Delete folder" },
-  "action.create": { zh: "创建", en: "Create" },
   "action.expand-group": { zh: "展开子文件夹", en: "Expand sub-folders" },
   "action.collapse-group": { zh: "折叠子文件夹", en: "Collapse sub-folders" },
   "action.cancel": { zh: "取消", en: "Cancel" },
   "action.close": { zh: "关闭", en: "Close" },
   "action.logout": { zh: "退出登录", en: "Sign out" },
-  "file.sha256": { zh: "SHA-256", en: "SHA-256" },
+  "column.name": { zh: "名称", en: "Name" },
+  "column.size": { zh: "大小", en: "Size" },
+  "column.uploaded": { zh: "修改时间", en: "Modified" },
+  "column.actions": { zh: "操作", en: "Actions" },
   "file.detail.title": { zh: "文件详情", en: "File details" },
   "file.detail.size": { zh: "大小", en: "Size" },
-  "file.detail.time": { zh: "上传时间", en: "Uploaded" },
-  "file.detail.group": { zh: "所在文件夹", en: "Folder" },
-  "group.new-title": { zh: "新建文件夹", en: "New folder" },
-  "group.new-hint": {
-    zh: "输入文件夹名；用 父/子/孙 一次建多层，最多三级",
-    en: "Folder name; use parent/child/grandchild for deeper levels",
-  },
-  "group.rename-title": { zh: "重命名文件夹", en: "Rename folder" },
-  "group.new-subgroup-title": { zh: "新建子文件夹", en: "New sub-folder" },
-  "group.delete-title": { zh: "删除文件夹「{name}」？", en: 'Delete folder "{name}"?' },
-  "group.delete-empty": { zh: "这个文件夹里没有文件。", en: "This folder has no files." },
-  "group.delete-message": {
-    zh: "该文件夹及子文件夹共 {count} 个文件；不勾选时，文件会移到「{target}」。",
-    en: '{count} files in this folder and its sub-folders. Leave unchecked to move them to "{target}".',
-  },
-  "group.delete-files": { zh: "同时删除这 {count} 个文件", en: "Also delete these {count} files" },
-  "group.delete-files-hint": {
-    zh: "这些文件会被永久删除，无法恢复。",
-    en: "These files will be permanently deleted.",
-  },
-  "group.stats.title": { zh: "统计信息", en: "Statistics" },
-  "group.stats.hint": { zh: "{path} · 含全部子文件夹", en: "{path} · including all sub-folders" },
-  "group.stats.files": { zh: "文件数量", en: "Files" },
-  "group.stats.file-count": { zh: "{count} 个", en: "{count}" },
-  "group.stats.total-size": { zh: "总文件大小", en: "Total size" },
-  "group.stats.distribution": { zh: "文件大小分布", en: "Size distribution" },
-  "group.stats.empty": { zh: "该文件夹下没有文件", en: "No files in this folder" },
-  "rename.title": { zh: "重命名文件", en: "Rename file" },
-  "confirm.delete": { zh: "确定要删除“{name}”吗？", en: 'Delete "{name}"?' },
+  "file.detail.time": { zh: "修改时间", en: "Modified" },
+  "file.detail.group": { zh: "所在目录", en: "Folder" },
+  "file.detail.path": { zh: "相对路径", en: "Relative path" },
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },
   "state.loading": { zh: "加载中…", en: "Loading…" },
@@ -276,44 +164,19 @@ const messages: Record<MessageKey, Message> = {
     en: "Failed to copy; check the browser clipboard permission",
   },
   "error.network": { zh: "网络异常", en: "Network error" },
-  "storage.s3-detail": {
-    zh: "对象存储 · {bucket}/{prefix}",
-    en: "Object storage · {bucket}/{prefix}",
+  "storage.readonly": { zh: "只读目录", en: "Read-only folder" },
+  "storage.readonly-hint": {
+    zh: "文件内容来自 SMB 共享的只读目录",
+    en: "File contents come from a read-only SMB share",
   },
-  "storage.local": { zh: "本地磁盘", en: "Local disk" },
+  "storage.unreachable": { zh: "（无法访问）", en: " (unreachable)" },
   "user.readonly": { zh: "只读", en: "read-only" },
-  "user.readonly-hint": { zh: "当前账号只能浏览和下载", en: "This account can only browse and download" },
-  "storage.s3-hint": {
-    zh: "文件内容存放在 S3 对象存储中",
-    en: "File contents are stored in S3 object storage",
-  },
-  "storage.unreachable": { zh: "（无法连接）", en: " (unreachable)" },
-  "storage.local-hint": {
-    zh: "文件内容存放在服务器本地磁盘",
-    en: "File contents are stored on the server's local disk",
-  },
-  "nav.all": { zh: "全部", en: "All" },
-  "nav.tree": { zh: "文件夹", en: "Folders" },
-  "nav.resize-sidebar": { zh: "拖动调整侧栏宽度", en: "Drag to resize sidebar" },
-  "column.name": { zh: "名称", en: "Name" },
-  "column.size": { zh: "大小", en: "Size" },
-  "column.uploaded": { zh: "上传时间", en: "Uploaded" },
-  "column.hash": { zh: "指纹", en: "Hash" },
-  "column.actions": { zh: "操作", en: "Actions" },
   "content.folder-count": { zh: "{count} 个文件夹", en: "{count} folders" },
   "content.item-count": { zh: "{count} 项", en: "{count} items" },
   "content.empty-folder": { zh: "这个文件夹是空的", en: "This folder is empty" },
-  "content.empty-hint": {
-    zh: "把文件拖到这里上传，或点右上角「上传文件」",
-    en: "Drop files here, or use Upload files at the top right",
-  },
+  "content.empty-hint": { zh: "换成别的目录或搜索文件名试试", en: "Try another folder or search for a file name" },
   "content.search-results": { zh: "搜索结果", en: "Search results" },
-  "content.drop-hint": {
-    zh: "把文件拖到这里上传到当前文件夹；拖到左侧文件夹上则直接传入该文件夹",
-    en: "Drop files here to upload into this folder, or onto a folder on the left",
-  },
   "content.search-count": { zh: "{count} 个结果", en: "{count} results" },
-  "content.folder-empty": { zh: "这个文件夹里还没有文件", en: "No files in this folder yet" },
 };
 
 /** 浏览器语言 / 存下来的值归一化；认不出来返回空串。 */

@@ -1,12 +1,9 @@
 package api
 
 import (
-	"context"
-	"errors"
-	"io"
-	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +13,8 @@ import (
 	"file-share/httpx"
 )
 
-// handleListFiles 返回全部记录与全部分组：文件按 sort_order 与创建时间排序，
-// groups 带完整路径与父路径，顺序即侧栏 / 移动端 chips 的展示顺序。
+// handleListFiles 返回只读目录里的全部文件与分组：文件按（分组、名称）排序，
+// 分组带完整路径与父路径，顺序即侧栏 / 移动端 chips 的展示顺序。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	files, err := s.App.ListFiles()
 	if err != nil {
@@ -32,248 +29,13 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{
 		"files":  files,
 		"groups": groups,
-		// 单文件上传上限随列表一起下发：前端在入队时就能拦掉超限文件，
-		// 不必先把整份内容算完指纹、再等服务端 413。
-		"max_file_size": s.App.Config.MaxFileSize,
 	})
 }
 
-// handleCheckFile 是秒传预检：blob 已在服务器上就补一条记录并回 exists=true。
-func (s *Server) handleCheckFile(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(MaxCheckFileBodyBytes); err != nil {
-		if isBodyTooLarge(err) {
-			fail(w, r, http.StatusRequestEntityTooLarge, "request.too-big")
-			return
-		}
-		fail(w, r, http.StatusBadRequest, "upload.missing")
-		return
-	}
-	defer r.MultipartForm.RemoveAll()
-
-	record, exists, err := s.App.CheckFile(
-		r.Context(),
-		strings.TrimSpace(r.PostFormValue("client_sha256")),
-		r.PostFormValue("filename"),
-	)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	if !exists {
-		httpx.Write(w, http.StatusOK, map[string]any{"exists": false})
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{
-		"exists":   true,
-		"id":       record.ID,
-		"filename": record.Filename,
-		"size":     record.Size,
-	})
-}
-
-// handleUpload 流式接收 multipart 上传。字段顺序不固定：遇到 file 字段必须立刻落盘，
-// 不能等后面的 client_sha256 —— 否则 NextPart 会把已经读过的内容丢掉。
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	reader, err := r.MultipartReader()
-	if err != nil {
-		fail(w, r, http.StatusBadRequest, "upload.missing")
-		return
-	}
-
-	var (
-		upload    *app.Upload
-		filename  string
-		clientSHA string
-		hasFile   bool
-	)
-	// 临时文件在任何错误路径上都要清理；成功落成 blob 后 Abort 是空操作。
-	defer func() {
-		if upload != nil {
-			upload.Abort()
-		}
-	}()
-
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			if isBodyTooLarge(err) {
-				fail(w, r, http.StatusRequestEntityTooLarge, "upload.too-big")
-			} else {
-				fail(w, r, http.StatusBadRequest, "upload.missing")
-			}
-			return
-		}
-		switch part.FormName() {
-		case "client_sha256":
-			value, err := io.ReadAll(io.LimitReader(part, 256))
-			if err != nil {
-				if isBodyTooLarge(err) {
-					fail(w, r, http.StatusRequestEntityTooLarge, "upload.too-big")
-				} else {
-					fail(w, r, http.StatusBadRequest, "upload.missing")
-				}
-				return
-			}
-			clientSHA = strings.TrimSpace(string(value))
-		case "file":
-			if hasFile {
-				// 契约只约定一个 file 字段；多出来的内容丢掉，不覆盖已经写下的那份。
-				if _, err := io.Copy(io.Discard, part); err != nil {
-					fail(w, r, http.StatusBadRequest, "upload.missing")
-					return
-				}
-				continue
-			}
-			filename = part.FileName()
-			// 先校验文件名再落盘：无效名字没必要把整份内容写完再拒。
-			if !core.ValidFilename(filename) {
-				fail(w, r, http.StatusBadRequest, "upload.invalid-filename")
-				return
-			}
-			hasFile = true
-			upload, err = s.App.NewUpload()
-			if err != nil {
-				slog.ErrorContext(r.Context(), "create upload temp file failed", slog.Any("error", err))
-				fail(w, r, http.StatusInternalServerError, "upload.write")
-				return
-			}
-			if _, err := io.Copy(upload, part); err != nil {
-				var business *core.Error
-				switch {
-				case errors.As(err, &business):
-					businessFail(w, r, err)
-				case isBodyTooLarge(err):
-					fail(w, r, http.StatusRequestEntityTooLarge, "upload.too-big")
-				case upload.WriteFailed():
-					slog.ErrorContext(r.Context(), "write upload temp file failed", slog.Any("error", err))
-					fail(w, r, http.StatusInternalServerError, "upload.write")
-				default:
-					fail(w, r, http.StatusBadRequest, "upload.missing")
-				}
-				return
-			}
-		default:
-			if _, err := io.Copy(io.Discard, part); err != nil {
-				fail(w, r, http.StatusBadRequest, "upload.missing")
-				return
-			}
-		}
-	}
-
-	if !hasFile {
-		fail(w, r, http.StatusBadRequest, "upload.missing")
-		return
-	}
-	// 内容已经收完：用不带取消信号的 ctx 落库，客户端这时断开不该让上传白做。
-	record, err := s.App.FinishUpload(context.WithoutCancel(r.Context()), upload, filename, clientSHA)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{"id": record.ID, "sha256": record.SHA256})
-}
-
-// handleUpdateFile 按需改写文件名（重命名）与分组路径；成功后响应更新后的完整记录。
-func (s *Server) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Filename  *string `json:"filename"`
-		GroupPath *string `json:"group_path"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	record, err := s.App.UpdateFile(r.PathValue("file_id"), payload.Filename, payload.GroupPath)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, record)
-}
-
-// handleSetGroupOrder 按拖拽后的顺序重写某个父级下子分组的顺序；成功回 204。
-func (s *Server) handleSetGroupOrder(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Parent string   `json:"parent"`
-		Names  []string `json:"names"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	if err := s.App.SetGroupOrder(payload.Parent, payload.Names); err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleCreateGroup 手动新建一个空分组；成功 201 并返回规范化后的分组路径。
-func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Path string `json:"path"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	path, err := s.App.CreateGroup(payload.Path)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusCreated, map[string]any{"path": path})
-}
-
-// handleRenameGroup 改写一个分组路径的最后一段；同级位置不变，成功回 204。
-func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Path    string `json:"path"`
-		NewName string `json:"new_name"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	if err := s.App.RenameGroup(payload.Path, payload.NewName); err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleDeleteGroup 删除一个分组（子分组一并删除）；delete_files 决定组内文件是一起删还是上移。
-func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Path        string `json:"path"`
-		DeleteFiles bool   `json:"delete_files"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	if err := s.App.DeleteGroup(r.Context(), payload.Path, payload.DeleteFiles); err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleSetOrder 批量重写列表顺序，成功回 204（无响应体）。
-func (s *Server) handleSetOrder(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Items []core.OrderItem `json:"items"`
-	}
-	if !decodeJSON(w, r, &payload) {
-		return
-	}
-	if err := s.App.SetOrder(payload.Items); err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
+// handleFavorite 切换收藏：PUT 收藏、DELETE 取消，路径走 ?path=。
+// 收藏是本地元数据，不检查文件是否存在（文件被 SMB 侧删掉时记录自然匹配不到）。
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
-	favorite, err := s.App.ToggleFavorite(r.PathValue("file_id"))
+	favorite, err := s.App.ToggleFavorite(r.URL.Query().Get("path"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -281,14 +43,94 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, map[string]any{"is_favorite": favorite})
 }
 
-func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	download, err := s.App.OpenDownload(r.Context(), r.PathValue("file_id"))
+// handleDownloadURL 签一个匿名下载地址（SignedURLTTL 内有效）。前端拿 url 后让浏览器
+// 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
+func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
+	link, err := s.App.IssueDownloadURL(r.URL.Query().Get("path"))
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"url": link})
+}
+
+// handleShareLink 签一条 ttl 内有效的分享链接：对方免登录即可下载，签名不对或过期
+// 一律按「链接无效」处理。ttl 只认默认档与 24 小时档（见 shareLinkTTL），其它值直接 400。
+func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Path string `json:"path"`
+		TTL  string `json:"ttl"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	ttl, ok := shareLinkTTL(payload.TTL)
+	if !ok {
+		fail(w, r, http.StatusBadRequest, "share.invalid-ttl")
+		return
+	}
+	link, err := s.App.IssueShareLink(payload.Path, ttl)
+	if err != nil {
+		businessFail(w, r, err)
+		return
+	}
+	httpx.Write(w, http.StatusOK, map[string]any{"url": link})
+}
+
+// shareLinkTTL 把 ttl 换成有效期：不传走默认 10 分钟，只额外认 24 小时档。
+// 不接受任意秒数 —— 分享链接的有效期是产品决定，不该由调用方随手拉长或缩短。
+func shareLinkTTL(raw string) (time.Duration, bool) {
+	switch raw {
+	case "", "10m", "600":
+		return core.SignedURLTTL, true
+	case "24h", "86400":
+		return core.ShareLinkTTL24h, true
+	}
+	return 0, false
+}
+
+// handleSignedDownload 是匿名下载入口：凭 URL 里的 sig/exp 下载单个文件，不需要 Authorization ——
+// 凭据就是签名本身。
+func (s *Server) handleSignedDownload(w http.ResponseWriter, r *http.Request) {
+	exp, err := strconv.ParseInt(r.URL.Query().Get("exp"), 10, 64)
+	if err != nil {
+		fail(w, r, http.StatusNotFound, "download.invalid")
+		return
+	}
+	rel, ok := downloadRelPath(r.URL.EscapedPath())
+	if !ok {
+		fail(w, r, http.StatusNotFound, "download.invalid")
+		return
+	}
+	download, err := s.App.OpenSignedDownload(
+		rel, r.Method, r.URL.EscapedPath(), r.URL.Query().Get("sig"), exp)
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
 	defer download.Close()
 	serveDownload(w, r, download)
+}
+
+// downloadRelPath 从 /s/<escaped path> 反解出相对路径：逐段 PathUnescape 后重新用 "/" 连接。
+func downloadRelPath(escapedPath string) (string, bool) {
+	const prefix = "/s/"
+	if !strings.HasPrefix(escapedPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(escapedPath, prefix)
+	if rest == "" {
+		return "", false
+	}
+	segments := strings.Split(rest, "/")
+	for i, segment := range segments {
+		decoded, err := url.PathUnescape(segment)
+		if err != nil || decoded == "" {
+			return "", false
+		}
+		segments[i] = decoded
+	}
+	return strings.Join(segments, "/"), true
 }
 
 // serveDownload 发附件。http.ServeContent 负责 Range / HEAD / Content-Length。
@@ -296,73 +138,6 @@ func serveDownload(w http.ResponseWriter, r *http.Request, download *app.Downloa
 	header := w.Header()
 	header.Set("Content-Type", "application/octet-stream")
 	// FormatMediaType 对非 ASCII 文件名自动改走 RFC 2231 的 filename* 形式。
-	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.File.Filename}))
-	http.ServeContent(w, r, download.File.Filename, time.Time{}, download.Blob)
-}
-
-// handleDownloadURL 签一个匿名下载地址（SignedURLTTL 内有效）。前端拿 url 后让浏览器
-// 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
-func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
-	url, err := s.App.IssueDownloadURL(r.Context(), r.PathValue("file_id"))
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
-}
-
-// handleShareLink 签一条 ttl 内有效的分享链接：对方免登录即可下载，签名不对或过期
-// 一律 404。ttl 只认默认档与 24 小时档（见 shareLinkTTL），其它值直接 400。
-func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
-	ttl, ok := shareLinkTTL(r.URL.Query().Get("ttl"))
-	if !ok {
-		fail(w, r, http.StatusBadRequest, "share.invalid-ttl")
-		return
-	}
-	url, err := s.App.IssueShareLink(r.Context(), r.PathValue("file_id"), ttl)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	httpx.Write(w, http.StatusOK, map[string]any{"url": url})
-}
-
-// shareLinkTTL 把 ttl 查询参数（秒）换成有效期：不传走默认 10 分钟，只额外认 24 小时档。
-// 不接受任意秒数 —— 分享链接的有效期是产品决定，不该由调用方随手拉长或缩短。
-func shareLinkTTL(raw string) (time.Duration, bool) {
-	switch raw {
-	case "":
-		return core.SignedURLTTL, true
-	case "600":
-		return core.SignedURLTTL, true
-	case "86400":
-		return core.ShareLinkTTL24h, true
-	}
-	return 0, false
-}
-
-// handleSignedDownload 是匿名下载入口：凭 URL 里的 sig/exp 下载单个文件，不需要 Authorization ——
-// 凭据就是签名本身。分组「全部下载」由前端逐个文件调用这里，服务端不提供打包。
-func (s *Server) handleSignedDownload(w http.ResponseWriter, r *http.Request) {
-	exp, err := strconv.ParseInt(r.URL.Query().Get("exp"), 10, 64)
-	if err != nil {
-		fail(w, r, http.StatusNotFound, "download.invalid")
-		return
-	}
-	download, err := s.App.OpenSignedDownload(
-		r.Context(), r.PathValue("file_id"), r.Method, r.URL.EscapedPath(), r.URL.Query().Get("sig"), exp)
-	if err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	defer download.Close()
-	serveDownload(w, r, download)
-}
-
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.App.DeleteFile(r.Context(), r.PathValue("file_id")); err != nil {
-		businessFail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": download.Name}))
+	http.ServeContent(w, r, download.Name, download.ModTime, download.ReadSeekCloser)
 }

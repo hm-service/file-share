@@ -1,40 +1,22 @@
 <script setup lang="ts">
 /**
- * 主应用壳：顶栏（搜索 / 上传 / 当前账号） + 左侧文件夹树 + 内容区表格（当前文件夹的子文件夹与文件）。
+ * 主应用壳：顶栏（搜索 / 当前账号） + 左侧目录树 + 内容区表格（当前目录的子目录与文件）。
  *
- * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/ungrouped`「未分组」、
- * `/<一级>`、`/<一级>/<二级>`、`/<一级>/<二级>/<三级>`「文件夹」。切换视图用 pushState 进历史，
- * 前进 / 后退与直接打开链接都通过 routes.ts 还原；搜索词写在 `?q=` 里。
+ * 只读视图：数据源是 SMB 共享的只读目录，界面只提供浏览、搜索、收藏、下载与分享链接，
+ * 没有上传、删除、重命名、移动与排序。
+ *
+ * 视图与地址栏一一对应：`/`「最近」、`/favorites`「收藏」、`/<任意深度路径>`「文件夹」。
+ * 切换视图用 pushState 进历史，前进 / 后退与直接打开链接都通过 routes.ts 还原；搜索词写在 `?q=` 里。
  *
  * 列表数据只在这里维护；每次操作成功后重新拉一次列表，保持与服务端一致。
- * 文件夹树的展开 / 折叠状态存 localStorage，刷新后保持。
+ * 目录树的展开 / 折叠状态存 localStorage，刷新后保持。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import ContentTable from "@/components/ContentTable.vue";
 import DirTree from "@/components/DirTree.vue";
-import GroupStatsDialog from "@/components/GroupStatsDialog.vue";
 import LocaleSwitch from "@/components/LocaleSwitch.vue";
-import PromptDialog from "@/components/PromptDialog.vue";
-import UploadDock from "@/components/UploadDock.vue";
-import { hasFiles } from "@/dnd";
-import {
-  ApiError,
-  createGroup,
-  deleteFile,
-  deleteGroup,
-  downloadFile,
-  getMe,
-  getStorageInfo,
-  listFiles,
-  renameFile,
-  renameGroup,
-  reorderFiles,
-  reorderGroups,
-  toggleFavorite,
-  updateFileGroup,
-} from "@/api";
+import { ApiError, downloadFile, getMe, getStorageInfo, listFiles, toggleFavorite } from "@/api";
 import { formatSize } from "@/format";
 import { ICONS } from "@/icons";
 import { t } from "@/i18n";
@@ -45,9 +27,7 @@ import type { DirEntry, FileItem, GroupItem, StorageInfo, UserInfo } from "@/typ
 /** 「最近」最多列这么多条；搜索时不受限制。 */
 const RECENT_LIMIT = 20;
 const SEARCH_PARAM = "q";
-const MAX_GROUP_DEPTH = 3;
 const FOLDED_KEY = "file-share.folded-folders";
-const FOLDER_MENU_WIDTH = 220;
 
 /* ---------- 数据 ---------- */
 
@@ -59,31 +39,319 @@ const loadError = ref("");
 const actionError = ref("");
 let actionErrorTimer = 0;
 let refreshSeq = 0;
-
-/** 当前视图：最近 / 收藏 / 未分组 / 文件夹（1~3 级路径）。 */
-const view = ref<View>({ kind: "recent" });
-const query = ref("");
-
-const uploadDock = ref<InstanceType<typeof UploadDock> | null>(null);
-/** 定时探测存储状态的定时器（页面可见时才真正请求）。 */
-let storageTimer = 0;
-const maxFileSize = ref(0);
-const storage = ref<StorageInfo | null>(null);
-/** 当前登录用户与权限：界面据此隐藏写操作；每次打开页面都向后端要一次，不信本地缓存。 */
 const currentUser = ref<UserInfo | null>(null);
-/** 写权限：拉不到用户信息时按只读处理，宁可少显示按钮也不让操作直接 403。 */
-const canWrite = computed(() => currentUser.value?.permissions.includes("write") ?? false);
+const storage = ref<StorageInfo | null>(null);
+const query = ref("");
+const view = ref<View>({ kind: "recent" });
 /** 窄屏抽屉：侧栏在移动端默认收起。 */
 const sidebarOpen = ref(false);
-/** 窄屏断点与样式里的 @media (max-width: 900px) 保持一致；窄屏的上传走 FAB 聚合菜单。 */
-const NARROW_QUERY = window.matchMedia("(max-width: 900px)");
-const isNarrow = ref(NARROW_QUERY.matches);
 
-/* ---------- 侧栏宽度（桌面端拖右缘调节） ---------- */
+/* ---------- 视图与派生数据 ---------- */
+
+/** 当前文件夹路径；非文件夹视图为空串。 */
+const currentPath = computed(() => (view.value.kind === "group" ? view.value.group : ""));
+const keyword = computed(() => query.value.trim().toLowerCase());
+const searching = computed(() => keyword.value.length > 0);
+const viewKind = computed(() => view.value.kind);
+
+function subtreeFiles(path: string): FileItem[] {
+  return files.value.filter(
+    (file) => file.group_path === path || file.group_path.startsWith(`${path}/`),
+  );
+}
+
+/** 每个文件夹子树（含后代）的文件数，给侧栏徽标与文件夹行用。 */
+const counts = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>();
+  for (const group of groups.value) map.set(group.path, subtreeFiles(group.path).length);
+  return map;
+});
+
+/** 当前视图要列出的文件：搜索时跨全部目录，按时间倒序。 */
+const visibleFiles = computed<FileItem[]>(() => {
+  const all = files.value;
+  if (searching.value) {
+    return all
+      .filter((file) => file.filename.toLowerCase().includes(keyword.value))
+      .sort((a, b) => b.created_at - a.created_at);
+  }
+  switch (view.value.kind) {
+    case "recent":
+      return [...all].sort((a, b) => b.created_at - a.created_at).slice(0, RECENT_LIMIT);
+    case "favorites":
+      return all.filter((file) => file.is_favorite).sort((a, b) => b.created_at - a.created_at);
+    case "group": {
+      const current = view.value.group;
+      return all.filter((file) => file.group_path === current).sort(byName);
+    }
+  }
+});
+
+function byName(a: FileItem, b: FileItem): number {
+  return a.filename.localeCompare(b.filename, undefined, { sensitivity: "base" });
+}
+
+/** 内容区里的子文件夹行：只有目录视图（且不在搜索）才列子目录。 */
+const dirs = computed<DirEntry[]>(() => {
+  if (searching.value || view.value.kind !== "group") return [];
+  const parent = view.value.group;
+  return groups.value
+    .filter((group) => group.parent === parent)
+    .map((group) => ({ path: group.path, name: group.name, fileCount: counts.value.get(group.path) ?? 0 }));
+});
+
+const pageFilesSize = computed(() => visibleFiles.value.reduce((sum, file) => sum + file.size, 0));
+
+/** 最近与搜索结果是跨目录的，行内要标出文件所在目录。 */
+const showGroup = computed(() => searching.value || view.value.kind === "recent");
+
+/** 搜索时面包屑只显示「搜索结果」，不显示当前目录路径。 */
+const visibleCrumbs = computed(() => (searching.value ? [] : crumbs.value));
+
+/** 面包屑：目录视图逐级展开；其它视图只有当前项。 */
+const crumbs = computed<{ name: string; path: string }[]>(() => {
+  if (view.value.kind !== "group") return [];
+  const segments = view.value.group.split("/");
+  return segments.map((name, index) => ({
+    name,
+    path: segments.slice(0, index + 1).join("/"),
+  }));
+});
+
+/** 顶层面包屑文案：目录视图显示「全部」，其它视图直接显示视图名。 */
+const rootLabel = computed(() => {
+  if (searching.value) return t("content.search-results");
+  if (view.value.kind === "recent") return t("nav.recent");
+  if (view.value.kind === "favorites") return t("nav.favorites");
+  return t("nav.all");
+});
+
+/** 当前视图的「全部下载」提示：下载当前可见文件（搜索结果 / 收藏 / 目录）。 */
+const downloadAllCount = computed(() => visibleFiles.value.length);
+
+/* ---------- 侧栏折叠状态 ---------- */
+
+function loadFolded(): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(FOLDED_KEY);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return null;
+  }
+}
+
+function saveFolded(next: Set<string>): void {
+  try {
+    localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+  } catch {
+    /* 存不下就只在本次会话里生效 */
+  }
+}
+
+const storedFolded = loadFolded();
+const folded = ref<Set<string>>(storedFolded ?? new Set());
+let foldedInitialized = storedFolded !== null;
+
+/** 默认只展开到第二级：二级目录全部折叠，三级不占侧栏空间；用户展开后会记住自己的选择。 */
+function applyDefaultFolded(): void {
+  if (foldedInitialized) return;
+  foldedInitialized = true;
+  const next = new Set(
+    groups.value.filter((group) => group.path.split("/").length === 2).map((group) => group.path),
+  );
+  folded.value = next;
+  saveFolded(next);
+}
+
+function toggleFolder(path: string): void {
+  const next = new Set(folded.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  folded.value = next;
+  saveFolded(next);
+  sidebarOpen.value = false;
+}
+
+/* ---------- 地址栏 ---------- */
+
+function syncLocation(mode: "push" | "replace"): void {
+  const params = new URLSearchParams();
+  const search = query.value.trim();
+  if (search) params.set(SEARCH_PARAM, search);
+  const queryString = params.toString();
+  const url = `${viewPath(view.value)}${queryString ? `?${queryString}` : ""}`;
+  if (location.pathname + location.search === url) return;
+  if (mode === "push") history.pushState(null, "", url);
+  else history.replaceState(null, "", url);
+}
+
+/** 切换视图并同步地址栏：点导航用 push，回退 / 修正失效链接用 replace。 */
+function applyView(next: View, mode: "push" | "replace" = "push"): void {
+  view.value = next;
+  sidebarOpen.value = false;
+  syncLocation(mode);
+}
+
+/** 按地址栏还原视图与搜索词（首次加载与前进 / 后退都走这里）。 */
+function syncViewFromLocation(): void {
+  const params = new URLSearchParams(location.search);
+  query.value = params.get(SEARCH_PARAM) ?? "";
+  const next = viewFromPath(location.pathname);
+  if (!next) {
+    view.value = { kind: "recent" };
+    sidebarOpen.value = false;
+    syncLocation("replace");
+    return;
+  }
+  view.value = next;
+  sidebarOpen.value = false;
+  syncLocation("replace");
+  if (loaded.value) validateView();
+}
+
+/** 目录不存在时回退「最近」，免得刷新后停在空视图。 */
+function validateView(): void {
+  const current = view.value;
+  if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
+    applyView({ kind: "recent" }, "replace");
+  }
+}
+
+watch([query, view], () => syncLocation("replace"));
+
+function showRecent(): void {
+  applyView({ kind: "recent" });
+}
+
+function showFavorites(): void {
+  applyView({ kind: "favorites" });
+}
+
+function openFolder(path: string): void {
+  applyView({ kind: "group", group: path });
+}
+
+/* ---------- 列表数据与操作 ---------- */
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  return t("error.network");
+}
+
+function showActionError(error: unknown): void {
+  if (isUnauthorized(error)) return; // api 客户端已经清会话跳登录页
+  actionError.value = errorText(error);
+  window.clearTimeout(actionErrorTimer);
+  actionErrorTimer = window.setTimeout(() => {
+    actionError.value = "";
+  }, 5000);
+  // 操作失败可能是只读目录 / 收藏元数据不可用：顺手刷新一次状态，让侧栏提示跟上。
+  void loadStorage();
+}
+
+/** 拉当前用户；401 由 api 客户端跳登录页。 */
+async function loadMe(): Promise<void> {
+  try {
+    currentUser.value = await getMe();
+  } catch {
+    currentUser.value = null;
+  }
+}
+
+/** 拉存储状态给侧栏提示用；失败只影响这行提示，不影响列表与操作。 */
+async function loadStorage(): Promise<void> {
+  try {
+    storage.value = await getStorageInfo();
+  } catch {
+    storage.value = null;
+  }
+}
+
+const storageText = computed(() => {
+  const info = storage.value;
+  if (!info) return "";
+  const detail = t("storage.readonly");
+  return info.healthy ? detail : `${detail}${t("storage.unreachable")}`;
+});
+
+const storageHint = computed(() => {
+  const info = storage.value;
+  if (!info) return "";
+  if (!info.healthy && info.error) return info.error;
+  return t("storage.readonly-hint");
+});
+
+const storageHealthy = computed(() => storage.value?.healthy !== false);
+
+/**
+ * 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。
+ * 用递增序号只采用最后一次请求的结果，避免旧响应后到把新列表覆盖回去。
+ */
+async function refresh(): Promise<void> {
+  const seq = ++refreshSeq;
+  refreshing.value = true;
+  try {
+    const payload = await listFiles();
+    if (seq !== refreshSeq) return;
+    files.value = payload.files;
+    groups.value = payload.groups;
+    loadError.value = "";
+    applyDefaultFolded();
+    validateView();
+  } catch (error) {
+    if (seq !== refreshSeq || isUnauthorized(error)) return;
+    loadError.value = t("error.load");
+  } finally {
+    if (seq === refreshSeq) {
+      refreshing.value = false;
+      loaded.value = true;
+    }
+  }
+}
+
+async function onFavorite(file: FileItem): Promise<void> {
+  try {
+    const next = await toggleFavorite(file.id, !file.is_favorite);
+    const target = files.value.find((entry) => entry.id === file.id);
+    if (target) target.is_favorite = next.is_favorite;
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+async function onDownload(file: FileItem): Promise<void> {
+  try {
+    await downloadFile(file.id);
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+/** 逐个签下载地址并触发下载；浏览器可能询问是否允许下载多个文件。 */
+async function onDownloadAll(): Promise<void> {
+  const targets = visibleFiles.value;
+  try {
+    for (const file of targets) await downloadFile(file.id);
+  } catch (error) {
+    showActionError(error);
+  }
+}
+
+function logout(): void {
+  toLogin();
+}
+
+/* ---------- 侧栏宽度与窗口尺寸 ---------- */
 
 const SIDEBAR_DEFAULT_WIDTH = 248;
 const SIDEBAR_MIN_WIDTH = 200;
-/** 上限取视口一半：目录列表最多占半屏，内容区至少留一半。 */
 const SIDEBAR_MAX_RATIO = 0.5;
 
 function maxSidebarWidth(): number {
@@ -126,834 +394,32 @@ function startSidebarResize(event: PointerEvent): void {
   window.addEventListener("pointercancel", finish);
 }
 
+/** 窄屏断点与样式里的 @media (max-width: 900px) 保持一致。 */
+const NARROW_QUERY = window.matchMedia("(max-width: 900px)");
+const isNarrow = ref(NARROW_QUERY.matches);
+
 /** 窗口变窄时把侧栏夹回上限以内（宽度只存内存，不覆盖任何持久值）。 */
 function onWindowResize(): void {
   sidebarWidth.value = clampSidebarWidth(sidebarWidth.value);
   isNarrow.value = NARROW_QUERY.matches;
-  if (!isNarrow.value) closeFabMenu();
-}
-
-/* ---------- 视图与派生数据 ---------- */
-
-/** 当前文件夹路径；非文件夹视图为空串（上传落到未分组）。 */
-const currentPath = computed(() => (view.value.kind === "group" ? view.value.group : ""));
-
-const keyword = computed(() => query.value.trim().toLowerCase());
-const searching = computed(() => keyword.value.length > 0);
-
-const viewKind = computed(() => view.value.kind);
-
-const ungroupedCount = computed(() => files.value.filter((file) => file.group_path === "").length);
-const favoritesCount = computed(() => files.value.filter((file) => file.is_favorite).length);
-const recentCount = computed(() => Math.min(files.value.length, RECENT_LIMIT));
-
-/** 某个文件夹（含全部后代）下的文件。 */
-function subtreeFiles(path: string): FileItem[] {
-  return files.value.filter(
-    (file) => file.group_path === path || file.group_path.startsWith(`${path}/`),
-  );
-}
-
-/** 每个文件夹子树（含后代）的文件数，给侧栏徽标与文件夹行用。 */
-const counts = computed<Map<string, number>>(() => {
-  const map = new Map<string, number>();
-  for (const group of groups.value) map.set(group.path, subtreeFiles(group.path).length);
-  return map;
-});
-
-function byOrder(a: FileItem, b: FileItem): number {
-  return a.sort_order - b.sort_order || a.filename.localeCompare(b.filename);
-}
-
-/** 当前视图要列出的文件：搜索时跨全部文件夹，按时间倒序。 */
-const visibleFiles = computed<FileItem[]>(() => {
-  const all = files.value;
-  if (searching.value) {
-    return all
-      .filter((file) => file.filename.toLowerCase().includes(keyword.value))
-      .sort((a, b) => b.created_at - a.created_at);
-  }
-  switch (view.value.kind) {
-    case "recent":
-      return [...all].sort((a, b) => b.created_at - a.created_at).slice(0, RECENT_LIMIT);
-    case "favorites":
-      return all.filter((file) => file.is_favorite).sort((a, b) => b.created_at - a.created_at);
-    case "ungrouped":
-      return all.filter((file) => file.group_path === "").sort(byOrder);
-    case "group": {
-      const current = view.value.kind === "group" ? view.value.group : "";
-      return all.filter((file) => file.group_path === current).sort(byOrder);
-    }
-  }
-});
-
-/** 内容区里的子文件夹行：只有文件夹视图（且不在搜索）才列子文件夹。 */
-const dirs = computed<DirEntry[]>(() => {
-  if (searching.value || view.value.kind !== "group") return [];
-  const parent = view.value.group;
-  return groups.value
-    .filter((group) => group.parent === parent)
-    .map((group) => ({ path: group.path, name: group.name, fileCount: counts.value.get(group.path) ?? 0 }));
-});
-
-const pageFilesSize = computed(() => visibleFiles.value.reduce((sum, file) => sum + file.size, 0));
-
-/** 文件行是否可拖拽排序：只有文件夹视图、且没有搜索过滤时提交顺序才有意义。 */
-const sortable = computed(
-  () => canWrite.value && view.value.kind === "group" && !searching.value,
-);
-
-/** 最近与搜索结果是跨文件夹的，行内要标出文件所在文件夹。 */
-const showGroup = computed(() => searching.value || view.value.kind === "recent");
-
-/** 搜索时面包屑只显示「搜索结果」，不显示当前文件夹路径。 */
-const visibleCrumbs = computed(() => (searching.value ? [] : crumbs.value));
-
-/** 面包屑：文件夹视图逐级展开；其它视图只有当前项。 */
-const crumbs = computed<{ name: string; path: string }[]>(() => {
-  if (view.value.kind !== "group") return [];
-  const segments = view.value.group.split("/");
-  return segments.map((name, index) => ({
-    name,
-    path: segments.slice(0, index + 1).join("/"),
-  }));
-});
-
-/** 顶层面包屑文案：文件夹视图显示「全部」，其它视图直接显示视图名。 */
-const rootLabel = computed(() => {
-  if (view.value.kind === "recent") return t("nav.recent");
-  if (view.value.kind === "favorites") return t("nav.favorites");
-  if (view.value.kind === "ungrouped") return t("nav.ungrouped");
-  return searching.value ? t("content.search-results") : t("nav.all");
-});
-
-/** 文件夹是否还能再建子文件夹（三级是上限）。 */
-function canCreateSubfolder(path: string): boolean {
-  return path.split("/").length < MAX_GROUP_DEPTH;
-}
-
-/** 当前视图是否还能新建文件夹：非文件夹视图建顶级，三级文件夹下不能再建。 */
-const canCreateFolder = computed(
-  () => canWrite.value && (view.value.kind === "group" ? canCreateSubfolder(view.value.group) : true),
-);
-
-/* ---------- 侧栏折叠状态 ---------- */
-
-/** 读本机保存的折叠状态；null 表示从没保存过（首次打开，走默认折叠）。 */
-function loadFolded(): Set<string> | null {
-  try {
-    const raw = localStorage.getItem(FOLDED_KEY);
-    if (raw === null) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
-  } catch {
-    return null;
-  }
-}
-
-function saveFolded(next: Set<string>): void {
-  try {
-    localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
-  } catch {
-    /* 存不下就只在本次会话里生效 */
-  }
-}
-
-const storedFolded = loadFolded();
-const folded = ref<Set<string>>(storedFolded ?? new Set());
-/** 首次拉到文件夹列表前不套默认值（那时还不知道有哪些二级文件夹）。 */
-let foldedInitialized = storedFolded !== null;
-
-/** 默认只展开到第二级：二级文件夹全部折叠，三级不占侧栏空间；用户展开后会记住自己的选择。 */
-function applyDefaultFolded(): void {
-  if (foldedInitialized) return;
-  foldedInitialized = true;
-  const next = new Set(
-    groups.value.filter((group) => group.path.split("/").length === 2).map((group) => group.path),
-  );
-  folded.value = next;
-  saveFolded(next);
-}
-
-function toggleFolder(path: string): void {
-  const next = new Set(folded.value);
-  if (next.has(path)) next.delete(path);
-  else next.add(path);
-  folded.value = next;
-  saveFolded(next);
-}
-
-/* ---------- 地址栏 ---------- */
-
-function syncLocation(mode: "push" | "replace"): void {
-  const params = new URLSearchParams();
-  const search = query.value.trim();
-  if (search) params.set(SEARCH_PARAM, search);
-  const queryString = params.toString();
-  const url = `${viewPath(view.value)}${queryString ? `?${queryString}` : ""}`;
-  if (location.pathname + location.search === url) return;
-  if (mode === "push") history.pushState(null, "", url);
-  else history.replaceState(null, "", url);
-}
-
-/** 切换视图并同步地址栏：点导航用 push，回退 / 修正失效链接用 replace。 */
-function applyView(next: View, mode: "push" | "replace" = "push"): void {
-  view.value = next;
-  sidebarOpen.value = false;
-  syncLocation(mode);
-}
-
-/** 按地址栏还原视图与搜索词（首次加载与前进 / 后退都走这里）。 */
-function syncViewFromLocation(): void {
-  const params = new URLSearchParams(location.search);
-  query.value = params.get(SEARCH_PARAM) ?? "";
-  const next = viewFromPath(location.pathname);
-  if (!next) {
-    view.value = { kind: "recent" };
-    sidebarOpen.value = false;
-    syncLocation("replace");
-    return;
-  }
-  view.value = next;
-  sidebarOpen.value = false;
-  syncLocation("replace");
-  if (loaded.value) validateView();
-}
-
-/** 文件夹不存在时回退「最近」，免得刷新后停在空视图。 */
-function validateView(): void {
-  const current = view.value;
-  if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
-    applyView({ kind: "recent" }, "replace");
-  }
-}
-
-watch([query, view], () => syncLocation("replace"));
-
-function showRecent(): void {
-  applyView({ kind: "recent" });
-}
-
-function showFavorites(): void {
-  applyView({ kind: "favorites" });
-}
-
-function showUngrouped(): void {
-  applyView({ kind: "ungrouped" });
-}
-
-function openFolder(path: string): void {
-  applyView({ kind: "group", group: path });
-}
-
-/* ---------- 列表数据与操作 ---------- */
-
-function isUnauthorized(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 401;
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error && error.message) return error.message;
-  return t("error.network");
-}
-
-function showActionError(error: unknown): void {
-  if (isUnauthorized(error)) return; // api 客户端已经清会话跳登录页
-  actionError.value = errorText(error);
-  window.clearTimeout(actionErrorTimer);
-  actionErrorTimer = window.setTimeout(() => {
-    actionError.value = "";
-  }, 5000);
-  // 操作失败可能是存储后端连不上：顺手刷新一次状态，让侧栏的存储提示跟上。
-  void loadStorage();
-}
-
-/** 拉当前用户与权限；401 由 api 客户端跳登录页，其它错误按只读处理。 */
-async function loadMe(): Promise<void> {
-  try {
-    currentUser.value = await getMe();
-  } catch {
-    currentUser.value = null;
-  }
-}
-
-/** 拉存储方案给侧栏提示用；失败只影响这行提示，不影响列表与操作。 */
-async function loadStorage(): Promise<void> {
-  try {
-    storage.value = await getStorageInfo();
-  } catch {
-    storage.value = null;
-  }
-}
-
-const storageText = computed(() => {
-  const info = storage.value;
-  if (!info) return "";
-  const detail =
-    info.backend === "s3"
-      ? t("storage.s3-detail", { bucket: info.bucket ?? "", prefix: info.prefix ?? "" })
-      : t("storage.local");
-  // 后端已连不上时不隐藏这行提示，而是标出来：用户点下载 / 上传前就知道会失败。
-  return info.healthy ? detail : `${detail}${t("storage.unreachable")}`;
-});
-
-const storageHint = computed(() => {
-  const info = storage.value;
-  if (!info) return "";
-  if (!info.healthy && info.error) return info.error;
-  return info.backend === "s3" ? t("storage.s3-hint") : t("storage.local-hint");
-});
-
-/** 未知（还没拉到）时按健康处理，避免页面一闪就红点。 */
-const storageHealthy = computed(() => storage.value?.healthy !== false);
-
-/**
- * 拉列表；401 由 api 客户端处理，其余错误在内容区显示 error.load。
- * 用递增序号只采用最后一次请求的结果，避免旧响应后到把新列表覆盖回去。
- */
-async function refresh(): Promise<void> {
-  const seq = ++refreshSeq;
-  refreshing.value = true;
-  try {
-    const payload = await listFiles();
-    if (seq !== refreshSeq) return;
-    files.value = payload.files;
-    groups.value = payload.groups;
-    maxFileSize.value = payload.max_file_size;
-    loadError.value = "";
-    applyDefaultFolded();
-    validateView();
-  } catch (error) {
-    if (seq !== refreshSeq || isUnauthorized(error)) return;
-    loadError.value = t("error.load");
-  } finally {
-    if (seq === refreshSeq) {
-      refreshing.value = false;
-      loaded.value = true;
-    }
-  }
-}
-
-async function onFavorite(file: FileItem): Promise<void> {
-  if (!canWrite.value) return;
-  try {
-    await toggleFavorite(file.id);
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-async function onDownload(file: FileItem): Promise<void> {
-  try {
-    await downloadFile(file.id);
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-/** 逐个签下载地址并触发下载；浏览器可能询问是否允许下载多个文件。 */
-async function onDownloadFiles(targets: FileItem[]): Promise<void> {
-  if (!targets.length) return;
-  try {
-    for (const file of targets) await downloadFile(file.id);
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-/** 当前视图的「全部下载」：下载当前可见的文件。 */
-async function onDownloadAll(): Promise<void> {
-  await onDownloadFiles(visibleFiles.value);
-}
-
-/** 拖拽排序后的顺序先落到本地（Vue 重新渲染时保持 DOM 已有顺序），再提交服务端。 */
-function applyOrder(orderedIds: string[]): void {
-  const nextOrder = new Map(orderedIds.map((id, index) => [id, index] as const));
-  for (const file of files.value) {
-    const order = nextOrder.get(file.id);
-    if (order !== undefined) file.sort_order = order;
-  }
-}
-
-async function onReorder(orderedIds: string[]): Promise<void> {
-  if (!canWrite.value) return;
-  applyOrder(orderedIds);
-  try {
-    await reorderFiles(orderedIds.map((id, index) => ({ id, sort_order: index })));
-  } catch (error) {
-    showActionError(error);
-    // 回滚：重新拉服务端顺序
-    await refresh();
-  }
-}
-
-/**
- * 文件夹行拖拽后的顺序：只重排「当前文件夹下」的兄弟文件夹。
- * 先把本地顺序改掉（避免刷新前闪回旧顺序），再提交 `PUT /api/groups/order`。
- */
-function applyGroupOrder(parent: string, names: string[]): void {
-  const rank = new Map(names.map((name, index) => [name, index] as const));
-  const siblings = groups.value
-    .filter((group) => group.parent === parent)
-    .sort(
-      (a, b) =>
-        (rank.get(a.name) ?? Number.MAX_SAFE_INTEGER) -
-        (rank.get(b.name) ?? Number.MAX_SAFE_INTEGER),
-    );
-  // 只替换目标父级那几个位置，其它层级的顺序原样保留（比较器不再依赖「同父级连续」的隐含前提）。
-  let next = 0;
-  groups.value = groups.value.map((group) =>
-    group.parent === parent ? (siblings[next++] ?? group) : group,
-  );
-}
-
-async function onReorderDirs(orderedPaths: string[]): Promise<void> {
-  if (!canWrite.value) return;
-  const parent = currentPath.value;
-  const names = orderedPaths.map((path) => path.split("/").pop() ?? "");
-  applyGroupOrder(parent, names);
-  try {
-    await reorderGroups(parent, names);
-  } catch (error) {
-    showActionError(error);
-    // 回滚：重新拉服务端顺序
-    await refresh();
-  }
-}
-
-/** 移动到某个文件夹（空串 = 未分组）。 */
-async function onMoveGroup(file: FileItem, path: string): Promise<void> {
-  if (!canWrite.value || file.group_path === path) return;
-  try {
-    await updateFileGroup(file.id, path);
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-/* ---------- 输入 / 确认对话框 ---------- */
-
-type PromptState =
-  | { kind: "rename-file"; file: FileItem }
-  /** 在 parent 下新建文件夹（空串 = 顶级）。 */
-  | { kind: "new-folder"; parent: string }
-  | { kind: "rename-folder"; path: string; name: string }
-  /** 「移动到文件夹」菜单里新建文件夹，随后把文件移进去。 */
-  | { kind: "move-file-new-folder"; file: FileItem };
-
-const promptState = ref<PromptState | null>(null);
-
-const promptDialog = computed(() => {
-  const state = promptState.value;
-  if (!state) return null;
-  switch (state.kind) {
-    case "rename-file":
-      return {
-        title: t("rename.title"),
-        hint: "",
-        value: state.file.filename,
-        confirmLabel: t("action.rename"),
-      };
-    case "new-folder":
-      return {
-        title: state.parent ? t("group.new-subgroup-title") : t("group.new-title"),
-        hint: state.parent
-          ? state.parent
-          : t("group.new-hint"),
-        value: "",
-        confirmLabel: t("action.create"),
-      };
-    case "rename-folder":
-      return {
-        title: t("group.rename-title"),
-        hint: "",
-        value: state.name,
-        confirmLabel: t("action.rename"),
-      };
-    case "move-file-new-folder":
-      return {
-        title: t("group.new-title"),
-        hint: t("group.new-hint"),
-        value: "",
-        confirmLabel: t("action.move-group"),
-      };
-  }
-});
-
-function groupPathOf(state: PromptState, value: string): string {
-  if (state.kind === "rename-folder") {
-    const slash = state.path.lastIndexOf("/");
-    const parent = slash < 0 ? "" : state.path.slice(0, slash);
-    return parent ? `${parent}/${value}` : value;
-  }
-  const parent = state.kind === "new-folder" ? state.parent : "";
-  return parent ? `${parent}/${value}` : value;
-}
-
-async function onPromptConfirm(value: string): Promise<void> {
-  const state = promptState.value;
-  if (!state || !canWrite.value) return;
-  promptState.value = null;
-  switch (state.kind) {
-    case "rename-file": {
-      if (value === state.file.filename) return;
-      try {
-        await renameFile(state.file.id, value);
-        await refresh();
-      } catch (error) {
-        showActionError(error);
-      }
-      return;
-    }
-    case "new-folder": {
-      try {
-        const created = await createGroup(groupPathOf(state, value));
-        await refresh();
-        applyView({ kind: "group", group: created.path });
-      } catch (error) {
-        showActionError(error);
-      }
-      return;
-    }
-    case "rename-folder": {
-      if (value === state.name) return;
-      const nextPath = groupPathOf(state, value);
-      try {
-        await renameGroup(state.path, value);
-        const current = view.value;
-        if (
-          current.kind === "group" &&
-          (current.group === state.path || current.group.startsWith(`${state.path}/`))
-        ) {
-          applyView({ kind: "group", group: nextPath + current.group.slice(state.path.length) }, "replace");
-        }
-        await refresh();
-      } catch (error) {
-        showActionError(error);
-      }
-      return;
-    }
-    case "move-file-new-folder": {
-      try {
-        const created = await createGroup(value);
-        const file = state.file;
-        if (file.group_path !== created.path) await updateFileGroup(file.id, created.path);
-        await refresh();
-      } catch (error) {
-        showActionError(error);
-      }
-      return;
-    }
-  }
-}
-
-function onRename(file: FileItem): void {
-  if (!canWrite.value) return;
-  promptState.value = { kind: "rename-file", file };
-}
-
-const deleteFileTarget = ref<FileItem | null>(null);
-
-function onDelete(file: FileItem): void {
-  if (!canWrite.value) return;
-  deleteFileTarget.value = file;
-}
-
-async function confirmDeleteFile(): Promise<void> {
-  const file = deleteFileTarget.value;
-  if (!file || !canWrite.value) return;
-  deleteFileTarget.value = null;
-  try {
-    await deleteFile(file.id);
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-/** 新建文件夹：默认建在当前文件夹下；非文件夹视图建顶级文件夹。 */
-function onCreateFolder(): void {
-  if (!canCreateFolder.value) return;
-  promptState.value = { kind: "new-folder", parent: currentPath.value };
-}
-
-/* ---------- 文件夹菜单（统计 / 重命名 / 新建子文件夹 / 删除） ---------- */
-
-const folderMenu = ref<{ path: string; name: string; x: number; y: number } | null>(null);
-
-function openFolderMenuAt(x: number, y: number, path: string): void {
-  const group = groups.value.find((entry) => entry.path === path);
-  if (!group) return;
-  folderMenu.value = {
-    path,
-    name: group.name,
-    x: Math.min(x, Math.max(8, window.innerWidth - FOLDER_MENU_WIDTH - 8)),
-    y: Math.min(y, Math.max(8, window.innerHeight - 180)),
-  };
-}
-
-function closeFolderMenu(): void {
-  folderMenu.value = null;
-}
-
-function onFolderMenuFromNode(event: MouseEvent, path: string): void {
-  event.preventDefault();
-  event.stopPropagation();
-  openFolderMenuAt(event.clientX, event.clientY, path);
-}
-
-function onFolderMenuFromRow(event: MouseEvent, path: string): void {
-  event.preventDefault();
-  event.stopPropagation();
-  openFolderMenuAt(event.clientX, event.clientY, path);
-}
-
-function onFolderMenuFromTitle(event: MouseEvent): void {
-  if (view.value.kind !== "group") return;
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  openFolderMenuAt(rect.left, rect.bottom + 6, view.value.group);
-}
-
-function onFolderMenuPointerDown(event: PointerEvent): void {
-  const target = event.target;
-  if (target instanceof Node && (target as Element).closest?.(".folder-menu-pop")) return;
-  closeFolderMenu();
-}
-
-watch(folderMenu, (value) => {
-  if (value) window.addEventListener("pointerdown", onFolderMenuPointerDown, true);
-  else window.removeEventListener("pointerdown", onFolderMenuPointerDown, true);
-});
-
-const statsTarget = ref<{ path: string } | null>(null);
-
-function onShowStats(): void {
-  const target = folderMenu.value;
-  closeFolderMenu();
-  if (!target) return;
-  statsTarget.value = { path: target.path };
-}
-
-function onRenameFolderFromMenu(): void {
-  const target = folderMenu.value;
-  closeFolderMenu();
-  if (!target || !canWrite.value) return;
-  promptState.value = { kind: "rename-folder", path: target.path, name: target.name };
-}
-
-function onCreateSubfolderFromMenu(): void {
-  const target = folderMenu.value;
-  closeFolderMenu();
-  if (!target || !canWrite.value) return;
-  promptState.value = { kind: "new-folder", parent: target.path };
-}
-
-const deleteFolderTarget = ref<{ path: string; name: string } | null>(null);
-
-function onDeleteFolderFromMenu(): void {
-  const target = folderMenu.value;
-  closeFolderMenu();
-  if (!target || !canWrite.value) return;
-  deleteFolderTarget.value = { path: target.path, name: target.name };
-}
-
-const deleteFolderFileCount = computed(() => {
-  const target = deleteFolderTarget.value?.path;
-  if (!target) return 0;
-  return subtreeFiles(target).length;
-});
-
-const deleteFolderFallback = computed(() => {
-  const path = deleteFolderTarget.value?.path ?? "";
-  const slash = path.lastIndexOf("/");
-  if (slash < 0) return t("nav.ungrouped");
-  const parent = path.slice(0, slash);
-  return groups.value.find((group) => group.path === parent)?.name ?? t("nav.ungrouped");
-});
-
-async function confirmDeleteFolder(deleteFiles: boolean): Promise<void> {
-  const target = deleteFolderTarget.value;
-  if (!target || !canWrite.value) return;
-  deleteFolderTarget.value = null;
-  try {
-    await deleteGroup(target.path, deleteFiles);
-    const current = view.value;
-    if (
-      current.kind === "group" &&
-      (current.group === target.path || current.group.startsWith(`${target.path}/`))
-    ) {
-      const slash = target.path.lastIndexOf("/");
-      applyView(slash < 0 ? { kind: "recent" } : { kind: "group", group: target.path.slice(0, slash) }, "replace");
-    }
-    await refresh();
-  } catch (error) {
-    showActionError(error);
-  }
-}
-
-/* ---------- 上传 ---------- */
-
-function pickFiles(): void {
-  if (!canWrite.value) return;
-  uploadDock.value?.pick();
-}
-
-/** 上传目标：当前文件夹；非文件夹视图落到未分组。 */
-const uploadTarget = computed(() => currentPath.value);
-
-/**
- * 窄屏把上传 / 下载全部聚合进右下角的悬浮按钮：点按钮弹出菜单，省掉工具栏一行。
- * 宽屏仍然是普通的上传按钮，点一下直接选文件。
- */
-const fabMenuOpen = ref(false);
-
-function closeFabMenu(): void {
-  fabMenuOpen.value = false;
-}
-
-function onFabClick(): void {
-  if (!isNarrow.value) {
-    pickFiles();
-    return;
-  }
-  fabMenuOpen.value = !fabMenuOpen.value;
-}
-
-function onFabUpload(): void {
-  closeFabMenu();
-  pickFiles();
-}
-
-function onFabDownloadAll(): void {
-  closeFabMenu();
-  void onDownloadAll();
-}
-
-/** 点菜单和悬浮按钮以外的地方收起菜单（与文件行菜单同一种处理方式）。 */
-function onFabMenuPointerDown(event: PointerEvent): void {
-  const target = event.target;
-  if (target instanceof Element && target.closest(".fab-menu, .top-actions .btn.primary")) return;
-  closeFabMenu();
-}
-
-watch(fabMenuOpen, (open) => {
-  if (open) window.addEventListener("pointerdown", onFabMenuPointerDown, true);
-  else window.removeEventListener("pointerdown", onFabMenuPointerDown, true);
-});
-
-/* ---------- 整页拖放 / 文件拖到文件夹 ---------- */
-
-const dropActive = ref(false);
-/** 正在拖拽的文件 id（内部拖拽）：用来区分「移动文件」与「上传外部文件」。 */
-const draggingFileId = ref<string | null>(null);
-
-function resetDropState(): void {
-  dropActive.value = false;
-  draggingFileId.value = null;
-}
-
-function onFileDragStart(file: FileItem): void {
-  if (!canWrite.value) return;
-  draggingFileId.value = file.id;
-}
-
-function onFileDragEnd(): void {
-  draggingFileId.value = null;
-  dropActive.value = false;
-}
-
-/** 拖到文件夹树 / 文件夹行：内部文件移动，外部文件上传到该文件夹。 */
-async function onDropOnFolder(dropped: FileList | null, path: string): Promise<void> {
-  if (!canWrite.value) return;
-  const draggedId = draggingFileId.value;
-  draggingFileId.value = null;
-  dropActive.value = false;
-  if (draggedId) {
-    const file = files.value.find((entry) => entry.id === draggedId);
-    if (file) await onMoveGroup(file, path);
-    return;
-  }
-  if (dropped && dropped.length > 0) uploadDock.value?.addFiles(dropped, path);
-}
-
-function onMainDragEnter(event: DragEvent): void {
-  if (draggingFileId.value) return;
-  if (!hasFiles(event)) return;
-  event.preventDefault();
-  dropActive.value = true;
-}
-
-function onMainDragOver(event: DragEvent): void {
-  if (draggingFileId.value) {
-    if (view.value.kind !== "group") return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    return;
-  }
-  if (!hasFiles(event)) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-  dropActive.value = true;
-}
-
-function onMainDragLeave(event: DragEvent): void {
-  if (draggingFileId.value) return;
-  const current = event.currentTarget as HTMLElement;
-  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
-  dropActive.value = false;
-}
-
-async function onMainDrop(event: DragEvent): Promise<void> {
-  event.preventDefault();
-  if (!canWrite.value) return;
-  if (draggingFileId.value) {
-    const draggedId = draggingFileId.value;
-    draggingFileId.value = null;
-    if (view.value.kind !== "group") return;
-    const file = files.value.find((entry) => entry.id === draggedId);
-    if (file) await onMoveGroup(file, view.value.group);
-    return;
-  }
-  if (!hasFiles(event)) return;
-  const dropped = event.dataTransfer?.files;
-  dropActive.value = false;
-  if (dropped && dropped.length > 0) uploadDock.value?.addFiles(dropped, uploadTarget.value);
-}
-
-/** 拖到页面任何地方都吞掉默认行为，免得浏览器直接打开文件、把页面顶掉。 */
-function swallowDrop(event: DragEvent): void {
-  if (!hasFiles(event)) return;
-  event.preventDefault();
-  if (event.type === "drop") resetDropState();
-}
-
-function logout(): void {
-  toLogin();
 }
 
 onMounted(() => {
-  document.addEventListener("dragover", swallowDrop);
-  document.addEventListener("drop", swallowDrop);
-  document.addEventListener("dragend", onFileDragEnd);
   window.addEventListener("popstate", syncViewFromLocation);
   window.addEventListener("resize", onWindowResize);
   syncViewFromLocation();
   void loadMe();
   void refresh();
   void loadStorage();
-  // 定时重新探测存储状态：S3 恢复后侧栏的提示能自己变回绿色，不用等用户操作。
+  // 定时重新探测存储状态：SMB 卷恢复后侧栏提示能自己变回绿色，不用等用户操作。
   storageTimer = window.setInterval(() => {
     if (document.visibilityState === "visible") void loadStorage();
   }, 30000);
 });
 
+let storageTimer = 0;
+
 onBeforeUnmount(() => {
-  document.removeEventListener("dragover", swallowDrop);
-  document.removeEventListener("drop", swallowDrop);
-  document.removeEventListener("dragend", onFileDragEnd);
   window.removeEventListener("popstate", syncViewFromLocation);
   window.removeEventListener("resize", onWindowResize);
   window.clearInterval(storageTimer);
@@ -985,27 +451,12 @@ onBeforeUnmount(() => {
       </label>
 
       <div class="top-actions">
-        <button
-          v-if="canWrite"
-          type="button"
-          class="btn primary"
-          :aria-label="t('upload.button')"
-          :aria-expanded="isNarrow ? fabMenuOpen : undefined"
-          @click="onFabClick"
-        >
-          <span class="btn-icon" v-html="isNarrow && fabMenuOpen ? ICONS.close : ICONS.upload"></span>
-          {{ t("upload.button") }}
-        </button>
         <LocaleSwitch class="lang" />
-        <!-- 当前账号：右上角显示名字与只读标记，退出按钮在最右 -->
-        <div
-          v-if="currentUser"
-          class="user-chip"
-          :title="canWrite ? undefined : t('user.readonly-hint')"
-        >
+        <!-- 当前账号：右上角显示名字；只读视图没有写操作 -->
+        <div v-if="currentUser" class="user-chip" :title="currentUser.name">
           <span class="user-avatar" v-html="ICONS.user"></span>
           <span class="user-name">{{ currentUser.name }}</span>
-          <span v-if="!canWrite" class="user-badge">{{ t("user.readonly") }}</span>
+          <span class="user-badge">{{ t("user.readonly") }}</span>
         </div>
         <button
           type="button"
@@ -1027,26 +478,18 @@ onBeforeUnmount(() => {
         <DirTree
           :groups="groups"
           :counts="counts"
-          :recent-count="recentCount"
-          :favorites-count="favoritesCount"
-          :ungrouped-count="ungroupedCount"
+          :recent-count="files.length"
+          :favorites-count="files.filter((file) => file.is_favorite).length"
           :view-kind="viewKind"
           :active-path="currentPath"
           :folded="folded"
           :storage-text="storageText"
           :storage-hint="storageHint"
           :storage-healthy="storageHealthy"
-          :internal-drag="draggingFileId !== null"
-          :can-create="canCreateFolder"
-          :can-write="canWrite"
           @show-recent="showRecent"
           @show-favorites="showFavorites"
-          @show-ungrouped="showUngrouped"
           @open-folder="openFolder"
           @toggle="toggleFolder"
-          @menu="onFolderMenuFromNode"
-          @new-folder="onCreateFolder"
-          @drop-folder="onDropOnFolder"
         />
       </div>
 
@@ -1063,13 +506,7 @@ onBeforeUnmount(() => {
 
       <div v-if="sidebarOpen" class="drawer-mask" @click="sidebarOpen = false"></div>
 
-      <main
-        class="content"
-        @dragenter="onMainDragEnter"
-        @dragover="onMainDragOver"
-        @dragleave="onMainDragLeave"
-        @drop="onMainDrop"
-      >
+      <main class="content">
         <div class="toolbar">
           <div class="crumbs">
             <button
@@ -1106,7 +543,7 @@ onBeforeUnmount(() => {
             <button
               v-if="visibleFiles.length"
               type="button"
-              class="btn"
+              class="btn download-all"
               :disabled="refreshing"
               :title="t('action.download-group-hint', { count: visibleFiles.length })"
               @click="onDownloadAll"
@@ -1114,17 +551,6 @@ onBeforeUnmount(() => {
               <span class="btn-icon" v-html="ICONS.download"></span>
               {{ t("action.download-group-size", { size: formatSize(pageFilesSize) }) }}
             </button>
-
-            <button
-              v-if="viewKind === 'group'"
-              type="button"
-              class="icon-btn"
-              :title="t('action.group-menu')"
-              :aria-label="t('action.group-menu')"
-              aria-haspopup="menu"
-              v-html="ICONS.more"
-              @click="onFolderMenuFromTitle"
-            ></button>
           </div>
         </div>
 
@@ -1132,25 +558,11 @@ onBeforeUnmount(() => {
           v-if="dirs.length || visibleFiles.length"
           :dirs="dirs"
           :files="visibleFiles"
-          :groups="groups"
-          :sortable="sortable"
           :show-group="showGroup"
-          :dragging-file-id="draggingFileId"
-          :can-write="canWrite"
           @open-folder="openFolder"
-          @folder-menu="onFolderMenuFromRow"
           @favorite="onFavorite"
           @download="onDownload"
-          @rename="onRename"
-          @delete="onDelete"
-          @move-group="onMoveGroup"
-          @new-group="(file) => (promptState = { kind: 'move-file-new-folder', file })"
           @error="showActionError"
-          @reorder="onReorder"
-          @reorder-dirs="onReorderDirs"
-          @drag-start="onFileDragStart"
-          @drag-end="onFileDragEnd"
-          @drop-files="onDropOnFolder"
         />
 
         <div v-else class="empty">
@@ -1164,153 +576,23 @@ onBeforeUnmount(() => {
             <template v-else>{{ t("nav.empty-recent") }}</template>
           </p>
           <p v-if="loaded && !searching" class="empty-text">{{ t("content.empty-hint") }}</p>
-          <button
-            v-if="canWrite && loaded && !searching"
-            type="button"
-            class="btn primary"
-            @click="pickFiles"
-          >
-            <span class="btn-icon" v-html="ICONS.upload"></span>
-            {{ t("upload.button") }}
-          </button>
         </div>
 
-        <p v-if="dirs.length && !visibleFiles.length && loaded" class="folder-empty">
-          {{ t("content.folder-empty") }}
-        </p>
-
-        <p v-if="canWrite && loaded && (dirs.length || visibleFiles.length)" class="drop-hint">
-          <span class="drop-hint-icon" v-html="ICONS.upload"></span>
-          {{ t("content.drop-hint") }}
-        </p>
-
-        <div v-if="canWrite && dropActive" class="drop-overlay" aria-hidden="true">
-          <span class="drop-overlay-icon" v-html="ICONS.upload"></span>
-          <p class="drop-overlay-text">{{ t("upload.drop-overlay") }}</p>
-        </div>
+        <div v-if="actionError" class="toast" role="status">{{ actionError }}</div>
       </main>
     </div>
 
-    <!-- 窄屏 FAB 聚合菜单：上传与下载全部收进同一个悬浮按钮 -->
-    <Teleport to="body">
-      <div
-        v-if="isNarrow && fabMenuOpen"
-        class="row-menu fab-menu"
-        role="menu"
-        :aria-label="t('action.upload-menu')"
-      >
-        <button type="button" class="row-menu-item" role="menuitem" @click="onFabUpload">
-          <span class="row-menu-icon" v-html="ICONS.upload"></span>
-          <span class="row-menu-label">{{ t("upload.button") }}</span>
-        </button>
-        <button
-          v-if="visibleFiles.length"
-          type="button"
-          class="row-menu-item"
-          role="menuitem"
-          @click="onFabDownloadAll"
-        >
-          <span class="row-menu-icon" v-html="ICONS.download"></span>
-          <span class="row-menu-label">
-            {{ t("action.download-group-size", { size: formatSize(pageFilesSize) }) }}
-          </span>
-        </button>
-      </div>
-    </Teleport>
-
-    <!-- 文件夹菜单 -->
-    <Teleport to="body">
-      <div
-        v-if="folderMenu"
-        class="row-menu folder-menu-pop"
-        :style="{ left: `${folderMenu.x}px`, top: `${folderMenu.y}px` }"
-        role="menu"
-        :aria-label="folderMenu.name"
-      >
-        <button type="button" class="row-menu-item" role="menuitem" @click="onShowStats">
-          <span class="row-menu-icon" v-html="ICONS.stats"></span>
-          <span class="row-menu-label">{{ t("action.stats") }}</span>
-        </button>
-        <button
-          v-if="canWrite"
-          type="button"
-          class="row-menu-item"
-          role="menuitem"
-          @click="onRenameFolderFromMenu"
-        >
-          <span class="row-menu-icon" v-html="ICONS.pencil"></span>
-          <span class="row-menu-label">{{ t("action.rename-group") }}</span>
-        </button>
-        <button
-          v-if="canWrite && canCreateSubfolder(folderMenu.path)"
-          type="button"
-          class="row-menu-item"
-          role="menuitem"
-          @click="onCreateSubfolderFromMenu"
-        >
-          <span class="row-menu-icon" v-html="ICONS.folder"></span>
-          <span class="row-menu-label">{{ t("action.create-subgroup") }}</span>
-        </button>
-        <template v-if="canWrite">
-          <div class="row-menu-sep" role="separator"></div>
-          <button type="button" class="row-menu-item is-danger" role="menuitem" @click="onDeleteFolderFromMenu">
-            <span class="row-menu-icon" v-html="ICONS.trash"></span>
-            <span class="row-menu-label">{{ t("action.delete-group") }}</span>
-          </button>
-        </template>
-      </div>
-    </Teleport>
-
-    <ConfirmDialog
-      v-if="deleteFolderTarget"
-      :title="t('group.delete-title', { name: deleteFolderTarget.name })"
-      :message="
-        deleteFolderFileCount
-          ? t('group.delete-message', { count: deleteFolderFileCount, target: deleteFolderFallback })
-          : t('group.delete-empty')
-      "
-      :checkbox="deleteFolderFileCount ? t('group.delete-files', { count: deleteFolderFileCount }) : undefined"
-      :checkbox-hint="deleteFolderFileCount ? t('group.delete-files-hint') : undefined"
-      :confirm-label="t('action.delete-group')"
-      @confirm="confirmDeleteFolder"
-      @cancel="deleteFolderTarget = null"
-    />
-
-    <ConfirmDialog
-      v-if="deleteFileTarget"
-      :title="t('confirm.delete', { name: deleteFileTarget.filename })"
-      :confirm-label="t('action.delete')"
-      @confirm="confirmDeleteFile"
-      @cancel="deleteFileTarget = null"
-    />
-
-    <PromptDialog
-      v-if="promptDialog"
-      :title="promptDialog.title"
-      :hint="promptDialog.hint"
-      :value="promptDialog.value"
-      :confirm-label="promptDialog.confirmLabel"
-      @confirm="onPromptConfirm"
-      @cancel="promptState = null"
-    />
-
-    <GroupStatsDialog
-      v-if="statsTarget"
-      :path="statsTarget.path"
-      :files="subtreeFiles(statsTarget.path)"
-      @close="statsTarget = null"
-    />
-
-    <UploadDock
-      v-if="canWrite"
-      ref="uploadDock"
-      :target-group="uploadTarget"
-      :max-file-size="maxFileSize"
-      @uploaded="refresh"
-      @failed="loadStorage"
-    />
-
-    <div v-if="actionError" class="toast" role="status">{{ actionError }}</div>
+    <!-- 窄屏：没有工具栏的空间放「下载全部」，改成右下角悬浮按钮 -->
+    <button
+      v-if="isNarrow && visibleFiles.length"
+      type="button"
+      class="fab"
+      :title="t('action.download-group-hint', { count: downloadAllCount })"
+      :aria-label="t('action.download-group-size', { size: formatSize(pageFilesSize) })"
+      @click="onDownloadAll"
+    >
+      <span class="btn-icon" v-html="ICONS.download"></span>
+    </button>
   </div>
 </template>
 
@@ -1399,7 +681,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* 当前账号：右上角的小胶囊，只读时挂「只读」徽标 */
+/* 当前账号：右上角的小胶囊，右侧挂「只读」徽标 */
 .user-chip {
   display: inline-flex;
   align-items: center;
@@ -1416,19 +698,18 @@ onBeforeUnmount(() => {
 
 .user-avatar {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 22px;
   height: 22px;
-  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   background: var(--surface);
   color: var(--ink-3);
 }
 
 .user-avatar:deep(svg) {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
 .user-name {
@@ -1443,9 +724,10 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
+/* 工具栏按钮（下载全部）与顶栏图标按钮的共用外观 */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1471,18 +753,6 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-.btn.primary {
-  border-color: transparent;
-  background: linear-gradient(135deg, var(--accent), #7b6cf6);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-
-.btn.primary:hover {
-  filter: brightness(1.04);
-}
-
 .btn-icon {
   display: inline-flex;
 }
@@ -1503,79 +773,61 @@ onBeforeUnmount(() => {
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.icon-btn:hover {
-  background: var(--surface-2);
-  color: var(--ink);
-}
-
 .icon-btn:deep(svg) {
   width: 17px;
   height: 17px;
 }
 
-/* ---------- 布局 ---------- */
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* ---------- 两栏布局 ---------- */
 
 .body {
-  position: relative;
   flex: 1;
   display: flex;
   min-height: 0;
 }
 
-/* 拖动分栏时整页禁用选中，避免把列表文字一起抹蓝 */
 .body.is-resizing {
-  cursor: col-resize;
   user-select: none;
+  cursor: col-resize;
 }
 
 .sidebar-wrap {
   display: flex;
-  flex: 0 0 var(--sidebar-width);
-  width: var(--sidebar-width);
-  min-height: 0;
 }
 
-/* 两栏边界的 grip：绝对定位，不占布局宽度；只压住边界两侧几像素 */
 .sidebar-grip {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--sidebar-width) - 3px);
-  z-index: 6;
+  position: relative;
   width: 6px;
+  flex: 0 0 6px;
   cursor: col-resize;
-  touch-action: none;
 }
 
-/* 悬停 / 拖动时显示一条细线，提示这里是可拖拽的分界 */
-.sidebar-grip::before {
+.sidebar-grip::after {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 2px;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--accent);
-  opacity: 0;
-  transition: opacity 0.15s;
+  inset: 0 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.15s ease;
 }
 
-.sidebar-grip:hover::before,
-.sidebar-grip.is-active::before {
-  opacity: 0.6;
+.sidebar-grip:hover::after,
+.sidebar-grip.is-active::after {
+  background: var(--accent-soft);
 }
 
 .content {
-  position: relative;
   flex: 1;
   min-width: 0;
-  padding: 18px 24px 24px;
+  min-height: 0;
   overflow-y: auto;
-  /* 常驻滚动条槽位：切换视图时列表宽度不跳，滚动条也不压住表格右侧的按钮 */
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgb(20 23 44 / 0.16) transparent;
+  padding: 16px 18px 28px;
+  background: var(--surface-2);
 }
 
 /* 细滚动条：轨道透明，拇指内缩成圆角胶囊 */
@@ -1613,6 +865,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 2px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .crumb {
@@ -1627,7 +880,7 @@ onBeforeUnmount(() => {
 }
 
 .crumb:hover {
-  background: var(--surface-2);
+  background: var(--surface);
   color: var(--ink);
 }
 
@@ -1705,59 +958,6 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-.folder-empty {
-  margin: 16px 0 0;
-  color: var(--ink-3);
-  font-size: 13px;
-  text-align: center;
-}
-
-.drop-hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 14px 0 0;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.drop-hint-icon {
-  display: inline-flex;
-}
-
-.drop-hint-icon:deep(svg) {
-  width: 14px;
-  height: 14px;
-}
-
-/* ---------- 拖放遮罩 / 提示 ---------- */
-
-.drop-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  background: rgb(22 25 38 / 0.45);
-  backdrop-filter: blur(2px);
-  color: #fff;
-  pointer-events: none;
-}
-
-.drop-overlay-icon:deep(svg) {
-  width: 46px;
-  height: 46px;
-}
-
-.drop-overlay-text {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-}
-
 .toast {
   position: fixed;
   left: 50%;
@@ -1777,7 +977,27 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-/* ---------- 窄屏：侧栏变抽屉 ---------- */
+/* 窄屏右下角「下载全部」悬浮按钮 */
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  width: 54px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-lg);
+}
+
+.fab:deep(svg) {
+  width: 22px;
+  height: 22px;
+}
 
 @media (max-width: 900px) {
   .hamburger {
@@ -1788,32 +1008,6 @@ onBeforeUnmount(() => {
     width: auto;
     flex: 1;
     margin-left: 0;
-  }
-
-  .top-actions .btn:not(.primary) {
-    display: none;
-  }
-
-  /* 上传改为右下角悬浮按钮（FAB）：脱离顶栏，拇指可达 */
-  .top-actions .btn.primary {
-    position: fixed;
-    right: 16px;
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-    z-index: 60;
-    width: 54px;
-    height: 54px;
-    min-height: 54px;
-    padding: 0;
-    border-radius: 50%;
-    justify-content: center;
-    font-size: 0;
-    gap: 0;
-    box-shadow: var(--shadow-lg);
-  }
-
-  .top-actions .btn.primary .btn-icon:deep(svg) {
-    width: 22px;
-    height: 22px;
   }
 
   .top-actions :deep(.locale-switch) {
@@ -1866,11 +1060,6 @@ onBeforeUnmount(() => {
     padding: 14px 14px 92px;
   }
 
-  /* 移动端没有文件拖放上传，底部的拖拽提示没有意义 */
-  .drop-hint {
-    display: none;
-  }
-
   .toolbar {
     flex-wrap: wrap;
     gap: 8px;
@@ -1884,30 +1073,9 @@ onBeforeUnmount(() => {
     max-width: 140px;
   }
 
-  /* 「下载全部」收进了 FAB 聚合菜单，工具栏不再被下载按钮挤出一行 */
-  .toolbar-right .btn {
+  /* 「下载全部」在窄屏收进右下角悬浮按钮 */
+  .toolbar-right .download-all {
     display: none;
-  }
-
-  /* FAB 聚合菜单：弹出在悬浮按钮上方 */
-  .fab-menu {
-    top: auto;
-    left: auto;
-    right: 16px;
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px) + 54px + 10px);
-    z-index: 61;
-    width: min(280px, calc(100vw - 32px));
-  }
-
-  /* 触屏点击目标放大到 44px 上下 */
-  .fab-menu .row-menu-item {
-    padding: 12px 10px;
-    font-size: 14px;
-  }
-
-  .fab-menu .row-menu-icon:deep(svg) {
-    width: 18px;
-    height: 18px;
   }
 }
 </style>

@@ -57,10 +57,6 @@ fmt-check:
 test: frontend-stub
     go test ./... -count=1
 
-# 跑 S3 集成测试（默认 skip；需要 S3_TEST_ENDPOINT / S3_TEST_BUCKET / S3_TEST_ACCESS_KEY / S3_TEST_SECRET_KEY）
-test-s3: frontend-stub
-    go test ./app ./api -run 'S3' -count=1 -v
-
 # go vet
 vet: frontend-stub
     go vet ./...

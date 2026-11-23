@@ -26,7 +26,7 @@ func NewHandler(instance *app.App) http.Handler {
 // Middleware 给任意处理器套上站点通用中间件：访问日志 + 安全响应头 + 语言协商 + 请求体上限。
 // 并发闸门不在这里：接口、认证、静态各是独立信号量，由接线处各套一层。
 func Middleware(instance *app.App, next http.Handler) http.Handler {
-	return Logging(instance.ClientIP, SecurityHeaders(WithLanguage(LimitBody(instance, next))))
+	return Logging(instance.ClientIP, SecurityHeaders(WithLanguage(LimitBody(next))))
 }
 
 type route struct {
@@ -40,6 +40,13 @@ type route struct {
 
 // NewMux 挂载 /api/* 与探针。页面与静态资源不在这里（那是根目录 web.go 的事），
 // main.go 负责把两者接到一棵路由树上。
+//
+// 只读视图的接口面：
+//   - 登录 / 当前用户；
+//   - 列表（文件 + 目录树）、存储状态；
+//   - 收藏切换（本地元数据文件）；
+//   - 下载（页面内换短效 URL）与分享链接（10 分钟 / 24 小时两档）；
+//   - /s/<path> 是浏览器导航下载与分享链接入口，凭 URL 签名，不需要 Authorization。
 func NewMux(instance *app.App) *http.ServeMux {
 	server := &Server{App: instance}
 	mux := http.NewServeMux()
@@ -50,43 +57,14 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodGet, "/api/me", server.handleMe, true, app.PermissionRead},
 		{http.MethodGet, "/api/files", server.handleListFiles, true, app.PermissionRead},
 		{http.MethodGet, "/api/storage", server.handleStorage, true, app.PermissionRead},
-		{http.MethodPost, "/api/check_file", server.handleCheckFile, true, app.PermissionWrite},
-		{http.MethodPost, "/api/upload", server.handleUpload, true, app.PermissionWrite},
-		{http.MethodPost, "/api/files/{file_id}/favorite", server.handleFavorite, true, app.PermissionWrite},
-		{http.MethodPost, "/api/files/{file_id}/share", server.handleShareLink, true, app.PermissionRead},
-		{http.MethodGet, "/api/files/{file_id}/download", server.handleDownload, true, app.PermissionRead},
-		{http.MethodGet, "/api/files/{file_id}/download-url", server.handleDownloadURL, true, app.PermissionRead},
-		{http.MethodPost, "/api/groups", server.handleCreateGroup, true, app.PermissionWrite},
-		{http.MethodPost, "/api/groups/rename", server.handleRenameGroup, true, app.PermissionWrite},
-		{http.MethodPost, "/api/groups/delete", server.handleDeleteGroup, true, app.PermissionWrite},
-		{http.MethodPut, "/api/groups/order", server.handleSetGroupOrder, true, app.PermissionWrite},
-		{http.MethodPatch, "/api/files/{file_id}", server.handleUpdateFile, true, app.PermissionWrite},
-		{http.MethodDelete, "/api/files/{file_id}", server.handleDelete, true, app.PermissionWrite},
-		// /s/{file_id}?sig=&exp= 是浏览器导航下载与分享链接入口：签名绑定单个文件，
-		// 不需要 Authorization。
-		{http.MethodGet, "/s/{file_id}", server.handleSignedDownload, false, 0},
+		{http.MethodPut, "/api/favorites", server.handleFavorite, true, app.PermissionRead},
+		{http.MethodDelete, "/api/favorites", server.handleFavorite, true, app.PermissionRead},
+		{http.MethodPost, "/api/share", server.handleShareLink, true, app.PermissionRead},
+		{http.MethodGet, "/api/download-url", server.handleDownloadURL, true, app.PermissionRead},
+		{http.MethodGet, "/s/{path...}", server.handleSignedDownload, false, 0},
 	})
-	// /api/files/order 是字面量路径，不能再走 register 的「同路径补一条不限方法」兜底：
-	// 那条兜底会跟 /api/files/{file_id} 的方法模式冲突，ServeMux 注册时就 panic。
-	// 与通配符方法重叠的 PATCH / DELETE 会命中真实的文件处理器，必须显式拦下来；
-	// 其余方法落到通配符兜底，靠 literalRoutes 给出正确的 Allow。
-	mux.HandleFunc(http.MethodPut+" "+orderPath, server.requireSession(app.PermissionWrite, server.handleSetOrder))
-	mux.HandleFunc(http.MethodPatch+" "+orderPath, server.rejectOrderMethod)
-	mux.HandleFunc(http.MethodDelete+" "+orderPath, server.rejectOrderMethod)
 	mux.HandleFunc("/", server.handleNotFound)
 	return mux
-}
-
-// orderPath 是批量排序接口的字面量路径：它是 /api/files/{file_id} 下的保留字。
-const orderPath = "/api/files/order"
-
-// literalRoutes 把字面量路径映射到它真正支持的方法：这类路径不会命中通配符的
-// 405 兜底（兜底的 Allow 是通配符自己的方法集合），要单独换算。
-var literalRoutes = map[string]string{orderPath: http.MethodPut}
-
-// rejectOrderMethod 回 405 并声明 /api/files/order 只支持 PUT。
-func (s *Server) rejectOrderMethod(w http.ResponseWriter, r *http.Request) {
-	s.methodNotAllowed(w, r, http.MethodPut)
 }
 
 // register 按「METHOD 路径」注册，并给每条路径补一条不限方法的规则用来回 405。
@@ -106,13 +84,7 @@ func (s *Server) register(mux *http.ServeMux, routes []route) {
 	for pattern, methods := range allowed {
 		allow := allowValue(methods)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			// 字面量路径实际支持的方法与通配符不同，按路径换算 Allow。
-			// 不能改写闭包里的 allow：同一处理器还会服务通配符路径的请求。
-			header := allow
-			if literal, ok := literalRoutes[r.URL.Path]; ok {
-				header = literal
-			}
-			s.methodNotAllowed(w, r, header)
+			s.methodNotAllowed(w, r, allow)
 		})
 	}
 }
@@ -142,7 +114,7 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/api/"):
 		fail(w, r, http.StatusNotFound, "not-found")
 	case path == "/s" || strings.HasPrefix(path, "/s/"):
-		// 下载入口只认 /s/{file_id}?sig=&exp=，其余一律按「链接无效」处理。
+		// 下载入口只认 /s/<path>?sig=&exp=，其余一律按「链接无效」处理。
 		fail(w, r, http.StatusNotFound, "download.invalid")
 	default:
 		http.NotFound(w, r)

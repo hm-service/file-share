@@ -1,383 +1,143 @@
 # file-share 设计
 
-本文件由用户主导。当前内容由 Lead 依据实现起草（用户已授权先起草再审改）；
-实现与本文不一致处按缺陷处理。
-
 ## 1. 概述
 
-自托管的文件分享服务：上传后按 SHA-256 内容寻址去重（秒传），可收藏、可用文件夹整理、可下载、可生成 10 分钟或 24 小时有效的签名分享链接（免登录下载）。
-交付物是单个静态链接的 Go 二进制，前端构建产物经 `go:embed` 编入。
-运行期状态只有两处：`DATA_DIR`（SQLite、上传暂存、默认的 blob 目录）与可选的 S3 桶。
+file-share 是一个**只读**的文件浏览前端：数据源是 SMB 共享的只读目录（同一台机器上
+samba 的 `daveny/` 目录），页面只做浏览、搜索、收藏、下载与分享链接，不持有文件副本、
+不写文件内容，也没有上传、删除、重命名、移动与排序。
 
-技术栈：Go 1.27.4（标准库 `net/http` + `modernc.org/sqlite` + `golang.org/x/crypto`
-+ `minio-go/v7`）、Vue 3 + Vite + TypeScript；前端在 `frontend/`，产物固定为 `frontend/dist`。
-容器优先，面向 Podman（`podman kube play` / systemd Quadlet）。
+- 一个静态链接的 Go 二进制，前端产物 `go:embed` 进去，运行时只有 `DATA_DIR` 与只读的 `FILES_DIR`。
+- 目录即分组、文件即文件：每次列表请求实时扫描 `FILES_DIR`，SMB 侧增删文件刷新即见，不做同步。
+- 收藏是本地元数据（`DATA_DIR/favorites.json`），可以随时修改，不碰只读数据目录。
+- 分享链接仍是签名 URL：`/s/<相对路径>?sig=&exp=`，10 分钟 / 24 小时两档。
 
 ## 2. 部署
 
-- 镜像 `ghcr.io/hm-service/file-share:<yyyy-MM-dd>` / `:latest`；多阶段 Dockerfile
-  （node 构建前端 → Go 编译 → alpine 只留一个二进制），同时构建 amd64 与 arm64。
-- blob 后端：默认本地 `DATA_DIR/blobs/<sha256>`；配 `S3_ENDPOINT` 后写 S3，
-  对象 key 为 `blobs/xx/yy/<sha256>`（`S3_PREFIX` / `S3_BUCKET` 可改）。两套实现由
-  `app.BlobStore` 隔离，上传、秒传、下载、删除与引用计数语义一致。
-- `k8s.file-share.yaml`：Pod + PVC + ConfigMap + 两个 Secret（运行密钥、用户表）；`readOnlyRootFilesystem: true`、
-  `capabilities.drop: [ALL]`；探针 `/livez`、`/readyz?token=<READYZ_TOKEN>`。
-- 容器以 root 运行：`DATA_DIR` 必须可写（PVC / 具名卷默认满足；宿主机 bind mount 需先处理属主，
-  否则收紧权限会因缺少 `CAP_FOWNER` 失败）。`file-share.kube` 是 Podman Quadlet 模板
-  （`Yaml=./k8s.%p.yaml`）。
+单机（front-server）用 podman kube play `k8s.file-share.yaml`：
+
+- 两个 PVC：`file-share-data`（`DATA_DIR`，放用户表与收藏元数据，可写）与 `samba-data`
+  （SMB 共享的数据卷，只读挂到容器内 `/samba`）。
+- `FILES_DIR=/samba/daveny`：应用只读扫描该目录，路径就是 SMB 上 `\\host\share\daveny` 的内容。
+- 容器 `readOnlyRootFilesystem: true`、非 root、不保留 capabilities；`samba-data` 只读挂载是
+  第二道防线（即使代码有 bug 也写不进数据目录）。
+- `/livez` 永远 200；`/readyz` 检查 `DATA_DIR` 可写与 `FILES_DIR` 可读，可配 `READYZ_TOKEN`。
+- 镜像由 CI 构建（linux/amd64 + linux/arm64）推到 GHCR 与 ACR，front 上 `podman pull` 后重建 Pod。
+
+本地开发：`DATA_DIR=./.scratch/data FILES_DIR=./.scratch/files go run .`，
+`.scratch/files` 可以指向任意测试目录（或真实数据目录的副本）。
 
 ## 3. 环境变量与 Secret
 
-| 变量 | 默认 | 校验 / 说明 |
+| 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | IP 或合法主机名；监听地址 |
-| `PORT` | `8080` | 1–65535 |
-| `TZ` | 空（Go 默认） | 合法时区名；影响日志时间戳 |
-| `DATA_DIR` | `/data` | SQLite、上传暂存 `temp/` 与本地 blob 目录 `blobs/`；必须已存在且可读写，启动时收紧到 0700 |
-| `TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | 逗号分隔 CIDR/IP；只信任这些来源的 `X-Forwarded-For` |
-| `MAX_AUTH_CONCURRENCY` | `32` | `/api/auth` 信号量槽位，≥ 1 |
-| `MAX_API_CONCURRENCY` | `128` | 其余 `/api/*` 槽位，≥ 1 |
-| `MAX_STATIC_CONCURRENCY` | `64` | 静态资源与 `/s/{id}` 槽位，≥ 1 |
-| `MAX_FILE_SIZE` | `2GiB` | 单文件上限；纯整数按字节，支持 `GiB`/`MiB` 后缀 |
-| `S3_ENDPOINT` | 空 | `http(s)://host[:port]`，不带路径 / 查询；为空即本地目录，此时其它 `S3_*` 必须为空 |
-| `S3_BUCKET` | `file-share` | 桶名；必须已存在，启动时校验 |
-| `S3_PREFIX` | `blobs` | 对象 key 前缀，`/` 分隔的段只含 `A-Za-z0-9._-` |
-| `S3_REGION` | `us-east-1` | 签名区域；自建网关任意值即可 |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | 无（S3 模式必填） | Secret；可打印 ASCII，不能含空白；读完从环境表删除 |
-| `GOMEMLIMIT` | — | 交给 Go 运行时，应用不读取 |
-| `SESSION_SIGNING_KEY` | 无，**必填** | Secret；32–128 字符同上；会话 HMAC 密钥，轮换即全部下线 |
-| `URL_SIGNATURE_KEY` | 无，**必填** | Secret；32–128 字符同上；签名 URL 的 HMAC 密钥，轮换即已签链接失效 |
-| `READYZ_TOKEN` | 空 | 空表示 `/readyz` 不设门槛；非空时 16–128 字符同上 |
+| `DATA_DIR` | `/data` | 可写数据目录：用户表与收藏元数据；必须已存在，启动时收紧到 0700。 |
+| `FILES_DIR` | `/data/files` | 只读数据根目录；必须已存在且可读。 |
+| `TRUSTED_PROXIES` | 空 | 逗号分隔的 CIDR，用于取客户端 IP。 |
+| `SESSION_SIGNING_KEY` | 无（必填） | 会话 HMAC 密钥，32–128 位 `[A-Za-z0-9_]`。 |
+| `URL_SIGNATURE_KEY` | 无（必填） | 签名 URL 的 HMAC 密钥，32–128 位 `[A-Za-z0-9_]`。 |
+| `READYZ_TOKEN` | 空 | 非空时 `/readyz` 要求 `?token=` 一致。 |
+| `HOST` / `PORT` | `0.0.0.0` / `8080` | 监听地址。 |
+| `TZ` | 空 | 设了必须是有效的时区名。 |
+| `MAX_AUTH_CONCURRENCY` / `MAX_API_CONCURRENCY` / `MAX_STATIC_CONCURRENCY` | 32 / 128 / 64 | 三组请求的信号量槽位。 |
 
-数值 / 主机 / 端口 / 时区写错直接拒绝启动（exit 1），不做静默降级。
+用户表固定读 `DATA_DIR/users.yaml`（容器里由 Secret 以 subPath 挂载），权限只需要 `read`：
+只读视图没有写接口，配置 `write` 没有意义（`write` 必须同时带 `read` 的校验保留）。
 
-### 3.1 用户表
+## 4. 数据目录与运行期状态
 
-用户表固定在 `DATA_DIR/users.yaml`，是一份 YAML，结构对齐 SeaweedFS 的 s3 config：身份列表 + 权限数组。
-用户表在启动时加载校验（任一字段不合法即拒绝启动），运行期只读，改表要重启。
-
-```yaml
-users:
-  - name: admin
-    password: "change_me"
-    permissions: [read, write]
-  - name: guest
-    password: "guest_password_123"
-    permissions: [read]
-```
-
-- 名字 1–64 位 `[A-Za-z0-9._-]`、以字母或数字开头、全局唯一；密码 8–256 字节明文保存，
-  文件权限建议 0600；权限只允许 `read` / `write`，至少一项，且 `write` 必须同时带 `read`
-  （只写 `write` 的配置会被拒绝启动：浏览是写操作的前提）。
-- `read` 覆盖浏览、统计、下载、签分享链接；`write` 覆盖上传（含秒传预检）、收藏、
-  重命名 / 移动 / 删除文件、新建 / 重命名 / 删除 / 排序文件夹。
-- 会话凭据只带用户名（见 §7），请求时按当前用户表解析权限：删掉用户即等于吊销其会话。
-
-## 4. 数据目录与表结构
+`DATA_DIR`（应用自己维护，0700）：
 
 ```
-DATA_DIR/                   0700
-  file-share.db             0600  SQLite（WAL 模式）
-  file-share.db-wal/-shm          WAL 附带文件
-  blobs/                    0700  本地模式下的 blob 目录（S3 模式为空）
-    <sha256>                0600  内容寻址的物理文件
-  users.yaml                     用户表（容器部署时由 Secret 挂进来）
-  temp/                     0700  上传暂存
-    .upload-*.tmp                 上传中的临时文件，启动时清理残留
+users.yaml        部署方提供，只读用户表
+favorites.json    应用维护的收藏元数据（0600），{"paths": ["软件/说明.md", ...]}
 ```
 
-S3 模式下 `blobs/` 为空，
-blob 存在桶里：`<S3_PREFIX>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>`。
-两种模式下同一内容都只存一份，删除记录时若该 sha 已无引用则删除 blob。
+没有数据库、没有 blob 目录、没有上传暂存：只读视图不存任何文件内容。
 
-旧版本把 blob 放在 `DATA_DIR/files/`：当前版本只读 `blobs/`、不做自动改名，
-启动时检测到旧布局会打一条带 `mv files blobs` 的警告。
+`FILES_DIR`（只读）：
 
-```sql
-CREATE TABLE IF NOT EXISTS file (
-  id          TEXT    PRIMARY KEY,          -- uuid4，32 位小写十六进制
-  filename    TEXT    NOT NULL,             -- 展示名 / 下载名，仅 basename，<= 255 字节
-  sha256      TEXT    NOT NULL,             -- 内容指纹，64 位小写十六进制
-  size        INTEGER NOT NULL,             -- 字节数
-  is_favorite INTEGER NOT NULL DEFAULT 0,   -- 0/1
-  group_path  TEXT    NOT NULL DEFAULT '',  -- 文件夹路径 1~3 段，空串 = 未分组
-  sort_order  INTEGER NOT NULL DEFAULT 0,   -- 升序
-  created_at  INTEGER NOT NULL              -- unix 秒
-);
-CREATE INDEX IF NOT EXISTS file_sha256_idx ON file (sha256);
-
-CREATE TABLE IF NOT EXISTS groups (
-  path       TEXT    PRIMARY KEY,          -- 文件夹完整路径
-  parent     TEXT    NOT NULL,             -- 父路径，空串 = 一级
-  name       TEXT    NOT NULL,             -- 路径最后一段
-  sort_order INTEGER NOT NULL,             -- 同一父级内升序
-  UNIQUE (parent, name)
-);
-```
-
-- 单库单连接（`SetMaxOpenConns(1)`），无外键，一致性由代码保证。
-- `PRAGMA user_version = 6`；旧库启动时在事务内逐级迁移，更高版本拒绝启动；
-  更旧的 Python 数据（`files.db` / `favorite.json`）也拒绝启动。升级前备份 `DATA_DIR`。
-- 列表排序 `sort_order ASC, created_at DESC, id ASC`；上传 / 秒传插入时取 `MAX+1`。
-- 文件夹最多三级，空文件夹也保留，每级都有自己的页面。
-  改名 / 删除按路径前缀处理全部后代（同一事务）；删除文件夹时组内文件可上移到父路径或一并删除。
-- 收藏状态全局：收藏不按用户隔离。
+- 目录即分组，文件即文件；**深度不限制**。
+- 以 `.` 开头的文件 / 目录一律跳过（隐藏文件与 `.file-share/` 之类的元数据目录不展示）。
+- 符号链接与设备等非常规文件跳过：不跟随链接，避免逃出数据根目录。
+- 排序：分组与文件都按名称（大小写不敏感）排序；「最近」按修改时间倒序取 20 条。
+- 文件时间取文件系统 mtime，大小取 `st_size`。
 
 ## 5. 页面
 
-| 路径 | 页面 | 说明 |
-| --- | --- | --- |
-| `/` | 最近 | 跨文件夹按上传时间倒序，只列最近 20 个 |
-| `/favorites` | 收藏 | 全部收藏文件 |
-| `/ungrouped` | 未分组 | `group_path` 为空的文件 |
-| `/<一级>`、`/<一级>/<二级>`、`/<一级>/<二级>/<三级>` | 文件夹 | 内容区列出该文件夹的子文件夹与直属文件 |
-| `/auth` | 登录页 | 输入用户名与密码换取会话 |
-
-- 桌面端是「顶栏 + 左侧文件夹树 + 右侧内容区表格 + 右下角上传队列」，顶栏左侧是搜索框、右侧是上传与
-  当前账号（只读账号挂「只读」徽标），都常驻；窄屏把文件夹树收进抽屉（左上角菜单按钮打开），顶栏只留
-  搜索框、账号与退出，上传与下载全部聚合到右下角悬浮按钮（点开在按钮上方弹出「上传文件 / 下载本目录文件」菜单），
-  表格只保留名称与操作列。桌面端可拖动两栏边界调节文件夹树宽度（200px ～ 视口一半，
-  宽度只存本次会话，刷新后回到默认；窄屏隐藏分隔条）；侧栏与内容区的滚动条常驻槽位并落在内边距里，
-  不压住列表行。
-- 新建文件夹不单设顶栏或工具栏按钮，统一走文件夹行的右键 / 「⋯」菜单（侧栏文件夹树底部保留一个新建入口）。
-- 文件夹树：快捷入口（最近 / 收藏 / 未分组）+ 最多三级的文件夹树（空文件夹也显示，行尾是
-  子树文件数）；首次打开默认展开到第二级（更深的默认折叠），展开 / 折叠状态存 `localStorage`。
-  右键或节点操作的「⋯」打开菜单
-  （统计信息、重命名、新建子文件夹、删除）。
-- 内容区表格列为名称、大小、上传时间（`created_at`）、指纹（8 位短 SHA-256）、操作：子文件夹行在前（显示子树项数），
-  文件行在后；移动端隐藏大小、时间、指纹三列，操作列收窄到只放下载 / 收藏 / 更多三个图标，宽度让给文件名，
-  工具栏里的「下载全部」收进悬浮按钮的聚合菜单，列表上方只留面包屑与文件夹「⋯」，不再为下载按钮多占一行，
-  底部的拖拽上传提示在窄屏隐藏（移动端没有外部文件拖放）。
-  文件行操作是「下载、复制分享链接、收藏、移动到文件夹、更多（24 小时分享链接 / 重命名 / 复制 curl / 删除）」，
-  点文件名打开详情（含完整 SHA-256）。顶部面包屑逐级可点回上层。
-- 拖拽：文件夹行与文件行各用一个独立的 SortableJS 列表。文件夹行只在同级文件夹之间排序
-  （提交 `PUT /api/groups/order`，失败回滚），永远排在文件之前；文件行在同一文件夹内排序
-  （提交 0..n-1 的 `sort_order`，失败回滚）；文件拖到左侧文件夹或内容区的文件夹行上 = 移动到
-  该文件夹；外部文件拖到内容区 = 上传到当前文件夹，拖到某个文件夹上 = 上传到该文件夹。
-  窄屏与触摸设备在行首常显拖拽把手，按住约 150ms 后才开始拖拽，避免和滚动冲突。
-- 上传队列在右下角：显示实时速度、可取消 / 重试；入队时用列表接口下发的 `max_file_size`
-  提前拒绝超限文件（服务端 413 兜底），成功后把记录移进入队时所在的文件夹。
-- 文件夹视图提供「全部下载（X GiB）」：按可见顺序逐个签 10 分钟有效的 `/s/{id}?sig&exp`
-  再逐个触发，每个文件是独立下载（不打包）。
-- 搜索是全局的：跨全部文件夹按文件名过滤（写进 `?q=`），结果行内标出所在文件夹；
-  搜索期间禁用拖拽排序。
-- 前端两个 HTML 入口（`index.html` / `auth.html`），不引入路由库：视图与路径手写映射，
-  `pushState` / `popstate` 还原前进后退，超过三段 404，未知文件夹回退「最近」；文案走 i18n
-  （简中 / English）。未登录跳 `/auth?next=`，接口 401 时清会话再跳转。
+- 桌面端：「顶栏（搜索框 / 语言 / 当前账号与只读徽标 / 退出） + 左侧目录树 + 内容区表格」。
+- 窄屏：目录树收进抽屉（左上角菜单按钮打开）；内容区隐藏大小与修改时间列；「下载全部」
+  收进右下角悬浮按钮（FAB）。
+- 目录树：快捷入口（最近 / 收藏） + 任意深度的目录树（空目录也显示，行尾是子树文件数），
+  展开 / 折叠状态存 `localStorage`。
+- 内容区：面包屑逐级可点；子目录行在前（显示子树项数），文件行在后；右上角「下载全部（大小）」
+  下载当前视图里的可见文件。
+- 文件行操作：下载、分享链接（10 分钟档）、收藏、「更多」（复制 10 分钟 / 24 小时分享链接）；
+  文件名点开详情（大小、修改时间、所在目录、相对路径）。移动端把分享入口收进「更多」菜单。
+- 「最近」与搜索结果跨目录混排，行内标出文件所在目录。
+- 搜索是全局的：按文件名子串过滤，写进 `?q=`；搜索期间面包屑显示「搜索结果」。
+- 没有上传按钮、拖拽上传、删除、重命名、移动、排序：界面里不出现这些入口。
 
 ## 6. 接口
 
-错误响应统一为 `{"detail": "<按 Accept-Language 本地化的文案>"}`；登录后用
-`Authorization: Bearer <session>`。
+全部接口在 `/api` 下（登录除外），统一 `Authorization: Bearer <session>`；错误体是
+`{"detail": "…"}`（按 `Accept-Language` 本地化）。
 
-### 6.1 认证
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/auth` | 无 | 用户名 + 密码换会话，返回 `{token, expires_at, user}`。 |
+| GET | `/api/me` | read | 当前用户与权限。 |
+| GET | `/api/files` | read | 返回 `{files, groups}`：全部文件与目录（含空目录）。 |
+| GET | `/api/storage` | read | `{backend:"dir", healthy, error?}`：只读目录与收藏元数据是否可用。 |
+| PUT / DELETE | `/api/favorites?path=` | read | 收藏 / 取消收藏，返回 `{is_favorite}`。 |
+| POST | `/api/share` | read | body `{"path","ttl":"10m"|"24h"}`，返回 `{url}`。 |
+| GET | `/api/download-url?path=` | read | 签一个 10 分钟有效的下载地址，返回 `{url}`。 |
+| GET | `/s/<相对路径>?sig=&exp=` | 签名 | 匿名下载入口；路径逐段百分号编码，签名覆盖转义后的路径。 |
+| GET | `/livez`、`/readyz` | 无 | 存活 / 就绪探针。 |
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/auth` | `{"username","password"}` → `200 {"token":"<session>","expires_at":<unix>,"user":{"name","permissions"}}`；错误 400（请求体不合法）/ 401（用户名或密码错误）/ 405 / 413（请求体超限）/ 500（签发失败） |
+`GET /api/files` 的单文件记录：
 
-- 原始凭据只出现在 `/api/auth`；校验有 1–1.2 秒最小耗时，防时序侧信道。
-- 会话：`base64url("<exp>|<nonce>|<username>") + "." + base64url(HMAC-SHA256(SESSION_SIGNING_KEY, "v2|"+payload))`，
-  nonce 16 字节，有效期 30 天；先验签名再验过期，再按当前用户表解析用户名与权限（删用户即吊销会话）。
-- 无状态会话不可单独撤销，只能轮换密钥让全部下线；退出登录由前端清除凭据。
-
-### 6.2 文件（均需登录）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/me` | 当前用户与权限 `{"name","permissions":["read","write"]}`，界面据此隐藏写操作 |
-| GET | `/api/files` | `{"files":[…],"groups":[…],"max_file_size":<int64>}`；文件按 `sort_order` 升序、创建时间倒序；`groups` 含空文件夹 |
-| GET | `/api/storage` | 当前 blob 方案：`{"backend":"local"}` 或 `{"backend":"s3","bucket","prefix"}`，外加实时探测的 `healthy` 与不可用时的 `error` 文案；不含 endpoint 与凭据 |
-| POST | `/api/check_file` | 秒传预检（multipart：`client_sha256`、`filename`）：命中则建记录并返回 `{"exists":true,"id","filename","size"}`，否则 `{"exists":false}` |
-| POST | `/api/upload` | multipart：`file` + `client_sha256`；流式落盘并校验 SHA-256，成功 `{"id","sha256"}`，超限 413 |
-| PATCH | `/api/files/{id}` | 重命名 / 改文件夹 `{"filename","group_path"}`（至少一个，空串 = 未分组，改文件夹移到末尾） |
-| POST | `/api/groups` | 新建空文件夹 `{"path"}`（1~3 段），201；已存在 409 |
-| POST | `/api/groups/rename` | 重命名最后一段并改写全部后代 `{"path","new_name"}`，204；目标已存在 409 |
-| POST | `/api/groups/delete` | 删除文件夹及后代 `{"path","delete_files"}`；`false` 时文件上移到父路径，204 |
-| PUT | `/api/groups/order` | 保存某层顺序 `{"parent","names"}`（须覆盖该父级全部文件夹），204；集合不符 409 |
-| PUT | `/api/files/order` | 批量排序 `{"items":[{"id","sort_order"}]}`（1..2000 项），204；任一 id 不存在整批 404 |
-| POST | `/api/files/{id}/favorite` | 切换收藏，返回 `{"is_favorite":bool}` |
-| GET | `/api/files/{id}/download` | 登录态下载附件（支持 Range / HEAD） |
-| GET | `/api/files/{id}/download-url` | 签浏览器下载地址 `{"url":"/s/{id}?sig=…&exp=…"}` |
-| POST | `/api/files/{id}/share` | 签分享链接，同上；`ttl` 可选 600（默认）/ 86400，其它值 400 |
-| DELETE | `/api/files/{id}` | 删除记录；无引用后删 blob；204 |
-
-上传约束：字段顺序不限，边收边算哈希；同内容并发只存一份 blob、各留一条记录；取消上传由前端中止，服务端按失败路径清理临时文件（见 §6.4）。
-
-### 6.3 匿名下载（无需登录）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/s/{file_id}?sig=…&exp=…` | 凭签名下载（支持 Range / HEAD）；无效 / 过期一律 404 |
-
-`sig = base64url(HMAC-SHA256(URL_SIGNATURE_KEY, "v1|<method>|<escapedPath>|<exp>"))`，
-`escapedPath` 不含查询参数，URL 固定 `sig` 在前、`exp` 在后。先验签再判过期，
-签名覆盖方法与路径。下载地址固定 10 分钟；分享链接可选 10 分钟或 24 小时（`ttl` 只认这两档），
-格式相同、用途不同；
-与会话凭据密钥隔离，访问日志只记 `/s/{file_id}`。
-
-### 6.4 上传与下载链路
-
-两种 blob 后端语义一致，区别只在临时文件如何变成 blob。后端故障（连不上、凭据失效、桶被删、
-本地 blob 目录丢失）在业务层统一回 503 `storage.unavailable`，与「服务器内部错误」区分开；
-对象不存在仍是 404。`/api/storage` 每次请求实时探测后端（S3 探桶、本地确认 blob 目录），
-响应带 `healthy` 与不可用时的 `error`，侧栏底部的存储提示据此变红；顶栏右上角显示当前用户，
-只读账号挂「只读」徽标。
-
-上传先完整写本地临时文件：
-`multipart` 字段顺序不固定，且要边收边算哈希、超限早拒，请求结束才决定临时文件留不留。
-同一 sha 的「Head + 落位 + 插记录」由 64 路 sha 分片锁串行，网络 IO 不占 `App.mu`；
-落库用不带取消信号的 ctx，避免客户端断连让已收完的内容落库半途而废。
-
-#### 上传 · 本地目录
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as 浏览器
-    participant A as 应用
-    participant D as 本地磁盘 DATA_DIR
-
-    B->>A: POST /api/upload（multipart：file + client_sha256）
-    A->>D: 建 temp/.upload-<uuid>.tmp，边收边写边算 sha256
-    Note over A: 超过 MAX_FILE_SIZE → 413，删临时文件
-    A->>A: 校验指纹与文件名（不符 → 400，删临时文件）
-    A->>A: 关闭临时文件，取 sha 分片锁
-    A->>D: Head = stat(blobs/<sha>)
-    alt blob 已存在（秒传）
-        A->>D: 删临时文件
-    else blob 不存在
-        A->>D: rename 临时文件 → blobs/<sha>（同文件系统原子，不复制内容）
-    end
-    A->>A: 插入 SQLite 记录
-    A-->>B: 200 {"id","sha256"}
+```json
+{"id": "软件/说明.md", "filename": "说明.md", "group_path": "软件",
+ "size": 9, "created_at": 1795086516, "is_favorite": false}
 ```
 
-#### 上传 · S3
+`id` 就是相对 `FILES_DIR` 的路径，下载与分享都用它；分组：
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as 浏览器
-    participant A as 应用
-    participant D as 本地磁盘 DATA_DIR
-    participant S as S3
-
-    B->>A: POST /api/upload（multipart：file + client_sha256）
-    A->>D: 建 temp/.upload-<uuid>.tmp，边收边写边算 sha256
-    Note over A: 超过 MAX_FILE_SIZE → 413，删临时文件
-    A->>A: 校验指纹与文件名（不符 → 400，删临时文件）
-    A->>A: 关闭临时文件，取 sha 分片锁
-    A->>S: Head = StatObject(blobs/xx/yy/<sha>)
-    alt 对象已存在（秒传）
-        A->>D: 删临时文件
-    else 对象不存在
-        A->>S: PutObject（16 MiB 分片，读本地临时文件）
-        A->>D: 删临时文件
-    end
-    A->>A: 插入 SQLite 记录
-    A-->>B: 200 {"id","sha256"}
+```json
+{"path": "软件/安卓应用", "parent": "软件", "name": "安卓应用"}
 ```
-
-秒传预检 `POST /api/check_file` 只做 `Head`：命中则补一条记录、不传内容。
-
-#### 下载
-
-接口按权限分两类：读接口要求 `read`，写接口要求 `write`（只读账号调用写接口回 403）。
-下载入口有两个：`GET /api/files/{id}/download`（Bearer）与 `GET /s/{id}?sig&exp`（签名 URL），
-最终都汇到 `Blobs.Open` + `http.ServeContent`。`download-url` / `share` 是「先签后下」的签发段：
-只签发地址，签发前用 `Blobs.Head` 确认记录与对象都在（缺失 404），不传输内容。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as 浏览器
-    participant A as 应用
-    participant S as blob 后端（本地 / S3）
-
-    alt Bearer
-        B->>A: GET /api/files/{id}/download（Authorization: Bearer）
-        A->>A: 验会话
-    else 签名 URL
-        B->>A: GET /s/{id}?sig=…&exp=…（无 Authorization）
-        A->>A: 验签 + 判过期（失败 → 404）
-    end
-    A->>A: 查 SQLite 记录
-    A->>S: Open(sha)（S3：GetObject + StatObject）
-    S-->>A: 对象流
-    loop ServeContent 流式转发，不落盘
-        S-->>A: 读取（约 32 KiB 缓冲）
-        A-->>B: 写响应（Range / HEAD / Content-Length）
-    end
-    A->>S: Close
-```
-
-- 下载不落本地磁盘、不进内存：`Open` 返回文件句柄或 S3 响应体，`ServeContent` 边读边写回。
-- S3 模式在 `Open` 里先 `StatObject`：对象丢失时在写响应头之前就 404，而不是流到一半才断。
-- 文件名由记录决定：`Content-Disposition` 用 `mime.FormatMediaType`，非 ASCII 名走 RFC 2231
-  的 `filename*`；HEAD 与 Range 归一为同一个签名校验。
-
-| 步骤 | 本地目录 | S3 |
-| --- | --- | --- |
-| 上传暂存 | `DATA_DIR/temp/.upload-*.tmp`（两种模式都有） | 同左 |
-| 存在性 `Head` | `os.Stat` | `StatObject` |
-| 落位 `PutFile` | rename 到 `blobs/`（同文件系统） | `PutObject` 后删临时文件 |
-| 打开 `Open` | `os.Open` | `GetObject` + `StatObject` |
-| 删除 `Delete` | `os.Remove` | `RemoveObject` |
-| 启动检查 | 无 | `BucketExists`，桶不存在拒绝启动 |
-
-### 6.5 探针
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/livez` | 进程活着就 200；无闸门、不记日志 |
-| GET | `/readyz` | 校验数据目录 / 数据库权限与读写（`__probe` 表）；`READYZ_TOKEN` 非空时需 `?token=`；失败 503，原因只进日志 |
 
 ## 7. 安全模型
 
-- 认证：用户表（`DATA_DIR/users.yaml`）里的用户名 + 明文密码。密码比较用 SHA-256 摘要 + 恒定时间比较，
-  用户名不存在也走同一路径，并统一补足最小登录耗时，避免用耗时区分「用户不存在」与「密码错误」。
-- 授权：`/api/*` 除 `POST /api/auth` 外均需会话；匿名访问只通过 `/s/{id}?sig&exp`，
-  绑定单文件、10 分钟或 24 小时失效、不是会话凭据、不进日志。
-- Secret（会话密钥、URL 密钥、探针令牌、S3 凭据）读完立即从进程环境表删除；用户表文件不落环境变量内容。
-- 数据权限：`DATA_DIR` 0700、`blobs/` 与 `temp/` 0700、数据库 0600、本地 blob 与上传临时文件 0600，启动时收紧；
-  `/readyz` 断言数据目录、两个子目录与数据库文件的权限与读写。S3 模式改用桶凭据控制访问。
-  用户表由部署方提供（容器里是只读 Secret 挂载），本地部署建议 0600。
-- 响应头：`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
-  `X-Frame-Options: DENY`、严格 CSP
-  （`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';`）。
-- 输入上限：登录 JSON 4 KiB、其它 JSON 64 KiB、排序 256 KiB（≤ 2000 项）、秒传表单 1 MiB、
-  上传 `MAX_FILE_SIZE`；文件名只取 basename 并校验长度 / 字符；文件夹路径最多三级，
-  每段 trim 后 ≤ 64 字节、不含控制字符与 `/`、不是 `.` / `..`、不以 `.html` 结尾，
-  一级段不与站点已有路径（`api`、`auth`、`favorites` 等）重名。
-- 并发闸门：认证、业务 API、静态资源 / 签名下载各自独立信号量。
-- 反代职责：TLS、限流、访问控制在反向代理完成；应用只信任 `TRUSTED_PROXIES` 内的转发头。
-- 日志：结构化 JSON 到 stdout，一条请求一行，含真实客户端 IP 与 RFC 3339 时间；敏感值不落日志。
-  `/livez` 与静态资源（`/assets/*`）不记访问日志。
+- 会话：HMAC-SHA256 无状态凭据（`v2|<exp>|<nonce>|<username>`），30 天有效；改
+  `SESSION_SIGNING_KEY` 会让所有会话失效。
+- 登录：用户表 YAML 明文密码，SHA-256 恒时比较，且每次登录至少 1 秒 + 抖动，抹掉时序侧信道。
+- 签名 URL：`body = v1|GET|<escapedPath>|<exp>`，HMAC 用 `URL_SIGNATURE_KEY`；换路径、换方法、
+  改过期时间都验不过。10 分钟（页面内下载）与 24 小时（分享链接）两档；HEAD 与 GET 共用签名。
+- 路径安全：所有外部路径先做相对路径校验（拒绝绝对路径、`..`、空段、反斜杠、点开头的段），
+  再用 `os.Root` 打开 —— 即使数据目录里出现指向外部的符号链接也逃不出去；`samba-data` 只读挂载
+  是第二道防线。
+- 容器：`readOnlyRootFilesystem`、非 root、drop ALL capabilities；`/data` 是唯一可写卷。
+- 数据目录 0700；`favorites.json` 0600；用户表由部署方维护。
 
 ## 8. 构建与验证
 
-- `just check`（gofmt / vet / test + 前端 typecheck）、`just build`（前端构建 + 交叉编译到
-  `.dist/app-<os>-<arch>`）、`just run`、`just stop`。
-- 二进制用 `CGO_ENABLED=0 -ldflags="-w -s" -trimpath` 构建，`ldd` 应报 `not a dynamic executable`。
-- 测试：标准库 `testing`，表格驱动；`internal/testenv` 提供临时 `DATA_DIR` 实例；
-  覆盖认证 / 会话、上传秒传与去重、签名 URL、探针、错误路径、安全头与 i18n，覆盖率记入 README。
-  S3 用例（Range 上传下载、秒传、引用计数删除、启动校验）需 `S3_TEST_*`，
-  未配置时整组 skip，CI 默认不跑。
-- 前端验证：构建后用无头 Chromium 截图并检查控制台错误；关键截图存 `docs/` 并在 README 引用。
+- `just check`：gofmt 检查 + `go vet` + `go test` + 前端 `pnpm typecheck`。
+- `just frontend` / `just build`：构建前端产物并交叉编译 linux/amd64 + arm64。
+- Go 测试：`app` 覆盖目录扫描（任意深度、隐藏、符号链接、空目录）、路径校验、收藏元数据
+  读写与失效路径、签名 URL 往返；`api` 覆盖列表 / 收藏 / 分享 / 下载 / 401 / 404 / 405；
+  `main` 覆盖环境变量解析与站点外壳。
+- 本地验收：`FILES_DIR` 指向测试目录起服务，用 Playwright 走「登录 → 目录 → 搜索 → 收藏 →
+  下载 → 分享链接 → 移动端」。
+- 文档截图由无头 Chromium 重拍，`DESIGN.md` / `README.md` 与实现同步。
 
 ## 9. 已知取舍
 
-- 权限只有粗分的 `read` / `write`；收藏是全局状态，没有按用户隔离。
-- 会话不可单独撤销；分享链接在有效期内无法提前撤销、不记访问次数，需要更细粒度时再引入分享表。
-- 文件夹最多三级；移动文件只能通过行内菜单或把行拖到文件夹上，跨文件夹的拖拽排序未实现。
-- 文件与文件夹的排序都只在同一父级内拖拽提交相对顺序，不跨级拖动；搜索期间禁用拖拽。
-- 结构变更只在启动时一次性迁移，不做运行期兼容分支；旧 Python 数据不迁移。
-  blob 目录从旧版 `files/` 到 `blobs/` 不自动改名，只在启动时打警告（升级步骤见 README）。
-- 服务不设请求体读超时：慢连接交给反向代理的限流 / 超时兜底（大文件上传本身需要长 body）。
-- S3 是可选外部依赖：配置后 S3 不可用会导致上传 / 下载失败（启动时桶检查直接 fail-fast）；
-  对象存储自身的部署、备份、复制与监控由部署方负责。
-- 多实例共用一个桶时必须使用不同 `S3_PREFIX`：引用计数在各实例自己的 SQLite 里，
-  共享前缀会让一个实例删掉另一个实例还在引用的对象。
-- 本地目录 → S3 的切换不做自动迁移：停服后由运维用任意工具把 `blobs/` 按 `<前缀>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>` 传到桶里，
-  再配 `S3_*` 重启；本地 `blobs/` 在确认稳定后自行清理。
+- 每次列表请求实时扫描 `FILES_DIR`，不做缓存或索引：当前规模（数百文件）毫秒级；
+  目录数量到十万级时再考虑索引。
+- 目录深度不限制；顶级目录恰好叫 `favorites` 时会被当成收藏视图（与收藏路径保留字冲突，
+  只读视图不改数据目录，属于已知限制）。
+- 收藏记录与文件解耦：SMB 侧删掉文件后收藏记录仍在，读取时自然匹配不到、不显示。
+- 没有文件内容预览与打包下载：下载是逐个文件的独立下载（浏览器可能询问是否允许批量下载）。
+- 上传 / 删除 / 重命名 / 移动 / 排序全部移除；要改文件请直接操作 SMB 共享。
+- 数据目录由部署方负责备份、权限与监控；应用只读它。

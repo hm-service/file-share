@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,20 +222,15 @@ func TestLimitBody(t *testing.T) {
 }
 
 func TestBodyLimit(t *testing.T) {
-	const maxFileSize = int64(1 << 20)
 	cases := []struct {
 		name    string
 		path    string
 		limit   int64
-		key     string
 		limited bool
 	}{
-		{name: "登录 4 KiB", path: "/api/auth", limit: MaxAuthBodyBytes, key: "request.too-big", limited: true},
-		{name: "秒传预检 1 MiB", path: "/api/check_file", limit: MaxCheckFileBodyBytes, key: "request.too-big", limited: true},
-		{name: "上传 MAX_FILE_SIZE + 1 MiB", path: "/api/upload", limit: maxFileSize + uploadBodyOverhead, key: "upload.too-big", limited: true},
-		{name: "其它 JSON 接口 64 KiB", path: "/api/files", limit: MaxJSONBodyBytes, key: "request.too-big", limited: true},
-		{name: "批量排序 256 KiB", path: "/api/files/order", limit: MaxOrderBodyBytes, key: "request.too-big", limited: true},
-		{name: "带路径参数的接口", path: "/api/files/abc/favorite", limit: MaxJSONBodyBytes, key: "request.too-big", limited: true},
+		{name: "登录 4 KiB", path: "/api/auth", limit: MaxAuthBodyBytes, limited: true},
+		{name: "其它 JSON 接口 64 KiB", path: "/api/files", limit: MaxJSONBodyBytes, limited: true},
+		{name: "收藏接口 64 KiB", path: "/api/favorites", limit: MaxJSONBodyBytes, limited: true},
 		{name: "页面不限制", path: "/"},
 		{name: "静态资源不限制", path: "/assets/app-abc.js"},
 		{name: "探针不限制", path: "/readyz"},
@@ -244,21 +238,13 @@ func TestBodyLimit(t *testing.T) {
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			limit, key, limited := bodyLimit(item.path, maxFileSize)
+			limit, limited := bodyLimit(item.path)
 			if limited != item.limited {
 				t.Fatalf("bodyLimit(%q) limited = %v，想要 %v", item.path, limited, item.limited)
 			}
-			if limited && (limit != item.limit || key != item.key) {
-				t.Errorf("bodyLimit(%q) = %d %q，想要 %d %q", item.path, limit, key, item.limit, item.key)
+			if limited && limit != item.limit {
+				t.Errorf("bodyLimit(%q) = %d，想要 %d", item.path, limit, item.limit)
 			}
 		})
 	}
-
-	// MAX_FILE_SIZE 允许到 int64 上限：加上多部分开销时不能绕成负数。
-	t.Run("接近 int64 上限不溢出", func(t *testing.T) {
-		limit, key, limited := bodyLimit("/api/upload", math.MaxInt64)
-		if !limited || key != "upload.too-big" || limit != math.MaxInt64 {
-			t.Errorf("bodyLimit 溢出防护 = %d %q %v", limit, key, limited)
-		}
-	})
 }

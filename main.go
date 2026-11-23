@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,14 +24,15 @@ import (
 // 进程以 254 退出。
 const shutdownTimeout = 5 * time.Second
 
-// defaultMaxFileSize 是单个上传文件的默认大小上限（2 GiB）。
-const defaultMaxFileSize = 2 << 30 // 2147483648
-
 // defaultDataDir 是未设置 DATA_DIR 时的默认数据目录：容器部署时 /data 由卷挂载进来。
 const defaultDataDir = "/data"
 
+// defaultFilesDir 是未设置 FILES_DIR 时的默认只读数据目录：
+// 容器部署时把只读数据卷挂到 /data/files（SMB 共享的数据根）。
+const defaultFilesDir = "/data/files"
+
 // usersFileName 是数据目录下的用户表文件名：用户表固定读 DATA_DIR/users.yaml，
-// 与库文件、blob 目录同级；容器部署时由 Secret 挂成这个文件。
+// 与收藏元数据同级；容器部署时由 Secret 挂成这个文件。
 const usersFileName = "users.yaml"
 
 // initLogger 把默认 logger 换成输出到 stdout 的 JSON handler，
@@ -93,7 +91,7 @@ func run() int {
 	slog.Info("server started",
 		slog.String("addr", listener.Addr().String()),
 		slog.String("data_dir", instance.Config.DataDir),
-		slog.String("blob_store", instance.Storage.Describe()),
+		slog.String("files_dir", instance.Config.FilesDir),
 		slog.String("start_at", time.Now().Format(time.RFC3339)),
 	)
 	return serve(server, listener, instance)
@@ -201,6 +199,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 		return zero, limits, err
 	}
 	dataDir := readDataDir()
+	filesDir := readFilesDir()
 	// 用户表就在 DATA_DIR 下：先确认目录存在，别让「读不到 users.yaml」把
 	// 卷没挂上 / 路径写错这个真正原因盖住。可写性由 app.Open 统一校验。
 	info, err := os.Stat(dataDir)
@@ -209,10 +208,6 @@ func loadConfig() (config, concurrencyLimits, error) {
 	}
 	if !info.IsDir() {
 		return zero, limits, fmt.Errorf("DATA_DIR %q is not a directory", dataDir)
-	}
-	maxFileSize, err := readMaxFileSize()
-	if err != nil {
-		return zero, limits, err
 	}
 	readyzToken, err := readSecret("READYZ_TOKEN", 16, 128)
 	if err != nil {
@@ -238,10 +233,6 @@ func loadConfig() (config, concurrencyLimits, error) {
 	if urlKey == "" {
 		return zero, limits, errors.New("URL_SIGNATURE_KEY must be set")
 	}
-	s3cfg, err := readS3Config()
-	if err != nil {
-		return zero, limits, err
-	}
 	return config{
 		app: app.Config{
 			DataDir:           dataDir,
@@ -250,8 +241,7 @@ func loadConfig() (config, concurrencyLimits, error) {
 			URLSignatureKey:   urlKey,
 			ReadyzToken:       readyzToken,
 			Users:             users,
-			MaxFileSize:       maxFileSize,
-			S3:                s3cfg,
+			FilesDir:          filesDir,
 		},
 		host: host,
 		port: port,
@@ -348,156 +338,6 @@ func readLimit(name string, fallback int) (int, error) {
 	return value, nil
 }
 
-// readMaxFileSize 读单个上传文件的大小上限：默认 2 GiB；设了就必须是纯字节整数
-// 或带 GiB / MiB 后缀的值。
-func readMaxFileSize() (int64, error) {
-	raw := os.Getenv("MAX_FILE_SIZE")
-	if raw == "" {
-		return defaultMaxFileSize, nil
-	}
-	return parseFileSize(raw)
-}
-
-// parseFileSize 解析 MAX_FILE_SIZE：纯整数按字节算，GiB / MiB 后缀分别按 2^30 / 2^20
-// 字节算，单位大小写不敏感。不收小数与其它单位 —— 含糊的值宁可启动失败，也别悄悄生效。
-func parseFileSize(raw string) (int64, error) {
-	value, multiplier := raw, int64(1)
-	switch lower := strings.ToLower(raw); {
-	case strings.HasSuffix(lower, "gib"):
-		multiplier = 1 << 30
-		value = raw[:len(raw)-len("gib")]
-	case strings.HasSuffix(lower, "mib"):
-		multiplier = 1 << 20
-		value = raw[:len(raw)-len("mib")]
-	}
-	size, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || size < 1 {
-		return 0, fmt.Errorf(
-			"MAX_FILE_SIZE must be a positive integer number of bytes or use a GiB/MiB suffix (e.g. 2147483648, 2GiB, 512MiB), got %q", raw)
-	}
-	// 后缀会让乘积越界：先按上限比一次，别让一个写错的值绕成负数。
-	if size > math.MaxInt64/multiplier {
-		return 0, fmt.Errorf("MAX_FILE_SIZE value %q is too large", raw)
-	}
-	return size * multiplier, nil
-}
-
-// s3BucketPattern 是 S3 桶名的字符约束：3-63 位小写字母、数字、点、连字符，
-// 首尾必须是字母或数字（具体长度由正则的 {1,61} + 首尾两位保证）。
-var s3BucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-
-// readS3Config 读 S3 后端配置。S3_ENDPOINT 为空表示用本地目录存 blob，
-// 此时其余 S3_* 必须也都为空 —— 只配一半的部署按配置错误处理，不静默退回本地。
-func readS3Config() (*app.S3Config, error) {
-	endpoint := strings.TrimSpace(os.Getenv("S3_ENDPOINT"))
-	bucket := strings.TrimSpace(os.Getenv("S3_BUCKET"))
-	prefix := strings.TrimSpace(os.Getenv("S3_PREFIX"))
-	region := strings.TrimSpace(os.Getenv("S3_REGION"))
-	accessKey, err := readBlobSecret("S3_ACCESS_KEY")
-	if err != nil {
-		return nil, err
-	}
-	secretKey, err := readBlobSecret("S3_SECRET_KEY")
-	if err != nil {
-		return nil, err
-	}
-
-	if endpoint == "" {
-		if bucket != "" || prefix != "" || region != "" || accessKey != "" || secretKey != "" {
-			return nil, errors.New("S3_ENDPOINT is required when other S3_* variables are set")
-		}
-		return nil, nil
-	}
-
-	target, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("S3_ENDPOINT %q is not a valid URL: %w", endpoint, err)
-	}
-	if target.Scheme != "http" && target.Scheme != "https" {
-		return nil, fmt.Errorf("S3_ENDPOINT must start with http:// or https://, got %q", endpoint)
-	}
-	if target.Host == "" {
-		return nil, fmt.Errorf("S3_ENDPOINT %q has no host", endpoint)
-	}
-	if (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("S3_ENDPOINT must be scheme://host[:port] without path or query, got %q", endpoint)
-	}
-	if bucket == "" {
-		bucket = "file-share"
-	}
-	if !s3BucketPattern.MatchString(bucket) || strings.Contains(bucket, "..") {
-		return nil, fmt.Errorf("S3_BUCKET %q is not a valid bucket name", bucket)
-	}
-	if accessKey == "" || secretKey == "" {
-		return nil, errors.New("S3_ACCESS_KEY and S3_SECRET_KEY are required when S3_ENDPOINT is set")
-	}
-	if region == "" {
-		region = "us-east-1"
-	}
-
-	// 对象 key 是 <prefix>/<sha 前 2 位>/<sha 第 3-4 位>/<sha>。
-	// 常态布局是 file-share 桶下的 blobs/xx/yy/<sha>，所以桶与前缀都有默认值，
-	// 部署只需 S3_ENDPOINT 与凭据；多实例共用一个桶时各自配不同前缀（如 blobs/front），
-	// 否则一个实例删掉最后一个引用会连带删掉另一个实例还在引用的 blob。
-	prefix = strings.Trim(prefix, "/")
-	if prefix == "" {
-		prefix = "blobs"
-	}
-	if err := checkS3Prefix(prefix); err != nil {
-		return nil, err
-	}
-
-	return &app.S3Config{
-		Endpoint:  target.Host,
-		Secure:    target.Scheme == "https",
-		Bucket:    bucket,
-		Prefix:    prefix,
-		Region:    region,
-		AccessKey: accessKey,
-		SecretKey: secretKey,
-	}, nil
-}
-
-// checkS3Prefix 校验前缀：由 / 分隔的非空段组成，每段只含字母、数字、点、下划线、连字符。
-func checkS3Prefix(prefix string) error {
-	if len(prefix) > 200 {
-		return fmt.Errorf("S3_PREFIX is too long")
-	}
-	for _, segment := range strings.Split(prefix, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("S3_PREFIX %q contains an empty or relative segment", prefix)
-		}
-		for _, r := range segment {
-			switch {
-			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			case r == '-', r == '_', r == '.':
-			default:
-				return fmt.Errorf("S3_PREFIX %q may only contain letters, digits, '-', '_' and '.'", prefix)
-			}
-		}
-	}
-	return nil
-}
-
-// readBlobSecret 读对象存储的凭据：S3 的 secret 常见形式是 base64（含 + / =），
-// 不能复用只接受 [A-Za-z0-9_] 的 readSecret。只要求可打印、无空白，读完从环境表删除。
-func readBlobSecret(name string) (string, error) {
-	value := os.Getenv(name)
-	_ = os.Unsetenv(name)
-	if value == "" {
-		return "", nil
-	}
-	if len(value) > 256 {
-		return "", fmt.Errorf("%s is too long (max 256 characters)", name)
-	}
-	for _, r := range value {
-		if r < 0x21 || r > 0x7e {
-			return "", fmt.Errorf("%s may only contain printable ASCII without spaces", name)
-		}
-	}
-	return value, nil
-}
-
 // readDataDir 读 DATA_DIR：未设置或只写空白时用默认 /data。
 // 目录必须已经存在（卷挂载或部署方手工建），由 app.Open 校验并收紧权限 —— 缺了就当场失败，
 // 不顺手建一个目录把写错的部署掩盖过去。
@@ -506,6 +346,15 @@ func readDataDir() string {
 		return value
 	}
 	return defaultDataDir
+}
+
+// readFilesDir 读 FILES_DIR：未设置或只写空白时用默认 /data/files。
+// 目录必须已经存在（只读卷挂载或部署方手工建），可读性由 app.Open 校验。
+func readFilesDir() string {
+	if value := strings.TrimSpace(os.Getenv("FILES_DIR")); value != "" {
+		return value
+	}
+	return defaultFilesDir
 }
 
 // readSecret 读一个凭据类环境变量：长度与字符集都对得上才收，读完立刻从进程环境表里删掉 ——

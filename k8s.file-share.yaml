@@ -5,15 +5,10 @@ metadata:
     name: file-share-env
 data:
     TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+    # 只读数据目录：下面的 samba-data 卷（SMB 共享的数据根）只读挂到 /samba，
+    # 应用从这里扫描目录与文件；它不写这份数据，也不持有文件副本。
+    FILES_DIR: "/samba/daveny"
     # 用户表固定读 DATA_DIR/users.yaml：下面的 Secret users 以 subPath 挂成 /data/users.yaml。
-    # 物理文件存 S3 时取消注释并填值（S3_ENDPOINT 为空 = 存在 DATA_DIR/blobs）：
-    # 桶必须已存在；S3_BUCKET 默认 file-share、S3_PREFIX 默认 blobs（key 为 blobs/xx/yy/<sha>），
-    # 多实例共桶时每个实例用不同的 S3_PREFIX。
-    # 与 S3 同机运行时配合下面的 hostNetwork，让容器内的 127.0.0.1 就是宿主。
-    # S3_ENDPOINT: "http://127.0.0.1:8333"
-    # S3_BUCKET: "file-share"
-    # S3_PREFIX: "blobs"
-    # S3_REGION: "us-east-1"
 
 ---
 apiVersion: v1
@@ -25,13 +20,10 @@ stringData:
     READYZ_TOKEN: "your_readyz_token"
     SESSION_SIGNING_KEY: "your_very_safe_session_signing_key"
     URL_SIGNATURE_KEY: "your_very_safe_url_signature_key"
-    # 物理文件存 S3 时需要的凭据：
-    # S3_ACCESS_KEY: "your_s3_access_key"
-    # S3_SECRET_KEY: "your_s3_secret_key"
 
 ---
-# 用户表：结构对齐 SeaweedFS 的 s3 config（身份列表 + 权限数组）。
-# 密码明文保存在这里，改完重启 Pod 生效；只读账号去掉 write 即可。
+# 用户表：身份列表 + 权限数组。只读视图没有写接口，账号只需 read。
+# 密码明文保存在这里，改完重启 Pod 生效。
 apiVersion: v1
 kind: Secret
 metadata:
@@ -42,7 +34,7 @@ stringData:
         users:
           - name: admin
             password: "change_me_please"
-            permissions: [read, write]
+            permissions: [read]
 
 ---
 apiVersion: v1
@@ -66,8 +58,7 @@ metadata:
 spec:
     restartPolicy: Always
     terminationGracePeriodSeconds: 30
-    # 与对象存储同机部署时用宿主网络：容器内的 127.0.0.1 才能直连 S3_ENDPOINT。
-    # 8080 因此直接监听宿主（原来也是 hostPort 映射到 0.0.0.0:8080）。
+    # 需要 8080 直接监听宿主时打开（原部署即如此）。
     # hostNetwork: true
 
     containers:
@@ -125,6 +116,10 @@ spec:
                 mountPath: /data/users.yaml
                 subPath: users.yaml
                 readOnly: true
+              # 只读数据卷：SMB 共享的数据根，容器内 /samba/daveny 就是 daveny 用户的目录。
+              - name: samba
+                mountPath: /samba
+                readOnly: true
     volumes:
         - name: data
           persistentVolumeClaim:
@@ -132,3 +127,8 @@ spec:
         - name: users
           secret:
               secretName: users
+        # SMB 共享的数据卷（samba pod 用的同一个 PVC），只读挂载。
+        - name: samba
+          persistentVolumeClaim:
+              claimName: samba-data
+              readOnly: true

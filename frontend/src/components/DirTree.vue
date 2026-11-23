@@ -1,14 +1,12 @@
 <script setup lang="ts">
 /**
- * 侧栏：快捷入口（最近 / 收藏 / 未分组） + 文件夹树（最多三级）。
+ * 侧栏：快捷入口（最近 / 收藏） + 文件夹树（任意深度）。
  *
- * 树只负责展示与交互，不发请求：展开 / 折叠、导航、右键菜单、拖放都通过事件交给 App。
- * 文件夹行同时是拖放目标：内部文件拖过来表示「移到这个文件夹」，外部文件拖过来表示
- * 「上传到这个文件夹」。
+ * 树只负责展示与交互，不发请求：展开 / 折叠与导航都通过事件交给 App。
+ * 目录深度不限制：把 groups 拍平成带缩进深度的可见行，折叠的子树不渲染。
  */
-import { computed, ref } from "vue";
+import { computed } from "vue";
 
-import { hasFiles } from "@/dnd";
 import { t } from "@/i18n";
 import { ICONS } from "@/icons";
 import type { GroupItem } from "@/types";
@@ -19,9 +17,8 @@ const props = defineProps<{
   counts: ReadonlyMap<string, number>;
   recentCount: number;
   favoritesCount: number;
-  ungroupedCount: number;
   /** 当前视图：快捷入口或文件夹。 */
-  viewKind: "recent" | "favorites" | "ungrouped" | "group";
+  viewKind: "recent" | "favorites" | "group";
   /** 当前文件夹路径（viewKind = group 时有效）。 */
   activePath: string;
   /** 已折叠的文件夹路径（折叠后不渲染子级）。 */
@@ -29,73 +26,47 @@ const props = defineProps<{
   /** 侧栏底部的存储提示文案（空串表示不显示）。 */
   storageText: string;
   storageHint: string;
-  /** 存储后端此刻是否可达：不可达时底部圆点变红。 */
+  /** 只读数据目录与收藏元数据此刻是否可用：不可用时底部圆点变红。 */
   storageHealthy: boolean;
-  /** 是否有内部文件正在拖拽：内部拖拽的 dataTransfer 不带 Files 类型。 */
-  internalDrag: boolean;
-  /** 当前视图是否还能新建文件夹（三级文件夹下不能再建）。 */
-  canCreate: boolean;
-  /** 当前账号是否有写权限：没有就藏掉「新建文件夹」入口。 */
-  canWrite: boolean;
 }>();
 
 const emit = defineEmits<{
   "show-recent": [];
   "show-favorites": [];
-  "show-ungrouped": [];
   "open-folder": [path: string];
   toggle: [path: string];
-  /** 右键菜单：位置按点击点计算，由 App 打开菜单。 */
-  menu: [event: MouseEvent, path: string];
-  "new-folder": [];
-  /** 拖到某个文件夹上（内部文件移动 / 外部文件上传，由 App 区分）。 */
-  "drop-folder": [files: FileList | null, path: string];
 }>();
 
-const topGroups = computed(() => props.groups.filter((group) => group.parent === ""));
-/** 拖拽悬停的文件夹：只在组件内部维护，用来点亮落点。 */
-const hoverPath = ref<string | null>(null);
-
-function childrenOf(path: string): GroupItem[] {
-  return props.groups.filter((group) => group.parent === path);
+interface TreeRow {
+  group: GroupItem;
+  depth: number;
+  hasChildren: boolean;
+  folded: boolean;
 }
 
-function isFolded(path: string): boolean {
-  return props.folded.has(path);
-}
+/** 把分组树拍平成可见行：父级在前、子级紧随其后；折叠的子树整段跳过。 */
+const rows = computed<TreeRow[]>(() => {
+  const byParent = new Map<string, GroupItem[]>();
+  for (const group of props.groups) {
+    const list = byParent.get(group.parent);
+    if (list) list.push(group);
+    else byParent.set(group.parent, [group]);
+  }
+  const result: TreeRow[] = [];
+  const walk = (parent: string, depth: number): void => {
+    for (const group of byParent.get(parent) ?? []) {
+      const children = byParent.get(group.path) ?? [];
+      const folded = props.folded.has(group.path);
+      result.push({ group, depth, hasChildren: children.length > 0, folded });
+      if (children.length > 0 && !folded) walk(group.path, depth + 1);
+    }
+  };
+  walk("", 0);
+  return result;
+});
 
 function countOf(path: string): number {
   return props.counts.get(path) ?? 0;
-}
-
-function hasChildren(path: string): boolean {
-  return childrenOf(path).length > 0;
-}
-
-function open(path: string): void {
-  emit("open-folder", path);
-}
-
-function onDragOver(event: DragEvent, path: string): void {
-  if (!props.internalDrag && !hasFiles(event)) return;
-  event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = props.internalDrag ? "move" : "copy";
-  }
-  hoverPath.value = path;
-}
-
-function onDragLeave(event: DragEvent, path: string): void {
-  const current = event.currentTarget as HTMLElement;
-  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget)) return;
-  if (hoverPath.value === path) hoverPath.value = null;
-}
-
-function onDrop(event: DragEvent, path: string): void {
-  event.preventDefault();
-  event.stopPropagation();
-  hoverPath.value = null;
-  emit("drop-folder", event.dataTransfer?.files ?? null, path);
 }
 </script>
 
@@ -122,134 +93,39 @@ function onDrop(event: DragEvent, path: string): void {
         <span class="node-label">{{ t("nav.favorites") }}</span>
         <span class="node-count">{{ favoritesCount }}</span>
       </button>
-      <button
-        type="button"
-        class="node"
-        :class="{ active: viewKind === 'ungrouped' }"
-        @click="emit('show-ungrouped')"
-      >
-        <span class="node-icon" v-html="ICONS.inbox"></span>
-        <span class="node-label">{{ t("nav.ungrouped") }}</span>
-        <span class="node-count">{{ ungroupedCount }}</span>
-      </button>
     </nav>
 
     <div class="section-head">
       <span>{{ t("nav.tree") }}</span>
-      <button
-        v-if="canWrite"
-        type="button"
-        class="section-add"
-        :title="t('action.new-group')"
-        @click="emit('new-folder')"
-      >
-        <span v-html="ICONS.plus"></span>
-      </button>
     </div>
 
     <div class="nav-tree" role="tree">
-      <template v-for="group in topGroups" :key="group.path">
-        <div
-          class="node is-group"
-          :class="{
-            active: viewKind === 'group' && activePath === group.path,
-            'is-drop': hoverPath === group.path,
-          }"
-          role="treeitem"
-          :aria-expanded="hasChildren(group.path) ? !isFolded(group.path) : undefined"
-          @contextmenu.prevent="emit('menu', $event, group.path)"
-          @dragenter="onDragOver($event, group.path)"
-          @dragover="onDragOver($event, group.path)"
-          @dragleave="onDragLeave($event, group.path)"
-          @drop="onDrop($event, group.path)"
-        >
-          <button
-            type="button"
-            class="chev"
-            :class="{ blank: !hasChildren(group.path), folded: isFolded(group.path) }"
-            :aria-label="isFolded(group.path) ? t('action.expand-group') : t('action.collapse-group')"
-            @click.stop="hasChildren(group.path) && emit('toggle', group.path)"
-            v-html="hasChildren(group.path) ? ICONS.chevron : ''"
-          ></button>
-          <button type="button" class="node-main" @click="open(group.path)">
-            <span class="folder-icon" v-html="ICONS.folder"></span>
-            <span class="node-label">{{ group.name }}</span>
-            <span class="node-count">{{ countOf(group.path) }}</span>
-          </button>
-        </div>
+      <div
+        v-for="row in rows"
+        :key="row.group.path"
+        class="node is-group"
+        :class="{ active: viewKind === 'group' && activePath === row.group.path }"
+        :style="{ paddingLeft: `${2 + row.depth * 16}px` }"
+        role="treeitem"
+        :aria-expanded="row.hasChildren ? !row.folded : undefined"
+      >
+        <button
+          type="button"
+          class="chev"
+          :class="{ blank: !row.hasChildren, folded: row.folded }"
+          :aria-label="row.folded ? t('action.expand-group') : t('action.collapse-group')"
+          @click.stop="row.hasChildren && emit('toggle', row.group.path)"
+          v-html="row.hasChildren ? ICONS.chevron : ''"
+        ></button>
+        <button type="button" class="node-main" @click="emit('open-folder', row.group.path)">
+          <span class="folder-icon" v-html="ICONS.folder"></span>
+          <span class="node-label">{{ row.group.name }}</span>
+          <span class="node-count">{{ countOf(row.group.path) }}</span>
+        </button>
+      </div>
 
-        <template v-if="!isFolded(group.path)">
-          <template v-for="child in childrenOf(group.path)" :key="child.path">
-            <div
-              class="node is-group is-child"
-              :class="{
-                active: viewKind === 'group' && activePath === child.path,
-                'is-drop': hoverPath === child.path,
-              }"
-              role="treeitem"
-              :aria-expanded="hasChildren(child.path) ? !isFolded(child.path) : undefined"
-              @contextmenu.prevent="emit('menu', $event, child.path)"
-              @dragenter="onDragOver($event, child.path)"
-              @dragover="onDragOver($event, child.path)"
-              @dragleave="onDragLeave($event, child.path)"
-              @drop="onDrop($event, child.path)"
-            >
-              <button
-                type="button"
-                class="chev"
-                :class="{ blank: !hasChildren(child.path), folded: isFolded(child.path) }"
-                @click.stop="hasChildren(child.path) && emit('toggle', child.path)"
-                v-html="hasChildren(child.path) ? ICONS.chevron : ''"
-              ></button>
-              <button type="button" class="node-main" @click="open(child.path)">
-                <span class="folder-icon" v-html="ICONS.folder"></span>
-                <span class="node-label">{{ child.name }}</span>
-                <span class="node-count">{{ countOf(child.path) }}</span>
-              </button>
-            </div>
-
-            <template v-if="!isFolded(child.path)">
-              <div
-                v-for="grandchild in childrenOf(child.path)"
-                :key="grandchild.path"
-                class="node is-group is-grandchild"
-                :class="{
-                  active: viewKind === 'group' && activePath === grandchild.path,
-                  'is-drop': hoverPath === grandchild.path,
-                }"
-                role="treeitem"
-                @contextmenu.prevent="emit('menu', $event, grandchild.path)"
-                @dragenter="onDragOver($event, grandchild.path)"
-                @dragover="onDragOver($event, grandchild.path)"
-                @dragleave="onDragLeave($event, grandchild.path)"
-                @drop="onDrop($event, grandchild.path)"
-              >
-                <span class="chev blank"></span>
-                <button type="button" class="node-main" @click="open(grandchild.path)">
-                  <span class="folder-icon" v-html="ICONS.folder"></span>
-                  <span class="node-label">{{ grandchild.name }}</span>
-                  <span class="node-count">{{ countOf(grandchild.path) }}</span>
-                </button>
-              </div>
-            </template>
-          </template>
-        </template>
-      </template>
-
-      <p v-if="topGroups.length === 0" class="tree-empty">{{ t("nav.no-groups") }}</p>
+      <p v-if="rows.length === 0" class="tree-empty">{{ t("nav.no-groups") }}</p>
     </div>
-
-    <button
-      v-if="canWrite"
-      type="button"
-      class="new-folder"
-      :disabled="!canCreate"
-      :title="canCreate ? t('action.new-group') : t('group.new-subgroup-title')"
-      @click="emit('new-folder')"
-    >
-      <span v-html="ICONS.plus"></span>
-      {{ t("action.new-group") }}
-    </button>
 
     <div v-if="storageText" class="storage" :title="storageHint">
       <span class="storage-dot" :class="{ 'is-bad': !storageHealthy }"></span>
@@ -346,26 +222,6 @@ function onDrop(event: DragEvent, path: string): void {
   color: var(--ink-3);
 }
 
-.section-add {
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  color: var(--ink-3);
-}
-
-.section-add:deep(svg) {
-  width: 14px;
-  height: 14px;
-}
-
-.section-add:hover {
-  background: var(--surface-2);
-  color: var(--accent);
-}
-
 .nav-tree {
   flex: 1;
   min-height: 0;
@@ -403,19 +259,6 @@ function onDrop(event: DragEvent, path: string): void {
 .node.is-group {
   gap: 4px;
   padding: 0 6px 0 2px;
-}
-
-.node.is-group.is-child {
-  padding-left: 16px;
-}
-
-.node.is-group.is-grandchild {
-  padding-left: 34px;
-}
-
-.node.is-drop {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 .chev {
@@ -477,34 +320,6 @@ function onDrop(event: DragEvent, path: string): void {
   height: 17px;
 }
 
-.new-folder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 32px;
-  margin: 6px 2px 8px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  color: var(--ink-3);
-  font-size: 12.5px;
-}
-
-.new-folder:deep(svg) {
-  width: 14px;
-  height: 14px;
-}
-
-.new-folder:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.new-folder:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
 .tree-empty {
   margin: 4px 8px;
   color: var(--ink-3);
@@ -530,7 +345,7 @@ function onDrop(event: DragEvent, path: string): void {
   box-shadow: 0 0 0 3px rgb(14 159 110 / 0.14);
 }
 
-/* 存储后端连不上：圆点变红，提示下载 / 上传会失败 */
+/* 只读目录或收藏元数据不可用：圆点变红 */
 .storage-dot.is-bad {
   background: var(--rose);
   box-shadow: 0 0 0 3px rgb(225 29 72 / 0.14);

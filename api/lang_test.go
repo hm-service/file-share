@@ -89,14 +89,14 @@ func TestFailLocalized(t *testing.T) {
 func TestBusinessFail(t *testing.T) {
 	t.Run("业务错误按状态与键渲染", func(t *testing.T) {
 		handler := WithLanguage(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			businessFail(w, r, core.Fail(413, "upload.too-big"))
+			businessFail(w, r, core.Fail(413, "request.too-big"))
 		}))
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
 		if recorder.Code != http.StatusRequestEntityTooLarge {
 			t.Errorf("状态码 = %d，想要 413", recorder.Code)
 		}
-		if !strings.Contains(recorder.Body.String(), "文件超过上传上限") {
+		if !strings.Contains(recorder.Body.String(), "请求体过大") {
 			t.Errorf("错误体 = %s", recorder.Body.String())
 		}
 	})

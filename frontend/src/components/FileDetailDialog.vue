@@ -2,7 +2,7 @@
 /**
  * 文件详情：点文件名打开，复用 DialogFrame 的居中对话框。
  *
- * 只读展示大小、上传时间、所在分组与完整 SHA-256（等宽字体、可选中复制），
+ * 只读展示大小、修改时间与所在目录（根目录直属文件显示「根目录」），
  * 底部「关闭 / 下载」两个按钮；下载交给父组件（FileRow 转发给列表）。
  */
 import { formatSize, formatTime } from "@/format";
@@ -41,11 +41,11 @@ const emit = defineEmits<{
       </div>
       <div class="detail-row">
         <dt>{{ t("file.detail.group") }}</dt>
-        <dd>{{ file.group_path || t("nav.ungrouped") }}</dd>
+        <dd>{{ file.group_path || t("nav.root") }}</dd>
       </div>
       <div class="detail-row">
-        <dt>{{ t("file.sha256") }}</dt>
-        <dd class="detail-sha">{{ file.sha256 }}</dd>
+        <dt>{{ t("file.detail.path") }}</dt>
+        <dd class="detail-path">{{ file.id }}</dd>
       </div>
     </dl>
   </DialogFrame>
@@ -93,8 +93,8 @@ const emit = defineEmits<{
   overflow-wrap: anywhere;
 }
 
-/* 完整指纹：等宽 + 可选中复制 */
-.detail-sha {
+/* 完整相对路径：等宽 + 可选中复制 */
+.detail-path {
   font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
   font-size: 11.5px;
   line-height: 1.6;

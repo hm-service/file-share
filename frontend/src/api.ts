@@ -7,19 +7,14 @@
  * - 下载不能直接导航到需要 Bearer 的接口：先换一个签名 URL，再让浏览器导航到该地址，
  *   由浏览器完成流式下载（Range / 原生进度都在浏览器侧）。
  */
-import { abortError, isAbortError } from "./abort";
 import { getLocale, t } from "./i18n";
 import { getSession, toLogin } from "./session";
 import type {
   AuthResponse,
-  CheckFileResponse,
   DownloadURLResponse,
-  FileItem,
   FileListResponse,
-  FileOrderItem,
   MeResponse,
   StorageInfo,
-  UploadResponse,
 } from "./types";
 
 /** 接口报错：带 HTTP 状态码（0 = 网络层失败），message 是后端 detail 或本地化兜底。 */
@@ -67,9 +62,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       ...init,
       headers: authHeaders((extraHeaders as Record<string, string> | undefined) ?? {}),
     });
-  } catch (error) {
-    // 取消不是「网络异常」：把 AbortError 原样抛给调用方，由上传队列识别成 cancelled
-    if (isAbortError(error)) throw error;
+  } catch {
     throw new ApiError(t("error.network"), 0);
   }
 
@@ -96,204 +89,49 @@ export function login(username: string, password: string): Promise<AuthResponse>
   });
 }
 
-/** GET /api/me：当前登录用户与权限，界面据此决定显示哪些写操作。 */
+/** GET /api/me：当前登录用户与权限。 */
 export function getMe(): Promise<MeResponse> {
   return request<MeResponse>("/api/me");
 }
 
-/** GET /api/files：文件列表 + 全部分组（含空分组）+ 单文件上传上限。 */
+/** GET /api/files：只读目录里的全部文件与分组。 */
 export async function listFiles(): Promise<FileListResponse> {
   const payload = await request<FileListResponse>("/api/files");
   return {
     files: Array.isArray(payload?.files) ? payload.files : [],
     groups: Array.isArray(payload?.groups) ? payload.groups : [],
-    max_file_size: typeof payload?.max_file_size === "number" ? payload.max_file_size : 0,
   };
 }
 
-/** POST /api/check_file：服务端已有该 blob 时直接建记录（秒传）。 */
-export function checkFile(
-  sha256: string,
-  filename: string,
-  signal?: AbortSignal,
-): Promise<CheckFileResponse> {
-  const body = new FormData();
-  body.append("client_sha256", sha256);
-  body.append("filename", filename);
-  return request<CheckFileResponse>("/api/check_file", { method: "POST", body, signal });
-}
-
-/**
- * POST /api/upload：用 XHR 而不是 fetch —— 只有 XHR 能拿到上传进度事件。
- * 必须手动带上 Bearer 头，不能依赖浏览器自动带。
- *
- * 可选 AbortSignal：队列点「取消」时 abort() 掉 XHR（服务端会丢弃临时文件），
- * 这里统一 reject 一个 AbortError，让调用方识别成 cancelled 而不是 failed。
- */
-export function uploadFile(
-  file: File,
-  sha256: string,
-  onProgress?: (percent: number) => void,
-  signal?: AbortSignal,
-): Promise<UploadResponse> {
-  return new Promise<UploadResponse>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(abortError());
-      return;
-    }
-
-    const xhr = new XMLHttpRequest();
-    let settled = false;
-
-    const cleanup = (): void => {
-      signal?.removeEventListener("abort", onAbort);
-    };
-    const finish = (action: () => void): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      action();
-    };
-    const onAbort = (): void => {
-      xhr.abort();
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    xhr.open("POST", "/api/upload");
-    const headers = authHeaders();
-    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
-
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable && !settled) {
-        onProgress?.(Math.round((event.loaded / event.total) * 100));
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      finish(() => {
-        const payload = parseJson(xhr.responseText);
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(payload as unknown as UploadResponse);
-          return;
-        }
-        if (xhr.status === 401) toLogin();
-        reject(new ApiError(detailOf(payload) || t("error.network"), xhr.status));
-      });
-    });
-    xhr.addEventListener("error", () => {
-      finish(() => reject(new ApiError(t("error.network"), 0)));
-    });
-    xhr.addEventListener("abort", () => {
-      finish(() => reject(abortError()));
-    });
-
-    const body = new FormData();
-    body.append("file", file, file.name);
-    body.append("client_sha256", sha256);
-    xhr.send(body);
+/** PUT/DELETE /api/favorites?path=：切换收藏，返回切换后的状态。 */
+export function toggleFavorite(path: string, favorite: boolean): Promise<{ is_favorite: boolean }> {
+  return request<{ is_favorite: boolean }>(`/api/favorites?path=${encodeURIComponent(path)}`, {
+    method: favorite ? "PUT" : "DELETE",
   });
-}
-
-/** POST /api/files/{id}/favorite：返回切换后的状态。 */
-export function toggleFavorite(id: string): Promise<{ is_favorite: boolean }> {
-  return request<{ is_favorite: boolean }>(
-    `/api/files/${encodeURIComponent(id)}/favorite`,
-    { method: "POST" },
-  );
 }
 
 /** 分享链接的有效期（秒）：默认 10 分钟，也可以签 24 小时档，后端只认这两档。 */
 export type ShareLinkTTL = 600 | 86400;
 
-/** POST /api/files/{id}/share：签一条 ttl 内有效的分享链接，返回可直接发给对方的相对地址。 */
-export function createShareLink(id: string, ttl: ShareLinkTTL = 600): Promise<{ url: string }> {
-  return request<{ url: string }>(
-    `/api/files/${encodeURIComponent(id)}/share?ttl=${ttl}`,
-    { method: "POST" },
-  );
-}
-
-/** DELETE /api/files/{id}（204，无响应体）。 */
-export function deleteFile(id: string): Promise<void> {
-  return request<void>(`/api/files/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-/** PATCH /api/files/{id}：修改分组路径（空串 = 移出分组），返回更新后的完整记录。 */
-export function updateFileGroup(id: string, groupPath: string): Promise<FileItem> {
-  return request<FileItem>(`/api/files/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ group_path: groupPath }),
-  });
-}
-
-/** PATCH /api/files/{id}：重命名文件，返回更新后的完整记录。 */
-export function renameFile(id: string, filename: string): Promise<FileItem> {
-  return request<FileItem>(`/api/files/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename }),
-  });
-}
-
-/** PUT /api/groups/order：重写某个父级下子分组的顺序（需覆盖该父级下全部分组，成功 204）。 */
-export function reorderGroups(parent: string, names: string[]): Promise<void> {
-  return request<void>("/api/groups/order", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parent, names }),
-  });
-}
-
-/** POST /api/groups：手动新建一个空分组（"父/子/孙" 表示三层），成功返回规范化后的路径。 */
-export function createGroup(path: string): Promise<{ path: string }> {
-  return request<{ path: string }>("/api/groups", {
+/** POST /api/share：签一条 ttl 内有效的分享链接，返回可直接发给对方的相对地址。 */
+export function createShareLink(path: string, ttl: ShareLinkTTL = 600): Promise<{ url: string }> {
+  return request<{ url: string }>("/api/share", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-}
-
-/**
- * POST /api/groups/delete：删除分组，各级后代分组一并删除（成功 204）。
- * deleteFiles 为 true 时组内文件一起删掉，否则上移到上级分组 / 未分组。
- */
-export function deleteGroup(path: string, deleteFiles: boolean): Promise<void> {
-  return request<void>("/api/groups/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, delete_files: deleteFiles }),
-  });
-}
-
-/** POST /api/groups/rename：改写分组路径的最后一段（子分组与组内文件一起改名，成功 204）。 */
-export function renameGroup(path: string, newName: string): Promise<void> {
-  return request<void>("/api/groups/rename", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, new_name: newName }),
-  });
-}
-
-/** PUT /api/files/order：拖拽后按段内新顺序提交（0..n-1），成功 204。 */
-export function reorderFiles(items: FileOrderItem[]): Promise<void> {
-  return request<void>("/api/files/order", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
+    body: JSON.stringify({ path, ttl: ttl === 86400 ? "24h" : "10m" }),
   });
 }
 
 /**
  * 用签名 URL 触发浏览器下载。
  *
- * 不能直接给 /api/files/{id}/download 加 href —— 导航带不了 Authorization 头；
+ * 不能直接给 /api/download 加 href —— 导航带不了 Authorization 头；
  * 也不用 fetch + blob —— 大文件会整份进内存，而且 Safari 在异步回调里点 <a download>
  * 常常不生效。换成「先换签名 URL，再让浏览器下载」：流式、可续传、原生进度都在浏览器侧。
  *
- * 必须带 download 属性：否则浏览器把 /s/<id> 当成一次同帧导航，连续点多个文件时后一次导航
+ * 必须带 download 属性：否则浏览器把 /s/<path> 当成一次同帧导航，连续点多个文件时后一次导航
  * 会取消前一次下载（分组「全部下载」只剩最后一个）。download 为空串时文件名取服务端的
- * Content-Disposition，重命名后的名字仍然正确。
+ * Content-Disposition。
  */
 function startDownload(url: string): void {
   const anchor = document.createElement("a");
@@ -305,15 +143,15 @@ function startDownload(url: string): void {
   anchor.remove();
 }
 
-/** GET /api/storage：当前 blob 的存放方案（本地磁盘或 S3 对象存储）。 */
+/** GET /api/storage：只读数据目录与收藏元数据的状态。 */
 export function getStorageInfo(): Promise<StorageInfo> {
   return request<StorageInfo>("/api/storage");
 }
 
-/** GET /api/files/{id}/download-url：换一个匿名下载地址（10 分钟内有效）。 */
-export async function downloadFile(id: string): Promise<void> {
+/** GET /api/download-url?path=：换一个匿名下载地址（10 分钟内有效）并触发浏览器下载。 */
+export async function downloadFile(path: string): Promise<void> {
   const payload = await request<DownloadURLResponse>(
-    `/api/files/${encodeURIComponent(id)}/download-url`,
+    `/api/download-url?path=${encodeURIComponent(path)}`,
   );
   startDownload(payload.url);
 }

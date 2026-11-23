@@ -392,100 +392,6 @@ func TestReadConcurrencyLimits(t *testing.T) {
 	}
 }
 
-func TestReadMaxFileSize(t *testing.T) {
-	cases := []struct {
-		name    string
-		raw     string
-		want    int64
-		wantErr bool
-	}{
-		{name: "没设用默认值", want: 2147483648},
-		{name: "纯字节", raw: "4096", want: 4096},
-		{name: "1MiB", raw: "1MiB", want: 1 << 20},
-		{name: "2GiB", raw: "2GiB", want: 2 << 30},
-		{name: "2gib 小写", raw: "2gib", want: 2 << 30},
-		{name: "0", raw: "0", wantErr: true},
-		{name: "负数", raw: "-1", wantErr: true},
-		{name: "不是数字", raw: "abc", wantErr: true},
-		{name: "小数", raw: "1.5GiB", wantErr: true},
-		{name: "其它单位", raw: "1GB", wantErr: true},
-		{name: "带空格", raw: " 1024", wantErr: true},
-	}
-	for _, item := range cases {
-		t.Run(item.name, func(t *testing.T) {
-			t.Setenv("MAX_FILE_SIZE", item.raw)
-			got, err := readMaxFileSize()
-			if item.wantErr {
-				if err == nil {
-					t.Fatalf("readMaxFileSize() = %d，想要报错", got)
-				}
-				if !strings.Contains(err.Error(), "MAX_FILE_SIZE") {
-					t.Errorf("错误信息 %q 应当提到 MAX_FILE_SIZE", err.Error())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("readMaxFileSize() 报错: %v", err)
-			}
-			if got != item.want {
-				t.Errorf("readMaxFileSize() = %d，想要 %d", got, item.want)
-			}
-		})
-	}
-}
-
-// parseFileSize 是 MAX_FILE_SIZE 的解析器：纯整数按字节，GiB / MiB 后缀大小写不敏感；
-// 小数、其它单位、非正数一律拒绝。
-func TestParseFileSize(t *testing.T) {
-	cases := []struct {
-		name    string
-		raw     string
-		want    int64
-		wantErr bool
-	}{
-		{name: "纯字节", raw: "1048576", want: 1048576},
-		{name: "1 字节", raw: "1", want: 1},
-		{name: "2GiB", raw: "2GiB", want: 2147483648},
-		{name: "512MiB", raw: "512MiB", want: 512 << 20},
-		{name: "1GiB", raw: "1GiB", want: 1 << 30},
-		{name: "小写 gib", raw: "2gib", want: 2 << 30},
-		{name: "小写 mib", raw: "512mib", want: 512 << 20},
-		{name: "大小写混合", raw: "2gIb", want: 2 << 30},
-		{name: "空串", raw: "", wantErr: true},
-		{name: "0", raw: "0", wantErr: true},
-		{name: "负数字节", raw: "-1", wantErr: true},
-		{name: "负数带单位", raw: "-2GiB", wantErr: true},
-		{name: "小数 GiB", raw: "1.5GiB", wantErr: true},
-		{name: "纯小数", raw: "1.5", wantErr: true},
-		{name: "GB 不是 GiB", raw: "1GB", wantErr: true},
-		{name: "2G 不是单位", raw: "2G", wantErr: true},
-		{name: "只有单位", raw: "GiB", wantErr: true},
-		{name: "带空格", raw: " 2GiB", wantErr: true},
-		{name: "数字越界", raw: "99999999999999999999GiB", wantErr: true},
-		{name: "乘积越界", raw: "9007199254740992GiB", wantErr: true},
-	}
-	for _, item := range cases {
-		t.Run(item.name, func(t *testing.T) {
-			got, err := parseFileSize(item.raw)
-			if item.wantErr {
-				if err == nil {
-					t.Fatalf("parseFileSize(%q) = %d，想要报错", item.raw, got)
-				}
-				if !strings.Contains(err.Error(), "MAX_FILE_SIZE") {
-					t.Errorf("错误信息 %q 应当提到 MAX_FILE_SIZE", err.Error())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseFileSize(%q) 报错: %v", item.raw, err)
-			}
-			if got != item.want {
-				t.Errorf("parseFileSize(%q) = %d，想要 %d", item.raw, got, item.want)
-			}
-		})
-	}
-}
-
 func TestReadDataDir(t *testing.T) {
 	t.Setenv("DATA_DIR", "")
 	if got := readDataDir(); got != defaultDataDir {
@@ -564,7 +470,7 @@ func TestReadSecret(t *testing.T) {
 const usersContent = `users:
   - name: tester
     password: tester_password_0123456789
-    permissions: [read, write]
+    permissions: [read]
 `
 
 // writeUsersFile 在 dataDir 下写一份默认内容的用户表，返回路径。
@@ -587,7 +493,9 @@ func writeUsersFileContent(t *testing.T, dataDir, content string) string {
 func prepareConfigEnv(t *testing.T) string {
 	t.Helper()
 	dataDir := t.TempDir()
+	filesDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("FILES_DIR", filesDir)
 	t.Setenv("SESSION_SIGNING_KEY", testenv.SessionSigningKey)
 	t.Setenv("URL_SIGNATURE_KEY", testenv.URLSignatureKey)
 	t.Setenv("READYZ_TOKEN", "")
@@ -605,7 +513,6 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("READYZ_TOKEN", testenv.ReadyzToken)
 		t.Setenv("HOST", "0.0.0.0")
 		t.Setenv("PORT", "18080")
-		t.Setenv("MAX_FILE_SIZE", "4096")
 
 		cfg, limits, err := loadConfig()
 		if err != nil {
@@ -617,14 +524,17 @@ func TestLoadConfig(t *testing.T) {
 		if limits.api != api.DefaultAPIConcurrency {
 			t.Errorf("limits = %+v", limits)
 		}
-		if cfg.app.MaxFileSize != 4096 || cfg.app.ReadyzToken != testenv.ReadyzToken {
+		if cfg.app.ReadyzToken != testenv.ReadyzToken {
 			t.Errorf("app 配置 = %+v", cfg.app)
+		}
+		if cfg.app.FilesDir != os.Getenv("FILES_DIR") || cfg.app.FilesDir == "" {
+			t.Errorf("FilesDir = %q，想要环境变量里的 FILES_DIR", cfg.app.FilesDir)
 		}
 		if len(cfg.app.Users) != 1 {
 			t.Fatalf("用户表 = %+v，想要 1 个用户", cfg.app.Users)
 		}
-		if user := cfg.app.Users[0]; user.Name != testenv.UserName || !user.Can(app.PermissionRead) || !user.Can(app.PermissionWrite) {
-			t.Errorf("用户 = %+v，想要 tester 且 read+write", user)
+		if user := cfg.app.Users[0]; user.Name != testenv.UserName || !user.Can(app.PermissionRead) {
+			t.Errorf("用户 = %+v，想要 tester 且 read", user)
 		}
 		if left := os.Getenv("SESSION_SIGNING_KEY"); left != "" {
 			t.Errorf("SESSION_SIGNING_KEY 应当已从环境表删除: %q", left)
@@ -634,30 +544,17 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("MAX_FILE_SIZE 支持 GiB 后缀", func(t *testing.T) {
-		writeUsersFile(t, prepareConfigEnv(t))
-		t.Setenv("MAX_FILE_SIZE", "2GiB")
-		cfg, _, err := loadConfig()
-		if err != nil {
-			t.Fatalf("loadConfig() 报错: %v", err)
-		}
-		if cfg.app.MaxFileSize != 2147483648 {
-			t.Errorf("MaxFileSize = %d，想要 2147483648（2GiB）", cfg.app.MaxFileSize)
-		}
-	})
-
-	t.Run("MAX_FILE_SIZE 非法时启动失败", func(t *testing.T) {
-		writeUsersFile(t, prepareConfigEnv(t))
-		t.Setenv("MAX_FILE_SIZE", "1.5GiB")
-		if _, _, err := loadConfig(); err == nil {
-			t.Fatal("非法 MAX_FILE_SIZE 应当让 loadConfig() 报错")
-		}
-	})
-
 	t.Run("DATA_DIR 未设置时用默认 /data", func(t *testing.T) {
 		t.Setenv("DATA_DIR", " ")
 		if got := readDataDir(); got != defaultDataDir {
 			t.Errorf("DataDir = %q，想要默认 %q", got, defaultDataDir)
+		}
+	})
+
+	t.Run("FILES_DIR 未设置时用默认 /data/files", func(t *testing.T) {
+		t.Setenv("FILES_DIR", " ")
+		if got := readFilesDir(); got != defaultFilesDir {
+			t.Errorf("FilesDir = %q，想要默认 %q", got, defaultFilesDir)
 		}
 	})
 
@@ -783,143 +680,4 @@ func TestInitLoggerTimestampField(t *testing.T) {
 	if record["msg"] != "probe" {
 		t.Errorf("msg = %v", record["msg"])
 	}
-}
-
-// TestReadBlobSecret：S3 凭据允许 base64 里的 + / =，但仍拒绝空白与超长，读后从环境表删除。
-func TestReadBlobSecret(t *testing.T) {
-	cases := []struct {
-		name    string
-		value   string
-		wantErr bool
-	}{
-		{name: "留空"},
-		{name: "普通凭据", value: "CHANGE_ME_ACCESS_KEY"},
-		{name: "base64 形态", value: "ab+/cd==ef+/gh=="},
-		{name: "含空格", value: "abc def", wantErr: true},
-		{name: "含制表符", value: "abc\tdef", wantErr: true},
-		{name: "太长", value: strings.Repeat("a", 257), wantErr: true},
-	}
-	for _, item := range cases {
-		t.Run(item.name, func(t *testing.T) {
-			t.Setenv("TEST_S3_SECRET", item.value)
-			got, err := readBlobSecret("TEST_S3_SECRET")
-			if item.wantErr {
-				if err == nil {
-					t.Fatalf("readBlobSecret() = %q，想要报错", got)
-				}
-			} else if err != nil {
-				t.Fatalf("readBlobSecret() 报错: %v", err)
-			}
-			if left := os.Getenv("TEST_S3_SECRET"); left != "" {
-				t.Errorf("读完之后不该还留在环境表里: %q", left)
-			}
-		})
-	}
-}
-
-// TestReadS3Config：S3_ENDPOINT 为空表示本地模式；只配一半或写法不合法时启动失败。
-func TestReadS3Config(t *testing.T) {
-	const (
-		endpoint = "http://127.0.0.1:8333"
-		access   = "CHANGE_ME_ACCESS_KEY"
-		secret   = "CHANGE_ME_LONG_RANDOM_SECRET_KEY"
-	)
-	clear := func(t *testing.T) {
-		t.Helper()
-		for _, name := range []string{"S3_ENDPOINT", "S3_BUCKET", "S3_PREFIX", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY"} {
-			t.Setenv(name, "")
-		}
-	}
-	setValid := func(t *testing.T) {
-		t.Helper()
-		clear(t)
-		t.Setenv("S3_ENDPOINT", endpoint)
-		t.Setenv("S3_BUCKET", "blobs")
-		t.Setenv("S3_ACCESS_KEY", access)
-		t.Setenv("S3_SECRET_KEY", secret)
-	}
-
-	t.Run("未配置时用本地目录", func(t *testing.T) {
-		clear(t)
-		cfg, err := readS3Config()
-		if err != nil || cfg != nil {
-			t.Fatalf("readS3Config() = (%+v, %v)，想要 (nil, nil)", cfg, err)
-		}
-	})
-	t.Run("只配一半", func(t *testing.T) {
-		clear(t)
-		t.Setenv("S3_BUCKET", "blobs")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("只配 S3_BUCKET 应当报错")
-		}
-	})
-	t.Run("endpoint 缺少 scheme", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_ENDPOINT", "127.0.0.1:8333")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("没有 http(s):// 的 endpoint 应当报错")
-		}
-	})
-	t.Run("endpoint 带路径", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_ENDPOINT", endpoint+"/some/path")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("endpoint 带路径应当报错")
-		}
-	})
-	t.Run("桶名非法", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_BUCKET", "Bad_Bucket")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("非法桶名应当报错")
-		}
-	})
-	t.Run("缺凭据", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_SECRET_KEY", "")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("缺 S3_SECRET_KEY 应当报错")
-		}
-	})
-	t.Run("合法的 http 配置给默认值", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_BUCKET", "")
-		cfg, err := readS3Config()
-		if err != nil {
-			t.Fatalf("readS3Config() 报错: %v", err)
-		}
-		if cfg.Endpoint != "127.0.0.1:8333" || cfg.Secure {
-			t.Errorf("Endpoint/Secure = %q/%v", cfg.Endpoint, cfg.Secure)
-		}
-		// 常态布局：file-share 桶下的 blobs/xx/yy/<sha>，部署只需 endpoint 与凭据。
-		if cfg.Bucket != "file-share" || cfg.Prefix != "blobs" || cfg.Region != "us-east-1" {
-			t.Errorf("默认值不对: %+v", cfg)
-		}
-		if left := os.Getenv("S3_ACCESS_KEY"); left != "" {
-			t.Errorf("S3_ACCESS_KEY 应当已从环境表删除: %q", left)
-		}
-	})
-	t.Run("合法的 https 配置与自定义前缀", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_ENDPOINT", "https://s3.example.com")
-		t.Setenv("S3_PREFIX", "/blobs/front/")
-		t.Setenv("S3_REGION", "cn-hangzhou")
-		cfg, err := readS3Config()
-		if err != nil {
-			t.Fatalf("readS3Config() 报错: %v", err)
-		}
-		if !cfg.Secure || cfg.Endpoint != "s3.example.com" {
-			t.Errorf("Endpoint/Secure = %q/%v", cfg.Endpoint, cfg.Secure)
-		}
-		if cfg.Prefix != "blobs/front" || cfg.Region != "cn-hangzhou" {
-			t.Errorf("Prefix/Region = %q/%q", cfg.Prefix, cfg.Region)
-		}
-	})
-	t.Run("前缀含非法字符", func(t *testing.T) {
-		setValid(t)
-		t.Setenv("S3_PREFIX", "file share")
-		if _, err := readS3Config(); err == nil {
-			t.Fatal("前缀含空格应当报错")
-		}
-	})
 }

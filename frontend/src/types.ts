@@ -2,28 +2,20 @@
 
 /** GET /api/files 里的一条记录。 */
 export interface FileItem {
+  /** 相对只读数据根目录的路径（同时是下载与分享的标识）。 */
   id: string;
   filename: string;
-  sha256: string;
-  size: number;
-  is_favorite: boolean;
-  /** 分组路径（"顶级"、"顶级/二级" 或 "顶级/二级/三级"）；空串表示未分组。 */
+  /** 父目录相对路径；根目录直属文件为空串。 */
   group_path: string;
-  /** 所在分组（或未分组段）内的排序序号，0..n-1。 */
-  sort_order: number;
-  /** unix 秒 */
+  size: number;
+  /** 文件修改时间（unix 秒）。 */
   created_at: number;
+  is_favorite: boolean;
 }
 
-/** PUT /api/files/order 的一项：拖拽后该段内的新序号。 */
-export interface FileOrderItem {
-  id: string;
-  sort_order: number;
-}
-
-/** GET /api/files 里的一条分组。 */
+/** GET /api/files 里的一条分组（任意深度）。 */
 export interface GroupItem {
-  /** 完整路径，最多三段，段之间用 "/" 分隔。三级分组只在内容区分段里展示。 */
+  /** 完整路径，段之间用 "/" 分隔。 */
   path: string;
   /** 父分组路径；顶级分组为空串。 */
   parent: string;
@@ -33,18 +25,16 @@ export interface GroupItem {
 
 export interface FileListResponse {
   files: FileItem[];
-  /** 全部分组（含空分组）；同一父级内按展示顺序排列。 */
+  /** 全部分组（含空分组）。 */
   groups: GroupItem[];
-  /** 服务端单文件上传上限（字节，对应 MAX_FILE_SIZE）：上传坞入队时先按它拦掉超限文件。 */
-  max_file_size: number;
 }
 
-/** GET /api/files/{id}/download-url 的响应：浏览器可直接导航的签名地址。 */
+/** POST /api/share 的响应：浏览器可直接导航的签名地址。 */
 export interface DownloadURLResponse {
   url: string;
 }
 
-/** 权限名：与后端用户表里的 read / write 一一对应。 */
+/** 权限名：与后端用户表里的 read / write 一一对应。只读视图只用到 read。 */
 export type PermissionName = "read" | "write";
 
 /** 当前登录用户：只有名字与权限，永远是后端下发的，不落本地存储。 */
@@ -70,26 +60,10 @@ export interface Session {
   expires_at: number;
 }
 
-/** POST /api/check_file 的两种结果。 */
-export interface CheckFileResponse {
-  exists: boolean;
-  id?: string;
-  filename?: string;
-  size?: number;
-}
-
-/** POST /api/upload 成功体。 */
-export interface UploadResponse {
-  id: string;
-  sha256: string;
-}
-
-/** GET /api/storage：当前 blob 的存放方案，以及后端此刻是否可达。 */
+/** GET /api/storage：只读数据目录 + 收藏元数据是否可用。 */
 export interface StorageInfo {
-  backend: "local" | "s3";
-  bucket?: string;
-  prefix?: string;
-  /** 每次请求实时探测：false 表示存储后端连不上（下载、上传会失败）。 */
+  backend: "dir";
+  /** 每次请求实时探测：false 表示只读目录或 DATA_DIR 不可用。 */
   healthy: boolean;
   /** healthy 为 false 时的本地化错误文案。 */
   error?: string;
