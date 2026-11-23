@@ -195,7 +195,7 @@ func normalizeAccess(items []string) ([]string, error) {
 }
 
 // normalizeAccessItem 校验并归一化单条可见范围：必须以 "/" 开头，"/" 表示整个数据目录。
-// 拒绝 ".."、反斜杠、点开头段与 NUL。允许尾部斜杠（"/共享/" 与 "/共享" 等价）。
+// 拒绝 ".."、反斜杠与 NUL。允许尾部斜杠（"/共享/" 与 "/共享" 等价）。
 func normalizeAccessItem(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New(`root is required ("/" for the whole data directory)`)
@@ -212,8 +212,6 @@ func normalizeAccessItem(raw string) (string, error) {
 			// 尾部斜杠与重复斜杠交给 path.Clean；这里只拒绝真正有歧义的段。
 		case segment == "." || segment == "..":
 			return "", fmt.Errorf("root %q must not contain %q", raw, segment)
-		case strings.HasPrefix(segment, "."):
-			return "", fmt.Errorf("root %q must not contain hidden segment %q", raw, segment)
 		}
 	}
 	return path.Clean(raw), nil
@@ -221,16 +219,20 @@ func normalizeAccessItem(raw string) (string, error) {
 
 // Visible 报告全局相对路径是否在用户的可见范围内：命中某条 access 的自身、其后代，
 // 或它本身就是某条 access 的祖先（祖先链要保留，用户才知道自己处在哪一层）。
+//
+// 比较按大小写不敏感：access 在启动时已解析成文件系统上的真实大小写，这里再折叠一次
+// 是为了让手输 URL 的大小写偏差也能落到同一棵子树（实际打开仍按真实名字，找不到就 404）。
 func (u User) Visible(rel string) bool {
+	lowerRel := strings.ToLower(rel)
 	for _, access := range u.Access {
 		if access == "/" {
 			return true
 		}
-		item := strings.TrimPrefix(access, "/")
-		if rel == item || strings.HasPrefix(rel, item+"/") {
+		item := strings.ToLower(strings.TrimPrefix(access, "/"))
+		if lowerRel == item || strings.HasPrefix(lowerRel, item+"/") {
 			return true
 		}
-		if strings.HasPrefix(item, rel+"/") {
+		if strings.HasPrefix(item, lowerRel+"/") {
 			return true
 		}
 	}

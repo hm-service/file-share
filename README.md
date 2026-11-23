@@ -83,7 +83,8 @@ just run
 | `MAX_AUTH_CONCURRENCY` / `MAX_API_CONCURRENCY` / `MAX_STATIC_CONCURRENCY` | 32 / 128 / 64 | 三组请求的信号量槽位。 |
 
 用户表固定读 `DATA_DIR/users.yaml`：`permissions` 取 `read` / `fav`（`fav` 必须同时带 `read`），
-`access` 是可见范围数组，条目必须是数据目录下已存在的目录（`"/"` 表示整个数据目录）。
+`access` 是可见范围数组，条目必须是数据目录下已存在的目录（`"/"` 表示整个数据目录）；
+启动时按文件系统真实大小写解析，配置大小写不一致也能工作（仅大小写不同的多个候选会拒绝启动）。
 受限账号看到的路径仍是数据目录下的完整路径，不会以授权目录为根重写。
 
 ## 构建
@@ -162,7 +163,7 @@ just test     # go test ./... -count=1
 just check    # gofmt/vet/go test + 前端 typecheck
 ```
 
-Go 测试覆盖：`app`（目录扫描任意深度 / 隐藏文件 / 符号链接 / 可见范围与祖先链 / 收藏按用户隔离 /
+Go 测试覆盖：`app`（目录扫描任意深度 / 隐藏文件照常展示 / 符号链接 / 可见范围与祖先链 / 收藏按用户隔离 /
 路径校验 / 签名 URL）、`api`（列表、收藏与 fav 权限、分享、下载、401/404/405）、
 `main`（环境变量解析、站点外壳）。
 本地验收：`FILES_DIR` 指向测试目录起服务，用 Playwright 走「登录 → 目录 → 搜索 → 收藏 → 下载 →

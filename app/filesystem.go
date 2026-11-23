@@ -15,7 +15,7 @@ import (
 var (
 	// ErrNotFound 表示请求的文件在只读目录里不存在（或不是普通文件）。
 	ErrNotFound = errors.New("file not found")
-	// ErrInvalidPath 表示相对路径不合法：绝对路径、包含 .. / 空段 / 隐藏段。
+	// ErrInvalidPath 表示相对路径不合法：绝对路径、包含 .. / 空段。
 	ErrInvalidPath = errors.New("invalid path")
 )
 
@@ -46,7 +46,7 @@ type treeSnapshot struct {
 // scan 递归扫描数据目录并按用户的可见范围过滤：目录即分组，普通文件即文件记录。
 //
 // 规则：
-//   - 点开头的文件 / 目录一律跳过（隐藏文件不对外，`.file-share` 之类的元数据目录也不展示）；
+//   - 点开头的文件 / 目录与其他数据一样展示（不做隐藏处理）；
 //   - 符号链接与设备等非常规文件跳过（只读视图不跟随链接，避免逃出数据目录）；
 //   - 目录深度不限制（SMB 那边怎么组织就怎么展示）；
 //   - 排序：分组按（父路径、名称）排序，文件按（分组路径、名称）排序，名称比较忽略大小写。
@@ -60,12 +60,6 @@ func (a *App) scan(user User) (treeSnapshot, error) {
 			return nil
 		}
 		name := d.Name()
-		if strings.HasPrefix(name, ".") {
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
 		rel := strings.TrimPrefix(filepath.ToSlash(p), "./")
 		// 不可见路径整棵跳过：不可访问的目录与文件从不进入列表，用户视角里不存在。
 		// 祖先链由 User.Visible 保留，用户仍能看到自己处在哪一层。
@@ -126,8 +120,8 @@ func lessName(a, b string) bool {
 	return a < b
 }
 
-// validateRelPath 校验外部传入的相对路径：拒绝绝对路径、反斜杠、空段与任何点开头的段。
-// 允许子目录（"a/b/c"），但每一段都必须是非空的普通名字。
+// validateRelPath 校验外部传入的相对路径：拒绝绝对路径、反斜杠、空段与 "." / ".."。
+// 点开头的文件与目录是普通数据（不再隐藏），只有 "." / ".." 这两个特殊段被拒绝。
 func validateRelPath(rel string) error {
 	if rel == "" || rel == "." {
 		return ErrInvalidPath
@@ -140,9 +134,6 @@ func validateRelPath(rel string) error {
 	}
 	for _, segment := range strings.Split(rel, "/") {
 		if segment == "" || segment == "." || segment == ".." {
-			return ErrInvalidPath
-		}
-		if strings.HasPrefix(segment, ".") {
 			return ErrInvalidPath
 		}
 	}
@@ -197,26 +188,51 @@ func translateFileError(err error) error {
 	return err
 }
 
-// checkAccessPath 校验一条可见范围：路径上每一段都必须是真实目录，不能是符号链接。
-// 可见范围是访问边界，配错就该拒绝启动；段级符号链接会让「前缀匹配」指向别处，同样拒绝。
-func checkAccessPath(files *os.Root, access string) error {
+// resolveAccess 把配置里的可见范围解析成文件系统上的真实路径。
+//
+// 逐段按大小写不敏感匹配目录条目，返回实际大小写：这样配置写成 /SOFTWARE 而实际是
+// /Software 也能工作，且 Visible 的字节比较有唯一基准。同一层出现仅大小写不同的多个候选
+// 时报错（授权哪个都不对）。每一段还必须是真实目录、不是符号链接 —— 段级链接会让
+// 「前缀匹配」指向别处，可见范围是访问边界，配错就该拒绝启动。
+func resolveAccess(files *os.Root, access string) (string, error) {
 	rel := strings.TrimPrefix(access, "/")
 	if rel == "" {
-		return nil
+		return "/", nil
 	}
-	prefix := ""
-	for _, segment := range strings.Split(rel, "/") {
-		prefix = path.Join(prefix, segment)
-		info, err := files.Lstat(filepath.FromSlash(prefix))
+	segments := strings.Split(rel, "/")
+	resolved := make([]string, 0, len(segments))
+	parent := "."
+	for _, segment := range segments {
+		entries, err := fs.ReadDir(files.FS(), parent)
 		if err != nil {
-			return fmt.Errorf("access %q: %w", access, translateFileError(err))
+			return "", fmt.Errorf("access %q: %w", access, translateFileError(err))
 		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("access %q: %q is a symbolic link", access, prefix)
+		var matches []fs.DirEntry
+		for _, entry := range entries {
+			if strings.EqualFold(entry.Name(), segment) {
+				matches = append(matches, entry)
+			}
 		}
-		if !info.IsDir() {
-			return fmt.Errorf("access %q: %q is not a directory", access, prefix)
+		target := path.Join(append(resolved, segment)...)
+		switch {
+		case len(matches) == 0:
+			return "", fmt.Errorf("access %q: %q not found", access, target)
+		case len(matches) > 1:
+			names := make([]string, 0, len(matches))
+			for _, match := range matches {
+				names = append(names, match.Name())
+			}
+			return "", fmt.Errorf("access %q: %q is ambiguous (matches %s)", access, target, strings.Join(names, ", "))
 		}
+		entry := matches[0]
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return "", fmt.Errorf("access %q: %q is a symbolic link", access, target)
+		}
+		if !entry.IsDir() {
+			return "", fmt.Errorf("access %q: %q is not a directory", access, target)
+		}
+		resolved = append(resolved, entry.Name())
+		parent = path.Join(parent, entry.Name())
 	}
-	return nil
+	return "/" + strings.Join(resolved, "/"), nil
 }

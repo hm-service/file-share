@@ -83,13 +83,23 @@ func Open(cfg Config) (*App, error) {
 			a.Close()
 		}
 	}()
-	// 可见范围是启动时的硬约束：每条 access 都必须真实存在且是目录。
+	// 可见范围是启动时的硬约束：逐条解析成文件系统的真实大小写路径。
 	for name, user := range users {
+		resolved := make([]string, 0, len(user.Access))
+		seen := make(map[string]bool, len(user.Access))
 		for _, access := range user.Access {
-			if err := checkAccessPath(files, access); err != nil {
+			real, err := resolveAccess(files, access)
+			if err != nil {
 				return nil, fmt.Errorf("user %q: %w", name, err)
 			}
+			if seen[real] {
+				return nil, fmt.Errorf("user %q: access %q resolves to a duplicate directory %q", name, access, real)
+			}
+			seen[real] = true
+			resolved = append(resolved, real)
 		}
+		user.Access = resolved
+		users[name] = user
 	}
 	// 收藏按用户分文件：目录先建出来，再逐用户读入（新用户没有文件就是空收藏）。
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, favoritesDirName), core.DataDirPerm); err != nil {

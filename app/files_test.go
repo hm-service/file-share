@@ -277,7 +277,9 @@ func TestMultiAccessUnion(t *testing.T) {
 	}
 }
 
-func TestScanSkipsHiddenAndSymlinks(t *testing.T) {
+// TestScanIncludesHiddenAndSkipsSymlinks 验证隐藏文件是普通数据（照常展示），
+// 只有符号链接这类非常规文件被跳过。
+func TestScanIncludesHiddenAndSkipsSymlinks(t *testing.T) {
 	instance := newTestApp(t)
 	tester := userByName(t, instance, "tester")
 	writeTestFile(t, instance, "可见.txt", "v")
@@ -292,22 +294,33 @@ func TestScanSkipsHiddenAndSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := map[string]bool{}
 	for _, file := range files {
-		if file.Filename == "链接.txt" || file.Filename == ".隐藏文件.txt" {
-			t.Errorf("不应出现 %q: %+v", file.Filename, file)
+		found[file.ID] = true
+	}
+	for _, want := range []string{"可见.txt", ".隐藏文件.txt", ".file-share/manifest.jsonl", "目录/文件.txt"} {
+		if !found[want] {
+			t.Errorf("缺少 %q: %+v", want, found)
 		}
 	}
-	if len(files) != 2 {
-		t.Errorf("文件数 = %d，想要 2: %+v", len(files), files)
+	if found["链接.txt"] {
+		t.Error("符号链接不应出现")
+	}
+	if len(files) != 4 {
+		t.Errorf("文件数 = %d，想要 4: %+v", len(files), files)
 	}
 	groups, err := instance.ListGroups(tester)
 	if err != nil {
 		t.Fatal(err)
 	}
+	hiddenDir := false
 	for _, group := range groups {
-		if group.Name == ".file-share" {
-			t.Errorf("隐藏目录不应出现: %+v", group)
+		if group.Path == ".file-share" {
+			hiddenDir = true
 		}
+	}
+	if !hiddenDir {
+		t.Error("隐藏目录 .file-share 应当作为普通分组出现")
 	}
 }
 
@@ -327,13 +340,13 @@ func TestSymlinkCannotBypassAccess(t *testing.T) {
 }
 
 func TestValidateRelPath(t *testing.T) {
-	valid := []string{"a", "a/b", "目录A/说明.md", "a b/c.txt"}
+	valid := []string{"a", "a/b", "目录A/说明.md", "a b/c.txt", ".hidden", "a/.hidden/b"}
 	for _, value := range valid {
 		if err := validateRelPath(value); err != nil {
 			t.Errorf("validateRelPath(%q) = %v，想要 nil", value, err)
 		}
 	}
-	invalid := []string{"", ".", "/abs", "a/../b", "../x", "a/./b", "a//b", "a\\b", ".hidden", "a/.hidden/b"}
+	invalid := []string{"", ".", "/abs", "a/../b", "../x", "a/./b", "a//b", "a\\b"}
 	for _, value := range invalid {
 		if err := validateRelPath(value); !errors.Is(err, ErrInvalidPath) {
 			t.Errorf("validateRelPath(%q) = %v，想要 ErrInvalidPath", value, err)
@@ -357,7 +370,11 @@ func TestNormalizeAccess(t *testing.T) {
 	if len(access) != 2 || access[0] != "/目录A" || access[1] != "/目录B/子" {
 		t.Errorf("access = %v，想要规范化后的 [/目录A /目录B/子]", access)
 	}
-	for _, raw := range []string{"", "目录A", "..", "/..", "/a/..", "/a/.b", "/a\\b"} {
+	access, err = normalizeAccess([]string{"/a/.b"})
+	if err != nil || len(access) != 1 || access[0] != "/a/.b" {
+		t.Errorf("点开头段应当合法: %v, %v", access, err)
+	}
+	for _, raw := range []string{"", "目录A", "..", "/..", "/a/..", "/a\\b"} {
 		if _, err := normalizeAccess([]string{raw}); err == nil {
 			t.Errorf("normalizeAccess([%q]) 应当报错", raw)
 		}
@@ -381,10 +398,10 @@ func TestOpenRejectsInvalidAccess(t *testing.T) {
 		t.Skipf("文件系统不支持符号链接: %v", err)
 	}
 	cases := map[string]string{
-		"/不存在":  "file not found",
+		"/不存在":  "not found",
 		"/普通文件": "not a directory",
 		"/链接":   "symbolic link",
-		"/存在/子": "file not found",
+		"/存在/子": "not found",
 	}
 	for access, want := range cases {
 		cfg := Config{
@@ -608,4 +625,71 @@ func splitSignedURL(t *testing.T, link string) (escapedPath, sig string, exp int
 		return "", "", 0, false
 	}
 	return escapedPath, values.Get("sig"), exp, true
+}
+
+// TestAccessResolvesRealCase 验证可见范围按文件系统真实大小写解析：
+// 配置写成 /SOFTWARE 也能命中 /Software，启动后 Access 里存的是真实名字。
+func TestAccessResolvesRealCase(t *testing.T) {
+	filesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(filesDir, "Software"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		DataDir:           t.TempDir(),
+		FilesDir:          filesDir,
+		SessionSigningKey: "test_session_signing_key_0123456789",
+		URLSignatureKey:   "test_url_signature_key_0123456789",
+		Users: []User{{
+			Name: "case", Password: "case_password_0123456789",
+			Permissions: PermissionRead, Access: []string{"/SOFTWARE"},
+		}},
+	}
+	instance, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("大小写不同的 access 应当能解析: %v", err)
+	}
+	t.Cleanup(func() { instance.Close() })
+	user := userByName(t, instance, "case")
+	if len(user.Access) != 1 || user.Access[0] != "/Software" {
+		t.Errorf("Access = %v，想要解析成真实大小写 /Software", user.Access)
+	}
+	writeTestFile(t, instance, "Software/说明.md", "x")
+	files, err := instance.ListFiles(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].ID != "Software/说明.md" {
+		t.Errorf("文件 = %+v，想要 Software/说明.md", files)
+	}
+	// 请求路径大小写偏差不影响可见性判定（实际打开仍按真实名字）。
+	if _, err := instance.IssueDownloadURL(user, "SOFTWARE/说明.md"); !isBusiness(err, 404) {
+		t.Errorf("大小写偏差路径 = %v，想要 404（可见性通过但文件系统找不到）", err)
+	}
+	if _, err := instance.IssueDownloadURL(user, "Software/说明.md"); err != nil {
+		t.Errorf("真实大小写路径应当可签: %v", err)
+	}
+}
+
+// TestAccessAmbiguousCase 验证同一层出现仅大小写不同的候选时拒绝启动，而不是随便挑一个授权。
+func TestAccessAmbiguousCase(t *testing.T) {
+	filesDir := t.TempDir()
+	for _, name := range []string{"A", "a"} {
+		if err := os.MkdirAll(filepath.Join(filesDir, name), 0o755); err != nil {
+			t.Skipf("文件系统大小写不敏感，跳过歧义用例: %v", err)
+		}
+	}
+	cfg := Config{
+		DataDir:           t.TempDir(),
+		FilesDir:          filesDir,
+		SessionSigningKey: "test_session_signing_key_0123456789",
+		URLSignatureKey:   "test_url_signature_key_0123456789",
+		Users: []User{{
+			Name: "case", Password: "case_password_0123456789",
+			Permissions: PermissionRead, Access: []string{"/A"},
+		}},
+	}
+	_, err := Open(cfg)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("大小写歧义应当拒绝启动，得到 %v", err)
+	}
 }

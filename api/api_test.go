@@ -151,7 +151,9 @@ func TestListFiles(t *testing.T) {
 	}
 }
 
-func TestListFilesSkipsHidden(t *testing.T) {
+// TestListFilesIncludesHidden 验证点开头的文件与目录是普通数据：照常出现在列表里，
+// 只有符号链接这类非常规文件被跳过。
+func TestListFilesIncludesHidden(t *testing.T) {
 	instance := testenv.NewWith(t, map[string]string{
 		"可见.txt":                     "visible",
 		".隐藏文件.txt":                  "hidden",
@@ -163,18 +165,15 @@ func TestListFilesSkipsHidden(t *testing.T) {
 	recorder := testenv.Do(handler, http.MethodGet, "/api/files", token)
 	var payload listPayload
 	testenv.DecodeInto(t, recorder, &payload)
-	if len(payload.Files) != 2 {
-		t.Fatalf("文件数 = %d，想要 2（隐藏文件与 .file-share 都应跳过）: %+v", len(payload.Files), payload.Files)
+	if len(payload.Files) != 4 {
+		t.Fatalf("文件数 = %d，想要 4（隐藏文件也展示）: %+v", len(payload.Files), payload.Files)
 	}
+	found := map[string]bool{}
 	for _, file := range payload.Files {
-		if strings.HasPrefix(file.Filename, ".") {
-			t.Errorf("不应展示隐藏文件: %+v", file)
-		}
+		found[file.ID] = true
 	}
-	for _, group := range payload.Groups {
-		if strings.HasPrefix(group.Name, ".") {
-			t.Errorf("不应展示隐藏目录: %+v", group)
-		}
+	if !found[".隐藏文件.txt"] || !found[".file-share/manifest.jsonl"] {
+		t.Errorf("隐藏文件与隐藏目录下的文件应当出现: %v", found)
 	}
 }
 
@@ -210,7 +209,8 @@ func TestFavoriteToggle(t *testing.T) {
 
 func TestFavoriteRejectsBadPath(t *testing.T) {
 	_, handler, token := newHandler(t)
-	for _, path := range []string{"", "../etc/passwd", "/abs", ".hidden"} {
+	// 点开头的路径是普通数据，只有穿越与空路径被拒绝。
+	for _, path := range []string{"", "../etc/passwd", "/abs", "软件\\说明.md"} {
 		recorder := testenv.Do(handler, http.MethodPut, "/api/favorites?path="+queryEscape(path), token)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("收藏路径 %q = %d，想要 400", path, recorder.Code)
@@ -298,7 +298,7 @@ func TestMissingFile(t *testing.T) {
 
 func TestPathTraversalRejected(t *testing.T) {
 	_, handler, token := newHandler(t)
-	for _, path := range []string{"../etc/passwd", "/etc/passwd", "软件/../../etc/passwd", ".file-share/manifest.jsonl", "软件\\说明.md"} {
+	for _, path := range []string{"../etc/passwd", "/etc/passwd", "软件/../../etc/passwd", "软件\\说明.md"} {
 		recorder := testenv.Do(handler, http.MethodGet, "/api/download-url?path="+queryEscape(path), token)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("路径 %q = %d，想要 400", path, recorder.Code)
