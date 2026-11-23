@@ -13,15 +13,16 @@ import (
 	"file-share/httpx"
 )
 
-// handleListFiles 返回只读目录里的全部文件与分组：文件按（分组、名称）排序，
+// handleListFiles 返回当前用户可见根下的全部文件与分组：文件按（分组、名称）排序，
 // 分组带完整路径与父路径，顺序即侧栏 / 移动端 chips 的展示顺序。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	files, err := s.App.ListFiles()
+	user := currentUser(r)
+	files, err := s.App.ListFiles(user)
 	if err != nil {
 		businessFail(w, r, err)
 		return
 	}
-	groups, err := s.App.ListGroups()
+	groups, err := s.App.ListGroups(user)
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -35,7 +36,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 // handleFavorite 切换收藏：PUT 收藏、DELETE 取消，路径走 ?path=。
 // 收藏是本地元数据，不检查文件是否存在（文件被 SMB 侧删掉时记录自然匹配不到）。
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
-	favorite, err := s.App.ToggleFavorite(r.URL.Query().Get("path"))
+	favorite, err := s.App.ToggleFavorite(currentUser(r), r.URL.Query().Get("path"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -46,7 +47,7 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 // handleDownloadURL 签一个匿名下载地址（SignedURLTTL 内有效）。前端拿 url 后让浏览器
 // 直接导航：流式下载、Range、原生进度都在浏览器侧完成，服务端不用把整份文件读进内存。
 func (s *Server) handleDownloadURL(w http.ResponseWriter, r *http.Request) {
-	link, err := s.App.IssueDownloadURL(r.URL.Query().Get("path"))
+	link, err := s.App.IssueDownloadURL(currentUser(r), r.URL.Query().Get("path"))
 	if err != nil {
 		businessFail(w, r, err)
 		return
@@ -69,7 +70,7 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusBadRequest, "share.invalid-ttl")
 		return
 	}
-	link, err := s.App.IssueShareLink(payload.Path, ttl)
+	link, err := s.App.IssueShareLink(currentUser(r), payload.Path, ttl)
 	if err != nil {
 		businessFail(w, r, err)
 		return

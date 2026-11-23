@@ -22,7 +22,9 @@ stringData:
     URL_SIGNATURE_KEY: "your_very_safe_url_signature_key"
 
 ---
-# 用户表：身份列表 + 权限数组。只读视图没有写接口，账号只需 read。
+# 用户表：身份列表 + 权限数组 + 可见范围。
+# permissions 取 read / fav（fav 必须同时带 read）；access 是可见范围数组，
+# "/" 表示整个数据目录，"/目录A" 表示只显示该目录，多值取并集。
 # 密码明文保存在这里，改完重启 Pod 生效。
 apiVersion: v1
 kind: Secret
@@ -34,7 +36,8 @@ stringData:
         users:
           - name: admin
             password: "change_me_please"
-            permissions: [read]
+            permissions: [read, fav]
+            access: ["/"]
 
 ---
 apiVersion: v1

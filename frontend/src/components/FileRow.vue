@@ -27,6 +27,8 @@ const props = defineProps<{
   file: FileItem;
   /** 在元信息行里额外显示所属目录（「最近」视图用）。 */
   showGroup?: boolean;
+  /** 当前账号是否有收藏权限（fav）：没有就不显示星标按钮。 */
+  canFavorite: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -290,6 +292,7 @@ onBeforeUnmount(() => {
       ></button>
 
       <button
+        v-if="canFavorite"
         type="button"
         class="icon-btn star"
         :class="{ on: file.is_favorite }"

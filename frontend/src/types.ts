@@ -2,7 +2,7 @@
 
 /** GET /api/files 里的一条记录。 */
 export interface FileItem {
-  /** 相对只读数据根目录的路径（同时是下载与分享的标识）。 */
+  /** 数据目录下的完整相对路径（同时是下载与分享的标识）。 */
   id: string;
   filename: string;
   /** 父目录相对路径；根目录直属文件为空串。 */
@@ -34,13 +34,15 @@ export interface DownloadURLResponse {
   url: string;
 }
 
-/** 权限名：与后端用户表里的 read / write 一一对应。只读视图只用到 read。 */
-export type PermissionName = "read" | "write";
+/** 权限名：与后端用户表里的 read / fav 一一对应。 */
+export type PermissionName = "read" | "fav";
 
-/** 当前登录用户：只有名字与权限，永远是后端下发的，不落本地存储。 */
+/** 当前登录用户：名字、权限与可见范围，永远是后端下发的，不落本地存储。 */
 export interface UserInfo {
   name: string;
   permissions: PermissionName[];
+  /** 可见范围："/" 表示整个数据目录，其余是授权目录的完整路径。 */
+  access: string[];
 }
 
 /** GET /api/me 的响应。 */

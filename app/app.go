@@ -35,12 +35,14 @@ type Config struct {
 type App struct {
 	Config Config
 
-	// files 是只读数据目录的根句柄：所有文件访问都经它，天然限制在根目录内。
-	files     *os.Root
-	favorites *Favorites
+	// files 是只读数据目录的根句柄：所有文件访问都经它，天然限制在数据目录内。
+	files *os.Root
 
-	// users 按用户名索引的只读用户表：每次请求按当前表解析权限。
-	users   map[string]User
+	// users 按用户名索引的只读用户表：每次请求按当前表解析权限与可见范围。
+	users map[string]User
+	// favorites 是每用户独立的收藏集合：DATA_DIR/favorites/<name>.json。
+	favorites map[string]*Favorites
+
 	signer  *core.SessionSigner
 	signurl *core.URLSigner
 	proxies *httpx.Proxies
@@ -65,28 +67,50 @@ func Open(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	favorites, err := openFavorites(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(cfg.FilesDir)
+	files, err := os.OpenRoot(cfg.FilesDir)
 	if err != nil {
 		return nil, fmt.Errorf("open FILES_DIR %q: %w", cfg.FilesDir, err)
 	}
+	a := &App{
+		Config:    cfg,
+		files:     files,
+		users:     users,
+		favorites: make(map[string]*Favorites, len(users)),
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			a.Close()
+		}
+	}()
+	// 可见范围是启动时的硬约束：每条 access 都必须真实存在且是目录。
+	for name, user := range users {
+		for _, access := range user.Access {
+			if err := checkAccessPath(files, access); err != nil {
+				return nil, fmt.Errorf("user %q: %w", name, err)
+			}
+		}
+	}
+	// 收藏按用户分文件：目录先建出来，再逐用户读入（新用户没有文件就是空收藏）。
+	if err := os.MkdirAll(filepath.Join(cfg.DataDir, favoritesDirName), core.DataDirPerm); err != nil {
+		return nil, fmt.Errorf("create favorites dir: %w", err)
+	}
+	for name := range users {
+		favorites, err := openFavorites(cfg.DataDir, name)
+		if err != nil {
+			return nil, fmt.Errorf("user %q: %w", name, err)
+		}
+		a.favorites[name] = favorites
+	}
 	proxies, err := httpx.NewProxies(cfg.TrustedProxies)
 	if err != nil {
-		root.Close()
 		return nil, err
 	}
-	return &App{
-		Config:    cfg,
-		files:     root,
-		favorites: favorites,
-		users:     users,
-		signer:    core.NewSessionSigner([]byte(cfg.SessionSigningKey)),
-		signurl:   core.NewURLSigner([]byte(cfg.URLSignatureKey)),
-		proxies:   proxies,
-	}, nil
+	a.proxies = proxies
+	a.signer = core.NewSessionSigner([]byte(cfg.SessionSigningKey))
+	a.signurl = core.NewURLSigner([]byte(cfg.URLSignatureKey))
+	opened = true
+	return a, nil
 }
 
 // prepareDataDir 只认已经存在的数据目录：目录由部署方交进来（卷挂载、手工建），
@@ -153,13 +177,20 @@ func (a *App) Ready() error {
 	if _, err := os.ReadDir(a.Config.FilesDir); err != nil {
 		return fmt.Errorf("files dir not readable: %w", err)
 	}
-	if info, err := os.Stat(a.favorites.path); err == nil {
-		if err := core.CheckPerm(a.favorites.path, core.SecretPerm); err != nil {
-			return fmt.Errorf("favorites file: %w", err)
+	favoritesDir := filepath.Join(a.Config.DataDir, favoritesDirName)
+	if err := core.CheckPerm(favoritesDir, core.DataDirPerm); err != nil {
+		return fmt.Errorf("favorites dir: %w", err)
+	}
+	for name, favorites := range a.favorites {
+		if _, err := os.Stat(favorites.path); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("user %q: stat favorites file: %w", name, err)
 		}
-		_ = info
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("stat favorites file: %w", err)
+		if err := core.CheckPerm(favorites.path, core.SecretPerm); err != nil {
+			return fmt.Errorf("user %q: favorites file: %w", name, err)
+		}
 	}
 	// 收藏切换要写 DATA_DIR：启动后再探一次，卷变成只读时能尽早发现。
 	probe := filepath.Join(a.Config.DataDir, ".ready")
@@ -227,6 +258,9 @@ func (a *App) User(name string) (User, bool) {
 	return user, ok
 }
 
+// favoritesFor 返回该用户的收藏集合。
+func (a *App) favoritesFor(user User) *Favorites { return a.favorites[user.Name] }
+
 // indexUsers 校验用户表并建索引。空表说明部署漏了用户表文件，直接拒绝启动。
 func indexUsers(users []User) (map[string]User, error) {
 	if len(users) == 0 {
@@ -243,6 +277,11 @@ func indexUsers(users []User) (map[string]User, error) {
 		if user.Permissions == 0 {
 			return nil, fmt.Errorf("user %q has no permissions", user.Name)
 		}
+		access, err := normalizeAccess(user.Access)
+		if err != nil {
+			return nil, fmt.Errorf("user %q: %w", user.Name, err)
+		}
+		user.Access = access
 		index[user.Name] = user
 	}
 	return index, nil

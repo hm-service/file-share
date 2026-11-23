@@ -79,8 +79,36 @@ func TestLoginAndMe(t *testing.T) {
 		t.Errorf("name = %v，想要 %q", payload["name"], testenv.UserName)
 	}
 	permissions, _ := payload["permissions"].([]any)
-	if len(permissions) != 1 || permissions[0] != "read" {
-		t.Errorf("permissions = %v，想要 [read]", permissions)
+	if len(permissions) != 2 || permissions[0] != "read" || permissions[1] != "fav" {
+		t.Errorf("permissions = %v，想要 [read fav]", permissions)
+	}
+	access, _ := payload["access"].([]any)
+	if len(access) != 1 || access[0] != "/" {
+		t.Errorf("access = %v，想要 [/]", access)
+	}
+}
+
+// TestFavoriteRequiresFavPermission 验证收藏接口按 fav 权限放行：只有 read 的账号拿到 403，
+// 但浏览与下载不受影响。
+func TestFavoriteRequiresFavPermission(t *testing.T) {
+	instance := testenv.NewWith(t, nil, func(cfg *app.Config) {
+		cfg.Users = append(cfg.Users, app.User{
+			Name:        "guest",
+			Password:    "guest_password_0123456789",
+			Permissions: app.PermissionRead,
+			Access:      []string{"/"},
+		})
+	})
+	handler := NewHandler(instance)
+	guestToken := testenv.TokenFor(t, instance, "guest")
+
+	if recorder := testenv.Do(handler, http.MethodGet, "/api/files", guestToken); recorder.Code != http.StatusOK {
+		t.Fatalf("无 fav 权限的浏览 = %d，想要 200", recorder.Code)
+	}
+	recorder := testenv.Do(handler, http.MethodPut,
+		"/api/favorites?path="+queryEscape("软件/说明.md"), guestToken)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("无 fav 权限收藏 = %d，想要 403: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -166,9 +194,9 @@ func TestFavoriteToggle(t *testing.T) {
 			t.Fatal("列表里应当显示为已收藏")
 		}
 	}
-	// 收藏元数据落在 DATA_DIR 下，而不是只读数据目录。
-	if _, err := os.Stat(filepath.Join(instance.Config.DataDir, "favorites.json")); err != nil {
-		t.Fatalf("favorites.json 不存在: %v", err)
+	// 收藏元数据落在 DATA_DIR/favorites/<user>.json 下，而不是只读数据目录。
+	if _, err := os.Stat(filepath.Join(instance.Config.DataDir, "favorites", testenv.UserName+".json")); err != nil {
+		t.Fatalf("用户收藏文件不存在: %v", err)
 	}
 
 	recorder = testenv.Do(handler, http.MethodDelete, target, token)

@@ -29,10 +29,13 @@ samba 共享的只读目录（`samba-data` 卷里的 `daveny/`），页面只做
 - **下载与分享**：文件行可下载、复制 10 分钟 / 24 小时分享链接；当前视图可「下载全部」
   （逐个签 10 分钟有效的签名地址并触发下载，不打包成 zip）。分享链接是签名 URL，
   对方免登录即可下载，过期或改路径都会失效。
-- **收藏**：收藏写本地元数据 `DATA_DIR/favorites.json`，不碰只读数据目录；「收藏」视图列出全部收藏文件。
-- **用户与权限**：用户表固定放在数据目录 `DATA_DIR/users.yaml`，只读视图只需要 `read` 权限；
-  登录用用户名 + 密码换 30 天会话，除 `/api/auth` 外的 `/api/*` 都需要 `Authorization: Bearer`。
-  未登录打开深链接会先跳登录页，登录后回到原地址（含搜索词）。
+- **收藏**：每个用户一份本地元数据 `DATA_DIR/favorites/<用户名>.json`，不碰只读数据目录；
+  需要 `fav` 权限（没有时界面不显示星标与收藏入口）；「收藏」视图列出该用户收藏的文件。
+- **用户、权限与可见范围**：用户表固定放在数据目录 `DATA_DIR/users.yaml`。`permissions` 支持
+  `read`（浏览 / 下载 / 分享）与 `fav`（收藏）；`access` 是可见范围数组（`["/"]` 表示整个数据目录，
+  `["/目录A"]` 表示只显示该目录，多值取并集），未授权目录与文件直接从视图里消失，但路径仍显示
+  数据目录下的完整位置。登录用用户名 + 密码换 30 天会话，除 `/api/auth` 外的 `/api/*` 都需要
+  `Authorization: Bearer`。未登录打开深链接会先跳登录页，登录后回到原地址（含搜索词）。
 - **中英双语**：前端文案可切换，后端错误文案按 `Accept-Language` 本地化。
 - **响应式工作台**：桌面为左侧目录树 + 内容区表格；≤900px 把目录树收进抽屉，表格只保留名称与操作列，
   「下载全部」收进右下角悬浮按钮。
@@ -51,7 +54,8 @@ cat > "$DATA_DIR/users.yaml" <<'EOF'        # 用户表：固定放在数据目�
 users:
   - name: admin
     password: change_me_please
-    permissions: [read]
+    permissions: [read, fav]
+    access: ["/"]
 EOF
 export SESSION_SIGNING_KEY=change_me_please_1234567890  # 32-128 位 [A-Za-z0-9_]
 export URL_SIGNATURE_KEY=change_me_please_0987654321   # 32-128 位 [A-Za-z0-9_]
@@ -78,8 +82,9 @@ just run
 | `TZ` | 空 | 设了必须是有效的时区名。 |
 | `MAX_AUTH_CONCURRENCY` / `MAX_API_CONCURRENCY` / `MAX_STATIC_CONCURRENCY` | 32 / 128 / 64 | 三组请求的信号量槽位。 |
 
-用户表固定读 `DATA_DIR/users.yaml`：每个用户带 `read` 权限即可（只读视图没有写接口，
-`write` 字段即使配了也没有作用；`write` 必须同时带 `read` 的校验保留）。
+用户表固定读 `DATA_DIR/users.yaml`：`permissions` 取 `read` / `fav`（`fav` 必须同时带 `read`），
+`access` 是可见范围数组，条目必须是数据目录下已存在的目录（`"/"` 表示整个数据目录）。
+受限账号看到的路径仍是数据目录下的完整路径，不会以授权目录为根重写。
 
 ## 构建
 
@@ -125,8 +130,8 @@ podman kube play k8s.file-share.yaml
 
 ```
 DATA_DIR/
-  users.yaml       用户表（登录的唯一依据，改完重启）
-  favorites.json   收藏元数据（应用维护，{"paths":[...]}）
+  users.yaml                用户表（登录与可见范围的唯一依据，改完重启）
+  favorites/<用户名>.json   该用户的收藏元数据（应用维护，{"paths":[...]}）
 FILES_DIR/         只读数据目录：SMB 共享的内容，应用只扫描不修改
 ```
 
@@ -157,8 +162,9 @@ just test     # go test ./... -count=1
 just check    # gofmt/vet/go test + 前端 typecheck
 ```
 
-Go 测试覆盖：`app`（目录扫描任意深度 / 隐藏文件 / 符号链接 / 路径校验 / 收藏元数据 / 签名 URL）、
-`api`（列表、收藏、分享、下载、401/404/405）、`main`（环境变量解析、站点外壳）。
+Go 测试覆盖：`app`（目录扫描任意深度 / 隐藏文件 / 符号链接 / 可见范围与祖先链 / 收藏按用户隔离 /
+路径校验 / 签名 URL）、`api`（列表、收藏与 fav 权限、分享、下载、401/404/405）、
+`main`（环境变量解析、站点外壳）。
 本地验收：`FILES_DIR` 指向测试目录起服务，用 Playwright 走「登录 → 目录 → 搜索 → 收藏 → 下载 →
 分享链接 → 移动端」。
 

@@ -470,7 +470,8 @@ func TestReadSecret(t *testing.T) {
 const usersContent = `users:
   - name: tester
     password: tester_password_0123456789
-    permissions: [read]
+    permissions: [read, fav]
+    access: ["/"]
 `
 
 // writeUsersFile 在 dataDir 下写一份默认内容的用户表，返回路径。
@@ -609,18 +610,27 @@ func TestLoadConfig(t *testing.T) {
 		{name: "用户表里没有用户", mutate: func(dataDir string) {
 			writeUsersFileContent(t, dataDir, "users: []\n")
 		}},
-		{name: "用户表里只有 write", mutate: func(dataDir string) {
+		{name: "用户表里只有 fav", mutate: func(dataDir string) {
 			writeUsersFileContent(t, dataDir, `users:
   - name: tester
     password: tester_password_0123456789
-    permissions: [write]
+    permissions: [fav]
+    access: ["/"]
 `)
 		}},
 		{name: "用户表里有未知权限", mutate: func(dataDir string) {
 			writeUsersFileContent(t, dataDir, `users:
   - name: tester
     password: tester_password_0123456789
-    permissions: [read, admin]
+    permissions: [read, write]
+    access: ["/"]
+`)
+		}},
+		{name: "用户表缺少 access", mutate: func(dataDir string) {
+			writeUsersFileContent(t, dataDir, `users:
+  - name: tester
+    password: tester_password_0123456789
+    permissions: [read]
 `)
 		}},
 		{name: "缺 SESSION_SIGNING_KEY", mutate: func(string) { t.Setenv("SESSION_SIGNING_KEY", "") }},

@@ -20,7 +20,7 @@ import (
 
 // 测试用的固定凭据，长度与字符集都符合生产校验。
 const (
-	// UserName / Password 是默认测试用户的登录凭据（只读权限）。
+	// UserName / Password 是默认测试用户的登录凭据（只读 + 可收藏，可见整个数据目录）。
 	UserName          = "tester"
 	Password          = "tester_password_0123456789"
 	SessionSigningKey = "test_session_signing_key_0123456789"
@@ -28,12 +28,13 @@ const (
 	ReadyzToken       = "test_readyz_token_0123456789"
 )
 
-// DefaultUsers 是一套只读用户表：只读视图没有写接口，默认用户只要 read。
+// DefaultUsers 是一套只读用户表：默认用户能浏览整个数据目录，也能收藏。
 func DefaultUsers() []app.User {
 	return []app.User{{
 		Name:        UserName,
 		Password:    Password,
-		Permissions: app.PermissionRead,
+		Permissions: app.PermissionRead | app.PermissionFav,
+		Access:      []string{"/"},
 	}}
 }
 

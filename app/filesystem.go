@@ -43,14 +43,14 @@ type treeSnapshot struct {
 	groups []Group
 }
 
-// scan 递归扫描只读数据目录：目录即分组，普通文件即文件记录。
+// scan 递归扫描数据目录并按用户的可见范围过滤：目录即分组，普通文件即文件记录。
 //
 // 规则：
 //   - 点开头的文件 / 目录一律跳过（隐藏文件不对外，`.file-share` 之类的元数据目录也不展示）；
 //   - 符号链接与设备等非常规文件跳过（只读视图不跟随链接，避免逃出数据目录）；
 //   - 目录深度不限制（SMB 那边怎么组织就怎么展示）；
 //   - 排序：分组按（父路径、名称）排序，文件按（分组路径、名称）排序，名称比较忽略大小写。
-func (a *App) scan() (treeSnapshot, error) {
+func (a *App) scan(user User) (treeSnapshot, error) {
 	var snap treeSnapshot
 	err := fs.WalkDir(a.files.FS(), ".", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -67,6 +67,14 @@ func (a *App) scan() (treeSnapshot, error) {
 			return nil
 		}
 		rel := strings.TrimPrefix(filepath.ToSlash(p), "./")
+		// 不可见路径整棵跳过：不可访问的目录与文件从不进入列表，用户视角里不存在。
+		// 祖先链由 User.Visible 保留，用户仍能看到自己处在哪一层。
+		if !user.Visible(rel) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		parent := path.Dir(rel)
 		if parent == "." {
 			parent = ""
@@ -141,21 +149,31 @@ func validateRelPath(rel string) error {
 	return nil
 }
 
-// openFile 打开一个相对路径的只读文件句柄。所有路径都经 os.Root 打开：
-// 即使文件系统在运行期间被替换（符号链接等），也不会逃出只读数据根目录。
-func (a *App) openFile(rel string) (*os.File, fs.FileInfo, error) {
+// openFile 在数据目录根下打开一个相对路径的只读文件句柄。
+//
+// 路径上每一段都先 Lstat：os.Root 只阻止逃出数据目录，但仍会跟随数据目录内部的符号链接。
+// 若 /目录A/链接 指向 /目录B，只做前缀校验就放行会绕过可见范围，所以段级符号链接一律拒绝。
+func openFile(root *os.Root, rel string) (*os.File, fs.FileInfo, error) {
 	if err := validateRelPath(rel); err != nil {
 		return nil, nil, err
 	}
+	segments := strings.Split(rel, "/")
+	prefix := ""
+	for index, segment := range segments {
+		prefix = path.Join(prefix, segment)
+		info, err := root.Lstat(filepath.FromSlash(prefix))
+		if err != nil {
+			return nil, nil, translateFileError(err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return nil, nil, ErrNotFound
+		}
+		if index < len(segments)-1 && !info.IsDir() {
+			return nil, nil, ErrNotFound
+		}
+	}
 	name := filepath.FromSlash(rel)
-	link, err := a.files.Lstat(name)
-	if err != nil {
-		return nil, nil, translateFileError(err)
-	}
-	if !link.Mode().IsRegular() {
-		return nil, nil, ErrNotFound
-	}
-	file, err := a.files.Open(name)
+	file, err := root.Open(name)
 	if err != nil {
 		return nil, nil, translateFileError(err)
 	}
@@ -177,4 +195,28 @@ func translateFileError(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+// checkAccessPath 校验一条可见范围：路径上每一段都必须是真实目录，不能是符号链接。
+// 可见范围是访问边界，配错就该拒绝启动；段级符号链接会让「前缀匹配」指向别处，同样拒绝。
+func checkAccessPath(files *os.Root, access string) error {
+	rel := strings.TrimPrefix(access, "/")
+	if rel == "" {
+		return nil
+	}
+	prefix := ""
+	for _, segment := range strings.Split(rel, "/") {
+		prefix = path.Join(prefix, segment)
+		info, err := files.Lstat(filepath.FromSlash(prefix))
+		if err != nil {
+			return fmt.Errorf("access %q: %w", access, translateFileError(err))
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("access %q: %q is a symbolic link", access, prefix)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("access %q: %q is not a directory", access, prefix)
+		}
+	}
+	return nil
 }

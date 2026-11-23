@@ -44,7 +44,7 @@ type route struct {
 // 只读视图的接口面：
 //   - 登录 / 当前用户；
 //   - 列表（文件 + 目录树）、存储状态；
-//   - 收藏切换（本地元数据文件）；
+//   - 收藏切换（每用户一份本地元数据文件，需要 fav 权限）；
 //   - 下载（页面内换短效 URL）与分享链接（10 分钟 / 24 小时两档）；
 //   - /s/<path> 是浏览器导航下载与分享链接入口，凭 URL 签名，不需要 Authorization。
 func NewMux(instance *app.App) *http.ServeMux {
@@ -57,8 +57,8 @@ func NewMux(instance *app.App) *http.ServeMux {
 		{http.MethodGet, "/api/me", server.handleMe, true, app.PermissionRead},
 		{http.MethodGet, "/api/files", server.handleListFiles, true, app.PermissionRead},
 		{http.MethodGet, "/api/storage", server.handleStorage, true, app.PermissionRead},
-		{http.MethodPut, "/api/favorites", server.handleFavorite, true, app.PermissionRead},
-		{http.MethodDelete, "/api/favorites", server.handleFavorite, true, app.PermissionRead},
+		{http.MethodPut, "/api/favorites", server.handleFavorite, true, app.PermissionRead | app.PermissionFav},
+		{http.MethodDelete, "/api/favorites", server.handleFavorite, true, app.PermissionRead | app.PermissionFav},
 		{http.MethodPost, "/api/share", server.handleShareLink, true, app.PermissionRead},
 		{http.MethodGet, "/api/download-url", server.handleDownloadURL, true, app.PermissionRead},
 		{http.MethodGet, "/s/{path...}", server.handleSignedDownload, false, 0},
@@ -154,9 +154,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	httpx.Write(w, http.StatusOK, userPayload(currentUser(r)))
 }
 
-// userPayload 是给界面的用户信息：只暴露名字与权限，永远不带密码。
+// userPayload 是给界面的用户信息：名字、权限与可见范围，永远不带密码。
 func userPayload(user app.User) map[string]any {
-	return map[string]any{"name": user.Name, "permissions": user.Permissions.Names()}
+	return map[string]any{
+		"name":        user.Name,
+		"permissions": user.Permissions.Names(),
+		"access":      user.Access,
+	}
 }
 
 // userContextKey 是请求上下文里放当前用户的键（包内私有类型，别的包塞不进来）。

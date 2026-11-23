@@ -17,6 +17,8 @@ const props = defineProps<{
   counts: ReadonlyMap<string, number>;
   recentCount: number;
   favoritesCount: number;
+  /** 当前账号是否有收藏权限（fav)：没有就不显示收藏入口。 */
+  canFavorite: boolean;
   /** 当前视图：快捷入口或文件夹。 */
   viewKind: "recent" | "favorites" | "group";
   /** 当前文件夹路径（viewKind = group 时有效）。 */
@@ -84,6 +86,7 @@ function countOf(path: string): number {
         <span class="node-count">{{ recentCount }}</span>
       </button>
       <button
+        v-if="canFavorite"
         type="button"
         class="node"
         :class="{ active: viewKind === 'favorites' }"

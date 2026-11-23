@@ -40,6 +40,14 @@ const actionError = ref("");
 let actionErrorTimer = 0;
 let refreshSeq = 0;
 const currentUser = ref<UserInfo | null>(null);
+/** 当前账号能否收藏：没有 fav 权限时星标与收藏入口都不显示。 */
+const canFavorite = computed(() => currentUser.value?.permissions.includes("fav") ?? false);
+/** 顶部账号提示：受限账号直接列出可见目录，方便确认自己处在什么范围。 */
+const userAccessHint = computed(() => {
+  const user = currentUser.value;
+  if (!user || (user.access.length === 1 && user.access[0] === "/")) return user?.name ?? "";
+  return `${user.name} · ${user.access.join(", ")}`;
+});
 const storage = ref<StorageInfo | null>(null);
 const query = ref("");
 const view = ref<View>({ kind: "recent" });
@@ -211,10 +219,13 @@ function syncViewFromLocation(): void {
   if (loaded.value) validateView();
 }
 
-/** 目录不存在时回退「最近」，免得刷新后停在空视图。 */
+/** 目录不存在（或账号没有收藏权限）时回退「最近」，免得刷新后停在空视图。 */
 function validateView(): void {
   const current = view.value;
   if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
+    applyView({ kind: "recent" }, "replace");
+  }
+  if (current.kind === "favorites" && !canFavorite.value) {
     applyView({ kind: "recent" }, "replace");
   }
 }
@@ -226,6 +237,7 @@ function showRecent(): void {
 }
 
 function showFavorites(): void {
+  if (!canFavorite.value) return;
   applyView({ kind: "favorites" });
 }
 
@@ -453,7 +465,7 @@ onBeforeUnmount(() => {
       <div class="top-actions">
         <LocaleSwitch class="lang" />
         <!-- 当前账号：右上角显示名字；只读视图没有写操作 -->
-        <div v-if="currentUser" class="user-chip" :title="currentUser.name">
+        <div v-if="currentUser" class="user-chip" :title="userAccessHint">
           <span class="user-avatar" v-html="ICONS.user"></span>
           <span class="user-name">{{ currentUser.name }}</span>
           <span class="user-badge">{{ t("user.readonly") }}</span>
@@ -480,6 +492,7 @@ onBeforeUnmount(() => {
           :counts="counts"
           :recent-count="files.length"
           :favorites-count="files.filter((file) => file.is_favorite).length"
+          :can-favorite="canFavorite"
           :view-kind="viewKind"
           :active-path="currentPath"
           :folded="folded"
@@ -559,6 +572,7 @@ onBeforeUnmount(() => {
           :dirs="dirs"
           :files="visibleFiles"
           :show-group="showGroup"
+          :can-favorite="canFavorite"
           @open-folder="openFolder"
           @favorite="onFavorite"
           @download="onDownload"

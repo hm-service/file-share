@@ -11,15 +11,16 @@ import (
 	"sync"
 )
 
-// favoritesFileName 是收藏元数据文件名：放在 DATA_DIR 下（可写），不进只读数据目录。
-const favoritesFileName = "favorites.json"
+// favoritesDirName 是按用户分文件的收藏目录：放在 DATA_DIR 下（可写），不进只读数据目录。
+// 每个用户一份 <name>.json，收藏互不可见，也不会互相覆盖。
+const favoritesDirName = "favorites"
 
-// favoritesPayload 是 favorites.json 的结构：只存相对路径列表。
+// favoritesPayload 是单个用户的收藏文件结构：只存用户视角的相对路径列表。
 type favoritesPayload struct {
 	Paths []string `json:"paths"`
 }
 
-// Favorites 是收藏的相对路径集合，读写 DATA_DIR/favorites.json。
+// Favorites 是某个用户的收藏路径集合，读写 DATA_DIR/favorites/<name>.json。
 // 收藏是前端状态，与只读文件目录解耦：文件被 SMB 侧删掉后记录仍在，
 // 读取时自然匹配不到文件、不会出现在「收藏」视图里。
 type Favorites struct {
@@ -28,10 +29,10 @@ type Favorites struct {
 	paths map[string]struct{}
 }
 
-// openFavorites 读 DATA_DIR 下的收藏文件；文件不存在就是空收藏（新部署不预置空文件）。
-func openFavorites(dataDir string) (*Favorites, error) {
+// openFavorites 读某个用户的收藏文件；文件不存在就是空收藏（新用户不预置空文件）。
+func openFavorites(dataDir, name string) (*Favorites, error) {
 	favorites := &Favorites{
-		path:  filepath.Join(dataDir, favoritesFileName),
+		path:  filepath.Join(dataDir, favoritesDirName, name+".json"),
 		paths: make(map[string]struct{}),
 	}
 	raw, err := os.ReadFile(favorites.path)

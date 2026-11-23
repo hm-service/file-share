@@ -88,10 +88,15 @@ func run() int {
 		Handler:           newRootHandler(instance, Dist, limits),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	userAccess := make(map[string][]string, len(instance.Config.Users))
+	for _, user := range instance.Config.Users {
+		userAccess[user.Name] = user.Access
+	}
 	slog.Info("server started",
 		slog.String("addr", listener.Addr().String()),
 		slog.String("data_dir", instance.Config.DataDir),
 		slog.String("files_dir", instance.Config.FilesDir),
+		slog.Any("user_access", userAccess),
 		slog.String("start_at", time.Now().Format(time.RFC3339)),
 	)
 	return serve(server, listener, instance)

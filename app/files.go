@@ -13,23 +13,23 @@ import (
 	"file-share/core"
 )
 
-// ListFiles 返回只读目录里的全部文件，带上收藏标记。
-func (a *App) ListFiles() ([]File, error) {
-	snapshot, err := a.scan()
+// ListFiles 返回当前用户可见范围内的全部文件，带上该用户自己的收藏标记。
+func (a *App) ListFiles(user User) ([]File, error) {
+	snapshot, err := a.scan(user)
 	if err != nil {
 		slog.Error("scan files failed", slog.Any("error", err))
 		return nil, core.Fail(http.StatusInternalServerError, "store.files")
 	}
-	favorites := a.favorites.All()
+	favorites := a.favoritesFor(user).All()
 	for i := range snapshot.files {
 		snapshot.files[i].IsFavorite = favorites[snapshot.files[i].ID]
 	}
 	return snapshot.files, nil
 }
 
-// ListGroups 返回只读目录里的全部分组（含空目录），按父路径与名称排序。
-func (a *App) ListGroups() ([]Group, error) {
-	snapshot, err := a.scan()
+// ListGroups 返回当前用户可见范围内的全部分组（含空目录），按父路径与名称排序。
+func (a *App) ListGroups(user User) ([]Group, error) {
+	snapshot, err := a.scan(user)
 	if err != nil {
 		slog.Error("scan groups failed", slog.Any("error", err))
 		return nil, core.Fail(http.StatusInternalServerError, "store.groups")
@@ -45,9 +45,9 @@ type DownloadedFile struct {
 	io.ReadSeekCloser
 }
 
-// OpenDownload 按相对路径打开文件供下载。
-func (a *App) OpenDownload(rel string) (*DownloadedFile, error) {
-	file, info, err := a.openFile(rel)
+// openDownload 打开一个全局相对路径的文件供下载。
+func (a *App) openDownload(rel string) (*DownloadedFile, error) {
+	file, info, err := openFile(a.files, rel)
 	if err != nil {
 		return nil, fileFailure(err)
 	}
@@ -60,28 +60,35 @@ func (a *App) OpenDownload(rel string) (*DownloadedFile, error) {
 }
 
 // IssueDownloadURL 给一次页面内下载签一个短效 URL（10 分钟）。
-func (a *App) IssueDownloadURL(rel string) (string, error) {
-	return a.issueSignedURL(rel, core.SignedURLTTL)
+func (a *App) IssueDownloadURL(user User, rel string) (string, error) {
+	return a.issueSignedURL(user, rel, core.SignedURLTTL)
 }
 
 // IssueShareLink 给分享链接签一个 ttl 内有效的 URL（10 分钟 / 24 小时两档）。
-func (a *App) IssueShareLink(rel string, ttl time.Duration) (string, error) {
-	return a.issueSignedURL(rel, ttl)
+func (a *App) IssueShareLink(user User, rel string, ttl time.Duration) (string, error) {
+	return a.issueSignedURL(user, rel, ttl)
 }
 
-// issueSignedURL 校验路径存在后签发 /s/<escaped path> 地址。
-func (a *App) issueSignedURL(rel string, ttl time.Duration) (string, error) {
+// issueSignedURL 确认文件在用户可见范围内后签发 /s/<escaped path>。
+//
+// 路径始终是数据目录下的全局路径，不按用户重写：这样用户看到的位置就是真实位置，
+// 不同用户的同名文件也不会互相撞车。不可见路径按「不存在」处理，不泄露它的存在。
+func (a *App) issueSignedURL(user User, rel string, ttl time.Duration) (string, error) {
 	if err := validateRelPath(rel); err != nil {
 		return "", fileFailure(err)
 	}
-	if _, _, err := a.openFile(rel); err != nil {
+	if !user.Visible(rel) {
+		return "", fileFailure(ErrNotFound)
+	}
+	if _, _, err := openFile(a.files, rel); err != nil {
 		return "", fileFailure(err)
 	}
 	exp := core.SignedURLExpiry(time.Now(), ttl)
 	return a.signurl.SignedURL(escapedDownloadPath(rel), exp), nil
 }
 
-// OpenSignedDownload 校验签名 URL 后打开文件：方法、转义路径与过期时间都在签名里。
+// OpenSignedDownload 校验签名 URL 后打开文件：匿名下载没有会话用户，
+// 签名覆盖的全局路径就是授权本身。
 func (a *App) OpenSignedDownload(rel, method, escapedPath, sig string, exp int64) (*DownloadedFile, error) {
 	if err := a.signurl.Verify(method, escapedPath, sig, exp, time.Now()); err != nil {
 		if errors.Is(err, core.ErrSignedURLExpired) {
@@ -89,17 +96,21 @@ func (a *App) OpenSignedDownload(rel, method, escapedPath, sig string, exp int64
 		}
 		return nil, core.Fail(http.StatusForbidden, "download.invalid-signature")
 	}
-	return a.OpenDownload(rel)
+	return a.openDownload(rel)
 }
 
-// ToggleFavorite 切换一个相对路径的收藏状态，返回切换后的状态。
-func (a *App) ToggleFavorite(rel string) (bool, error) {
-	favorite, err := a.favorites.Toggle(rel)
+// ToggleFavorite 切换当前用户的一个相对路径的收藏状态，返回切换后的状态。
+// 只能收藏自己可见的路径：收藏是元数据，但没必要也给不可见路径留记录。
+func (a *App) ToggleFavorite(user User, rel string) (bool, error) {
+	if err := validateRelPath(rel); err != nil {
+		return false, core.Fail(http.StatusBadRequest, "file.invalid-path")
+	}
+	if !user.Visible(rel) {
+		return false, core.Fail(http.StatusNotFound, "file.not-found")
+	}
+	favorite, err := a.favoritesFor(user).Toggle(rel)
 	if err != nil {
-		if errors.Is(err, ErrInvalidPath) {
-			return false, core.Fail(http.StatusBadRequest, "file.invalid-path")
-		}
-		slog.Error("write favorites failed", slog.Any("error", err))
+		slog.Error("write favorites failed", slog.String("user", user.Name), slog.Any("error", err))
 		return false, core.Fail(http.StatusInternalServerError, "store.favorites")
 	}
 	return favorite, nil

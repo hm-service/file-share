@@ -18,6 +18,8 @@ defineProps<{
   files: FileItem[];
   /** 文件行是否额外显示所属目录（最近 / 搜索结果里需要）。 */
   showGroup?: boolean;
+  /** 当前账号是否有收藏权限（fav）：没有就不显示星标按钮。 */
+  canFavorite: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +59,7 @@ const emit = defineEmits<{
         :key="file.id"
         :file="file"
         :show-group="showGroup"
+        :can-favorite="canFavorite"
         @favorite="emit('favorite', file)"
         @download="emit('download', file)"
         @error="emit('error', $event)"
