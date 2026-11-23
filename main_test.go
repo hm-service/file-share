@@ -16,6 +16,7 @@ import (
 
 	"file-share/api"
 	"file-share/app"
+	"file-share/core"
 	"file-share/internal/testenv"
 )
 
@@ -107,8 +108,9 @@ func TestSiteServesBuiltFiles(t *testing.T) {
 func TestSiteServesViewRoutes(t *testing.T) {
 	handler := siteHandler(testSite())
 
-	for _, path := range []string{"/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026",
-		"/cso2/%E5%AD%90%E7%BB%84", "/cso2/%E5%AD%90%E7%BB%84/%E4%B8%89%E7%BA%A7"} {
+	for _, path := range []string{"/", "/recent", "/cso2", "/favorites", "/ungrouped", "/%E8%AE%BE%E8%AE%A1%202026",
+		"/cso2/%E5%AD%90%E7%BB%84", "/cso2/%E5%AD%90%E7%BB%84/%E4%B8%89%E7%BA%A7",
+		"/cso2/子组/三级/四级", "/nope/deep/deeper/more"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusOK {
@@ -128,13 +130,13 @@ func TestSiteServesViewRoutes(t *testing.T) {
 }
 
 // 只认具体文件：目录不给列表，产物里的 *.html 不能绕过页面表直接访问，穿越也读不出东西。
-// 超过三段的路径不是视图路由，未知的一律 404。
+// 目录深度不限，只有超过视图路由段数上限的路径才不算页面。
 func TestSiteHasNoDirectoryListing(t *testing.T) {
 	handler := siteHandler(testSite())
+	tooDeep := "/" + strings.Repeat("a/", core.MaxViewSegments) + "a"
 
 	for _, path := range []string{"/assets/", "/assets/nested", "/assets/nested/", "/assets/nope.js",
-		"/assets/app-abc123.js/deep", "/index.html", "/auth.html", "/auth/deep",
-		"/nope/deep/deeper/more", "/cso2/子组/三级/四级"} {
+		"/assets/app-abc123.js/deep", "/index.html", "/auth.html", "/auth/deep", tooDeep} {
 		t.Run(path, func(t *testing.T) {
 			recorder := testenv.Do(handler, http.MethodGet, path, "")
 			if recorder.Code != http.StatusNotFound {

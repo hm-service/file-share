@@ -15,12 +15,14 @@ const props = defineProps<{
   groups: readonly GroupItem[];
   /** 每个文件夹子树（含后代）的文件数。 */
   counts: ReadonlyMap<string, number>;
+  /** 根目录入口（全部文件）的文件数。 */
+  allCount: number;
   recentCount: number;
   favoritesCount: number;
   /** 当前账号是否有收藏权限（fav)：没有就不显示收藏入口。 */
   canFavorite: boolean;
-  /** 当前视图：快捷入口或文件夹。 */
-  viewKind: "recent" | "favorites" | "group";
+  /** 当前视图：根目录 / 快捷入口 / 文件夹。 */
+  viewKind: "root" | "recent" | "favorites" | "group";
   /** 当前文件夹路径（viewKind = group 时有效）。 */
   activePath: string;
   /** 已折叠的文件夹路径（折叠后不渲染子级）。 */
@@ -33,6 +35,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  "show-root": [];
   "show-recent": [];
   "show-favorites": [];
   "open-folder": [path: string];
@@ -75,6 +78,16 @@ function countOf(path: string): number {
 <template>
   <aside class="tree">
     <nav class="quick">
+      <button
+        type="button"
+        class="node"
+        :class="{ active: viewKind === 'root' }"
+        @click="emit('show-root')"
+      >
+        <span class="node-icon" v-html="ICONS.home"></span>
+        <span class="node-label">{{ t("nav.all") }}</span>
+        <span class="node-count">{{ allCount }}</span>
+      </button>
       <button
         type="button"
         class="node"

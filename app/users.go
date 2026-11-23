@@ -220,19 +220,17 @@ func normalizeAccessItem(raw string) (string, error) {
 // Visible 报告全局相对路径是否在用户的可见范围内：命中某条 access 的自身、其后代，
 // 或它本身就是某条 access 的祖先（祖先链要保留，用户才知道自己处在哪一层）。
 //
-// 比较按大小写不敏感：access 在启动时已解析成文件系统上的真实大小写，这里再折叠一次
-// 是为了让手输 URL 的大小写偏差也能落到同一棵子树（实际打开仍按真实名字，找不到就 404）。
+// 比较大小写敏感：/DOCS 与 /Docs 是不同的路径，配置该怎么写就怎么匹配。
 func (u User) Visible(rel string) bool {
-	lowerRel := strings.ToLower(rel)
 	for _, access := range u.Access {
 		if access == "/" {
 			return true
 		}
-		item := strings.ToLower(strings.TrimPrefix(access, "/"))
-		if lowerRel == item || strings.HasPrefix(lowerRel, item+"/") {
+		item := strings.TrimPrefix(access, "/")
+		if rel == item || strings.HasPrefix(rel, item+"/") {
 			return true
 		}
-		if strings.HasPrefix(item, lowerRel+"/") {
+		if strings.HasPrefix(item, rel+"/") {
 			return true
 		}
 	}

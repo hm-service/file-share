@@ -627,9 +627,9 @@ func splitSignedURL(t *testing.T, link string) (escapedPath, sig string, exp int
 	return escapedPath, values.Get("sig"), exp, true
 }
 
-// TestAccessResolvesRealCase 验证可见范围按文件系统真实大小写解析：
-// 配置写成 /SOFTWARE 也能命中 /Software，启动后 Access 里存的是真实名字。
-func TestAccessResolvesRealCase(t *testing.T) {
+// TestAccessIsCaseSensitive 验证可见范围按大小写精确匹配：
+// 配置写成 /SOFTWARE 而实际目录是 /Software 时拒绝启动，不替用户猜大小写。
+func TestAccessIsCaseSensitive(t *testing.T) {
 	filesDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(filesDir, "Software"), 0o755); err != nil {
 		t.Fatal(err)
@@ -644,52 +644,22 @@ func TestAccessResolvesRealCase(t *testing.T) {
 			Permissions: PermissionRead, Access: []string{"/SOFTWARE"},
 		}},
 	}
+	if _, err := Open(cfg); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("大小写不一致的 access 应当拒绝启动，得到 %v", err)
+	}
+	cfg.Users[0].Access = []string{"/Software"}
 	instance, err := Open(cfg)
 	if err != nil {
-		t.Fatalf("大小写不同的 access 应当能解析: %v", err)
+		t.Fatalf("大小写一致的 access 应当成功: %v", err)
 	}
 	t.Cleanup(func() { instance.Close() })
 	user := userByName(t, instance, "case")
-	if len(user.Access) != 1 || user.Access[0] != "/Software" {
-		t.Errorf("Access = %v，想要解析成真实大小写 /Software", user.Access)
-	}
 	writeTestFile(t, instance, "Software/说明.md", "x")
-	files, err := instance.ListFiles(user)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 1 || files[0].ID != "Software/说明.md" {
-		t.Errorf("文件 = %+v，想要 Software/说明.md", files)
-	}
-	// 请求路径大小写偏差不影响可见性判定（实际打开仍按真实名字）。
-	if _, err := instance.IssueDownloadURL(user, "SOFTWARE/说明.md"); !isBusiness(err, 404) {
-		t.Errorf("大小写偏差路径 = %v，想要 404（可见性通过但文件系统找不到）", err)
-	}
 	if _, err := instance.IssueDownloadURL(user, "Software/说明.md"); err != nil {
 		t.Errorf("真实大小写路径应当可签: %v", err)
 	}
-}
-
-// TestAccessAmbiguousCase 验证同一层出现仅大小写不同的候选时拒绝启动，而不是随便挑一个授权。
-func TestAccessAmbiguousCase(t *testing.T) {
-	filesDir := t.TempDir()
-	for _, name := range []string{"A", "a"} {
-		if err := os.MkdirAll(filepath.Join(filesDir, name), 0o755); err != nil {
-			t.Skipf("文件系统大小写不敏感，跳过歧义用例: %v", err)
-		}
-	}
-	cfg := Config{
-		DataDir:           t.TempDir(),
-		FilesDir:          filesDir,
-		SessionSigningKey: "test_session_signing_key_0123456789",
-		URLSignatureKey:   "test_url_signature_key_0123456789",
-		Users: []User{{
-			Name: "case", Password: "case_password_0123456789",
-			Permissions: PermissionRead, Access: []string{"/A"},
-		}},
-	}
-	_, err := Open(cfg)
-	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("大小写歧义应当拒绝启动，得到 %v", err)
+	// 请求路径大小写不一致：可见范围判定也是大小写敏感的。
+	if _, err := instance.IssueDownloadURL(user, "software/说明.md"); !isBusiness(err, 404) {
+		t.Errorf("大小写不一致的请求路径 = %v，想要 404", err)
 	}
 }

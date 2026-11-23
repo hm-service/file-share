@@ -84,6 +84,8 @@ const visibleFiles = computed<FileItem[]>(() => {
       .sort((a, b) => b.created_at - a.created_at);
   }
   switch (view.value.kind) {
+    case "root":
+      return all.filter((file) => file.group_path === "").sort(byName);
     case "recent":
       return [...all].sort((a, b) => b.created_at - a.created_at).slice(0, RECENT_LIMIT);
     case "favorites":
@@ -99,10 +101,12 @@ function byName(a: FileItem, b: FileItem): number {
   return a.filename.localeCompare(b.filename, undefined, { sensitivity: "base" });
 }
 
-/** 内容区里的子文件夹行：只有目录视图（且不在搜索）才列子目录。 */
+/** 内容区里的子文件夹行：根目录与目录视图（且不在搜索）才列子目录。 */
 const dirs = computed<DirEntry[]>(() => {
-  if (searching.value || view.value.kind !== "group") return [];
-  const parent = view.value.group;
+  if (searching.value) return [];
+  const kind = view.value.kind;
+  if (kind !== "group" && kind !== "root") return [];
+  const parent = kind === "group" ? view.value.group : "";
   return groups.value
     .filter((group) => group.parent === parent)
     .map((group) => ({ path: group.path, name: group.name, fileCount: counts.value.get(group.path) ?? 0 }));
@@ -126,7 +130,7 @@ const crumbs = computed<{ name: string; path: string }[]>(() => {
   }));
 });
 
-/** 顶层面包屑文案：目录视图显示「全部」，其它视图直接显示视图名。 */
+/** 顶层面包屑文案：根目录与目录视图显示「全部」，其它视图直接显示视图名。 */
 const rootLabel = computed(() => {
   if (searching.value) return t("content.search-results");
   if (view.value.kind === "recent") return t("nav.recent");
@@ -208,7 +212,7 @@ function syncViewFromLocation(): void {
   query.value = params.get(SEARCH_PARAM) ?? "";
   const next = viewFromPath(location.pathname);
   if (!next) {
-    view.value = { kind: "recent" };
+    view.value = { kind: "root" };
     sidebarOpen.value = false;
     syncLocation("replace");
     return;
@@ -219,18 +223,22 @@ function syncViewFromLocation(): void {
   if (loaded.value) validateView();
 }
 
-/** 目录不存在（或账号没有收藏权限）时回退「最近」，免得刷新后停在空视图。 */
+/** 目录不存在（或账号没有收藏权限）时回退根目录，免得刷新后停在空视图。 */
 function validateView(): void {
   const current = view.value;
   if (current.kind === "group" && !groups.value.some((group) => group.path === current.group)) {
-    applyView({ kind: "recent" }, "replace");
+    applyView({ kind: "root" }, "replace");
   }
   if (current.kind === "favorites" && !canFavorite.value) {
-    applyView({ kind: "recent" }, "replace");
+    applyView({ kind: "root" }, "replace");
   }
 }
 
 watch([query, view], () => syncLocation("replace"));
+
+function showRoot(): void {
+  applyView({ kind: "root" });
+}
 
 function showRecent(): void {
   applyView({ kind: "recent" });
@@ -490,7 +498,8 @@ onBeforeUnmount(() => {
         <DirTree
           :groups="groups"
           :counts="counts"
-          :recent-count="files.length"
+          :all-count="files.length"
+          :recent-count="Math.min(files.length, RECENT_LIMIT)"
           :favorites-count="files.filter((file) => file.is_favorite).length"
           :can-favorite="canFavorite"
           :view-kind="viewKind"
@@ -499,6 +508,7 @@ onBeforeUnmount(() => {
           :storage-text="storageText"
           :storage-hint="storageHint"
           :storage-healthy="storageHealthy"
+          @show-root="showRoot"
           @show-recent="showRecent"
           @show-favorites="showFavorites"
           @open-folder="openFolder"
@@ -526,7 +536,7 @@ onBeforeUnmount(() => {
               type="button"
               class="crumb"
               :class="{ current: viewKind !== 'group' }"
-              @click="searching ? (query = '') : showRecent()"
+              @click="searching ? (query = '') : showRoot()"
             >
               {{ rootLabel }}
             </button>
@@ -586,6 +596,7 @@ onBeforeUnmount(() => {
             <template v-else-if="loadError">{{ loadError }}</template>
             <template v-else-if="searching">{{ t("nav.no-results") }}</template>
             <template v-else-if="viewKind === 'favorites'">{{ t("nav.empty-favorites") }}</template>
+            <template v-else-if="viewKind === 'root'">{{ t("content.empty-folder") }}</template>
             <template v-else-if="viewKind === 'group'">{{ t("content.empty-folder") }}</template>
             <template v-else>{{ t("nav.empty-recent") }}</template>
           </p>

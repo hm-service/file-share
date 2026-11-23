@@ -188,51 +188,29 @@ func translateFileError(err error) error {
 	return err
 }
 
-// resolveAccess 把配置里的可见范围解析成文件系统上的真实路径。
+// resolveAccess 校验一条可见范围并返回它（已规范化）。
 //
-// 逐段按大小写不敏感匹配目录条目，返回实际大小写：这样配置写成 /SOFTWARE 而实际是
-// /Software 也能工作，且 Visible 的字节比较有唯一基准。同一层出现仅大小写不同的多个候选
-// 时报错（授权哪个都不对）。每一段还必须是真实目录、不是符号链接 —— 段级链接会让
+// 大小写敏感：配置里写 /DOCS 就只认 /DOCS，实际目录是 /Docs 时启动直接失败，
+// 不替用户猜大小写。路径上每一段都必须是真实目录、不是符号链接 —— 段级链接会让
 // 「前缀匹配」指向别处，可见范围是访问边界，配错就该拒绝启动。
 func resolveAccess(files *os.Root, access string) (string, error) {
 	rel := strings.TrimPrefix(access, "/")
 	if rel == "" {
 		return "/", nil
 	}
-	segments := strings.Split(rel, "/")
-	resolved := make([]string, 0, len(segments))
-	parent := "."
-	for _, segment := range segments {
-		entries, err := fs.ReadDir(files.FS(), parent)
+	prefix := ""
+	for _, segment := range strings.Split(rel, "/") {
+		prefix = path.Join(prefix, segment)
+		info, err := files.Lstat(filepath.FromSlash(prefix))
 		if err != nil {
-			return "", fmt.Errorf("access %q: %w", access, translateFileError(err))
+			return "", fmt.Errorf("access %q: %q not found", access, prefix)
 		}
-		var matches []fs.DirEntry
-		for _, entry := range entries {
-			if strings.EqualFold(entry.Name(), segment) {
-				matches = append(matches, entry)
-			}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return "", fmt.Errorf("access %q: %q is a symbolic link", access, prefix)
 		}
-		target := path.Join(append(resolved, segment)...)
-		switch {
-		case len(matches) == 0:
-			return "", fmt.Errorf("access %q: %q not found", access, target)
-		case len(matches) > 1:
-			names := make([]string, 0, len(matches))
-			for _, match := range matches {
-				names = append(names, match.Name())
-			}
-			return "", fmt.Errorf("access %q: %q is ambiguous (matches %s)", access, target, strings.Join(names, ", "))
+		if !info.IsDir() {
+			return "", fmt.Errorf("access %q: %q is not a directory", access, prefix)
 		}
-		entry := matches[0]
-		if entry.Type()&fs.ModeSymlink != 0 {
-			return "", fmt.Errorf("access %q: %q is a symbolic link", access, target)
-		}
-		if !entry.IsDir() {
-			return "", fmt.Errorf("access %q: %q is not a directory", access, target)
-		}
-		resolved = append(resolved, entry.Name())
-		parent = path.Join(parent, entry.Name())
 	}
-	return "/" + strings.Join(resolved, "/"), nil
+	return access, nil
 }

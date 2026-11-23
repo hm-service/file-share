@@ -85,9 +85,9 @@ var reservedViewRoots = map[string]struct{}{
 	"auth":   {},
 }
 
-// isViewRoute 判断路径是不是前端视图路由：一到三段非空路径，最多到三级目录。
+// isViewRoute 判断路径是不是前端视图路由：非空、非 *.html 的路径段，段数不设实际深度限制。
 // 目录名由用户输入、直接作为路径段出现，所以这里只能按形状判断，不能枚举。
-// 超过三段、*.html 与保留根路径下面的多段路径只认产物里的真实文件，未知的一律 404。
+// *.html 与保留根路径下面的多段路径只认产物里的真实文件，未知的一律 404。
 func isViewRoute(path string) bool {
 	segments, found := strings.CutPrefix(path, "/")
 	if !found {

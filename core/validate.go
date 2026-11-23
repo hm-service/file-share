@@ -14,9 +14,9 @@ const MaxGroupNameBytes = 64
 // MaxGroupDepth 是分组层数上限：一到三级都是目录（各自有页面路由），第 4 级一律拒绝。
 const MaxGroupDepth = 3
 
-// MaxViewSegments 是页面路由最多认的路径段数：目录树最深三级，/a/b/c 是三级目录页面。
-// 和 MaxGroupDepth 分开是为了让「能存多深」与「能路由多深」各自独立。
-const MaxViewSegments = 3
+// MaxViewSegments 是页面路由最多认的路径段数。目录深度不限制，这里只是给前端视图路由
+// 一个形状上限（超过它的路径不再当页面，按未知路径 404），留足深度余量。
+const MaxViewSegments = 16
 
 // 批量排序输入的边界：一次最多重排 2000 条，sort_order 落在 [0, 1e9]。
 const (
