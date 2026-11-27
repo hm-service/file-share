@@ -372,4 +372,15 @@ function countOf(path: string): number {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 窄屏（触屏）：18px 的箭头太小，手指点偏会落到文件夹名上，变成打开目录。
+   视觉尺寸不变，只把按钮命中区放大到 32px（行高 34px 放得下）。 */
+@media (max-width: 900px) {
+  .chev {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
+    margin-left: -7px;
+  }
+}
 </style>

@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 移动端禁用页面缩放：固定布局不需要放大，双指缩放会打乱抽屉与表格的对齐。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <!-- 无 JS 时的标题；装 JS 后由 i18n.applyDocumentLocale 按语言改写。改文案记得两处一起改。 -->
     <title>文件分享</title>
   </head>

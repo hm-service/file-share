@@ -177,13 +177,13 @@ function applyDefaultFolded(): void {
   saveFolded(next);
 }
 
+/** 只切换折叠状态：窄屏抽屉保持打开，让用户看到展开 / 收起的结果。 */
 function toggleFolder(path: string): void {
   const next = new Set(folded.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   folded.value = next;
   saveFolded(next);
-  sidebarOpen.value = false;
 }
 
 /* ---------- 地址栏 ---------- */

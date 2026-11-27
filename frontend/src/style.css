@@ -55,6 +55,12 @@ body,
   height: 100%;
 }
 
+/* 页面本身不缩放：布局在窄屏是抽屉 + 单列，放大只会让内容溢出；
+   pan-x / pan-y 只保留滚动，双指缩放与双击缩放一起关掉（iOS 忽略 viewport 的 user-scalable）。 */
+html {
+  touch-action: pan-x pan-y;
+}
+
 body {
   margin: 0;
   overflow: hidden;
@@ -82,6 +88,16 @@ button:disabled {
 
 input {
   font: inherit;
+}
+
+/* iOS Safari 会放大字号小于 16px 的输入框，聚焦时页面跟着跳一下；
+   窄屏统一按 16px 排，配合禁用缩放不会再有这个跳变。 */
+@media (max-width: 900px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 p,
