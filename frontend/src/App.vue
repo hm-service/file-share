@@ -424,6 +424,73 @@ function onWindowResize(): void {
   isNarrow.value = NARROW_QUERY.matches;
 }
 
+/* ---------- 窄屏下拉刷新 ---------- */
+
+/** 下拉超过这个距离（px）松手就刷新；拉得再深，指示器也最多占 PULL_MAX。 */
+const PULL_THRESHOLD = 56;
+const PULL_MAX = 96;
+/** 手指位移到指示器位移的阻尼：比 1:1 更跟手，也不会把列表推得太远。 */
+const PULL_DAMPING = 0.5;
+
+const contentEl = ref<HTMLElement | null>(null);
+const pullDistance = ref(0);
+/** 手指正在往下拉：此时指示器高度直接跟随手指，不走过渡动画。 */
+const pullDragging = ref(false);
+const pullRefreshing = ref(false);
+let pullStartY = 0;
+let pullTracking = false;
+
+/** 只有列表已经在顶部、并且是单指触摸时，才开始跟踪这次下拉。 */
+function onPullStart(event: TouchEvent): void {
+  if (!isNarrow.value || pullRefreshing.value) return;
+  const el = contentEl.value;
+  if (!el || el.scrollTop > 0 || event.touches.length !== 1) return;
+  pullStartY = event.touches[0].clientY;
+  pullTracking = true;
+}
+
+function onPullMove(event: TouchEvent): void {
+  if (!pullTracking) return;
+  const el = contentEl.value;
+  if (!el || el.scrollTop > 0) {
+    pullTracking = false;
+    pullDragging.value = false;
+    pullDistance.value = 0;
+    return;
+  }
+  const dy = event.touches[0].clientY - pullStartY;
+  // 往上滑是正常滚动：不接管手势，只把指示器收回去。
+  if (dy <= 0) {
+    pullDragging.value = false;
+    pullDistance.value = 0;
+    return;
+  }
+  // 到顶后继续下拉：接管手势，挡住列表回弹与浏览器自带的下拉刷新。
+  if (event.cancelable) event.preventDefault();
+  pullDragging.value = true;
+  pullDistance.value = Math.min(PULL_MAX, dy * PULL_DAMPING);
+}
+
+async function onPullEnd(): Promise<void> {
+  if (!pullTracking) return;
+  const triggered = pullDragging.value && pullDistance.value >= PULL_THRESHOLD;
+  pullTracking = false;
+  pullDragging.value = false;
+  if (!triggered) {
+    pullDistance.value = 0;
+    return;
+  }
+  // 保留阈值高度显示「正在刷新」，列表与存储状态一起重拉，完成后回弹。
+  pullRefreshing.value = true;
+  pullDistance.value = PULL_THRESHOLD;
+  try {
+    await Promise.all([refresh(), loadStorage()]);
+  } finally {
+    pullRefreshing.value = false;
+    pullDistance.value = 0;
+  }
+}
+
 onMounted(() => {
   window.addEventListener("popstate", syncViewFromLocation);
   window.addEventListener("resize", onWindowResize);
@@ -529,7 +596,33 @@ onBeforeUnmount(() => {
 
       <div v-if="sidebarOpen" class="drawer-mask" @click="sidebarOpen = false"></div>
 
-      <main class="content">
+      <main
+        ref="contentEl"
+        class="content"
+        @touchstart="onPullStart"
+        @touchmove="onPullMove"
+        @touchend="onPullEnd"
+        @touchcancel="onPullEnd"
+      >
+        <!-- 窄屏下拉刷新：高度跟随手指，松手后要么回弹，要么停在阈值处转圈刷新 -->
+        <div
+          class="pull"
+          :class="{ 'is-live': pullDragging, 'is-refreshing': pullRefreshing }"
+          :style="{ height: `${pullDistance}px` }"
+          aria-hidden="true"
+        >
+          <span
+            class="pull-icon"
+            :class="{ ready: pullDistance >= PULL_THRESHOLD }"
+            v-html="ICONS.refresh"
+          ></span>
+          <span class="pull-label">
+            <template v-if="pullRefreshing">{{ t("state.refreshing") }}</template>
+            <template v-else-if="pullDistance >= PULL_THRESHOLD">{{ t("state.pull-release") }}</template>
+            <template v-else>{{ t("state.pull-down") }}</template>
+          </span>
+        </div>
+
         <div class="toolbar">
           <div class="crumbs">
             <button
@@ -851,8 +944,59 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* 窄屏下拉刷新自己处理手势：列表滚到顶后继续下拉不再冒泡成浏览器整页刷新 */
+  overscroll-behavior-y: contain;
   padding: 16px 18px 28px;
   background: var(--surface-2);
+}
+
+/* ---------- 窄屏下拉刷新 ---------- */
+
+/* 高度由手指位移决定；拖拽期间关掉过渡，松手回弹才走动画 */
+.pull {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  transition: height 0.2s ease;
+}
+
+.pull.is-live {
+  transition: none;
+}
+
+.pull-icon {
+  display: inline-flex;
+  opacity: 0.6;
+  transition:
+    transform 0.2s ease,
+    color 0.2s ease;
+}
+
+.pull-icon:deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+/* 到阈值：图标转半圈并换成主题色，提示松手就刷新 */
+.pull-icon.ready {
+  color: var(--accent);
+  transform: rotate(180deg);
+}
+
+.pull.is-refreshing .pull-icon {
+  color: var(--accent);
+  animation: pull-spin 0.9s linear infinite;
+}
+
+@keyframes pull-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 细滚动条：轨道透明，拇指内缩成圆角胶囊 */

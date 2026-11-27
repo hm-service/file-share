@@ -79,6 +79,9 @@ export type MessageKey =
   | "meta.unknown-time"
   | "lang.label"
   | "state.loading"
+  | "state.pull-down"
+  | "state.pull-release"
+  | "state.refreshing"
   | "error.load"
   | "error.copy"
   | "error.network"
@@ -158,6 +161,9 @@ const messages: Record<MessageKey, Message> = {
   "meta.unknown-time": { zh: "时间未知", en: "Unknown time" },
   "lang.label": { zh: "语言", en: "Language" },
   "state.loading": { zh: "加载中…", en: "Loading…" },
+  "state.pull-down": { zh: "下拉刷新", en: "Pull to refresh" },
+  "state.pull-release": { zh: "松开刷新", en: "Release to refresh" },
+  "state.refreshing": { zh: "正在刷新…", en: "Refreshing…" },
   "error.load": { zh: "加载文件列表失败", en: "Failed to load the file list" },
   "error.copy": {
     zh: "复制失败，请检查浏览器的剪贴板权限",
